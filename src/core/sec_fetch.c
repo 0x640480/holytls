@@ -58,6 +58,21 @@ void sec_fetch_append(HeaderList *out, FetchMode mode, String8 url,
   header_list_push(out, str8_lit("sec-fetch-mode"), m, 0);
   header_list_push(out, str8_lit("sec-fetch-dest"), dest, 0);
   header_list_push(out, str8_lit("sec-fetch-user"), usr, 0);  // empty => omitted
+
+  // Non-navigation requests (fetch/XHR) carry accept: */* and priority: u=1, i,
+  // and omit Upgrade-Insecure-Requests — whereas the profile's static defaults
+  // are navigation-shaped (accept: text/html..., priority: u=0, i, UIR: 1). Emit
+  // these as overrides of the default slots (an empty value drops the default in
+  // build_ordered_headers) unless the caller set them explicitly.
+  if (mode != FetchMode_Navigate) {
+    if (!header_list_has_ci(out, str8_lit("accept")))
+      header_list_push(out, str8_lit("accept"), str8_lit("*/*"), 0);
+    if (!header_list_has_ci(out, str8_lit("priority")))
+      header_list_push(out, str8_lit("priority"), str8_lit("u=1, i"), 0);
+    if (!header_list_has_ci(out, str8_lit("upgrade-insecure-requests")))
+      header_list_push(out, str8_lit("upgrade-insecure-requests"), str8_zero(),
+                       0);
+  }
 }
 
 internal int sec_site_rank(String8 s) {

@@ -36,4 +36,11 @@ void header_list_push(HeaderList *list, String8 name, String8 value, U8 flags);
 String8 *header_list_get_ci(HeaderList *list, String8 name);
 B32 header_list_has_ci(HeaderList *list, String8 name);
 
+// Split a Cookie header value ("a=1; b=2; c=3") into its crumbs ("a=1","b=2",
+// "c=3"), as views into `value`. HTTP/2 and HTTP/3 emit one header field per
+// crumb (Chrome's wire framing); HTTP/1.1 keeps the value whole. Writes up to
+// `cap` crumbs to `out` and returns the total crumb count (empty crumbs skipped).
+// Pass out=0, cap=0 to count only.
+U64 cookie_crumbs(String8 value, String8 *out, U64 cap);
+
 #endif  // HOLYTLS_HEADER_H

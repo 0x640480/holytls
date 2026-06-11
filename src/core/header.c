@@ -30,3 +30,19 @@ String8 *header_list_get_ci(HeaderList *list, String8 name) {
 B32 header_list_has_ci(HeaderList *list, String8 name) {
   return header_list_get_ci(list, name) != 0;
 }
+
+U64 cookie_crumbs(String8 value, String8 *out, U64 cap) {
+  U64 n = 0;
+  String8 rest = value;
+  for (;;) {
+    S64 at = str8_find(rest, str8_lit("; "));
+    String8 crumb = (at < 0) ? rest : str8_prefix(rest, (U64)at);
+    if (crumb.size) {
+      if (n < cap) out[n] = crumb;
+      n += 1;
+    }
+    if (at < 0) break;
+    rest = str8_skip(rest, (U64)at + 2);  // past "; "
+  }
+  return n;
+}

@@ -106,7 +106,14 @@ B32 h3_session_request(H3Session *s, String8 method, String8 scheme,
   // Build the header list: pseudo-headers in the profile's order, then the
   // caller's regular headers (nghttp3_nv just needs ptr+len — no copies).
   Temp scratch = scratch_begin(&s->arena, 1);
-  U64 nva_cap = s->prof->pseudo_count + header_count;
+  // A Cookie header splits into one field per crumb (Chrome's H3 framing), so
+  // size for the post-split field count.
+  U64 field_count = 0;
+  for (U64 i = 0; i < header_count; ++i)
+    field_count += str8_match_ci(headers[i].name, str8_lit("cookie"))
+                       ? cookie_crumbs(headers[i].value, 0, 0)
+                       : 1;
+  U64 nva_cap = s->prof->pseudo_count + field_count;
   nghttp3_nv *nva = push_array_no_zero(scratch.arena, nghttp3_nv, nva_cap);
   U64 nvlen = 0;
   for (U8 i = 0; i < s->prof->pseudo_count; ++i) {
@@ -125,8 +132,17 @@ B32 h3_session_request(H3Session *s, String8 method, String8 scheme,
         break;
     }
   }
-  for (U64 i = 0; i < header_count; ++i)
-    nva[nvlen++] = h3_make_nv(headers[i].name, headers[i].value);
+  for (U64 i = 0; i < header_count; ++i) {
+    if (str8_match_ci(headers[i].name, str8_lit("cookie"))) {
+      U64 cc = cookie_crumbs(headers[i].value, 0, 0);
+      String8 *crumbs = push_array_no_zero(scratch.arena, String8, cc ? cc : 1);
+      cookie_crumbs(headers[i].value, crumbs, cc);
+      for (U64 k = 0; k < cc; ++k)
+        nva[nvlen++] = h3_make_nv(headers[i].name, crumbs[k]);
+    } else {
+      nva[nvlen++] = h3_make_nv(headers[i].name, headers[i].value);
+    }
+  }
 
   // QPACK-encode (static): prefix -> pbuf, field section -> rbuf.
   nghttp3_buf pbuf, rbuf, ebuf;

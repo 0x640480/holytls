@@ -46,6 +46,30 @@ int main(void) {
   CHECK(eq(hv(&h, "sec-fetch-mode"), "cors"));
   CHECK(eq(hv(&h, "sec-fetch-dest"), "empty"));
   CHECK(hv(&h, "sec-fetch-user").size == 0);  // suppressed for fetches
+  // Fetch/XHR also gets accept: */* and priority: u=1, i, and drops UIR (emitted
+  // as an empty-value override so build_ordered_headers omits the default).
+  CHECK(eq(hv(&h, "accept"), "*/*"));
+  CHECK(eq(hv(&h, "priority"), "u=1, i"));
+  CHECK(header_list_has_ci(&h, str8_lit("upgrade-insecure-requests")));
+  CHECK(hv(&h, "upgrade-insecure-requests").size == 0);
+
+  // A caller-supplied accept/priority is respected (not overridden).
+  {
+    HeaderList hc;
+    header_list_init(&hc, a);
+    header_list_push(&hc, str8_lit("accept"), str8_lit("application/json"), 0);
+    header_list_push(&hc, str8_lit("priority"), str8_lit("u=4"), 0);
+    sec_fetch_append(&hc, FetchMode_Cors, str8_lit("https://a.com/api"),
+                     str8_lit("https://a.com/p"));
+    CHECK(eq(hv(&hc, "accept"), "application/json"));
+    CHECK(eq(hv(&hc, "priority"), "u=4"));
+  }
+
+  // Navigation leaves accept/priority/UIR to the profile defaults (not here).
+  build(a, &h, FetchMode_Navigate, "https://a.com/x", "");
+  CHECK(hv(&h, "accept").size == 0);
+  CHECK(hv(&h, "priority").size == 0);
+  CHECK(!header_list_has_ci(&h, str8_lit("upgrade-insecure-requests")));
 
   // Sec-Fetch-Site relationships.
   build(a, &h, FetchMode_Cors, "https://api.a.com/x", "https://www.a.com/y");

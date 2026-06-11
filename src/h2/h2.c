@@ -233,9 +233,16 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
   if (!s->session) return -1;
 
   // The nv array is transient (nghttp2 deep-copies name/value during submit).
+  // A Cookie header splits into one field per crumb (Chrome's H2 framing), so
+  // size for the post-split field count.
   Temp scr = scratch_begin(0, 0);
-  nghttp2_nv *nva =
-      push_array_no_zero(scr.arena, nghttp2_nv, s->prof->pseudo_count + header_count);
+  U64 field_count = 0;
+  for (U64 i = 0; i < header_count; ++i)
+    field_count += str8_match_ci(headers[i].name, str8_lit("cookie"))
+                       ? cookie_crumbs(headers[i].value, 0, 0)
+                       : 1;
+  nghttp2_nv *nva = push_array_no_zero(scr.arena, nghttp2_nv,
+                                       s->prof->pseudo_count + field_count);
   U64 n = 0;
   for (U8 i = 0; i < s->prof->pseudo_count; ++i) {
     switch (s->prof->pseudo_order[i]) {
@@ -247,8 +254,17 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
       case Pseudo_Path: nva[n++] = make_nv(str8_lit(":path"), path); break;
     }
   }
-  for (U64 i = 0; i < header_count; ++i)
-    nva[n++] = make_nv(headers[i].name, headers[i].value);
+  for (U64 i = 0; i < header_count; ++i) {
+    if (str8_match_ci(headers[i].name, str8_lit("cookie"))) {
+      U64 cc = cookie_crumbs(headers[i].value, 0, 0);
+      String8 *crumbs = push_array_no_zero(scr.arena, String8, cc ? cc : 1);
+      cookie_crumbs(headers[i].value, crumbs, cc);
+      for (U64 k = 0; k < cc; ++k)
+        nva[n++] = make_nv(headers[i].name, crumbs[k]);
+    } else {
+      nva[n++] = make_nv(headers[i].name, headers[i].value);
+    }
+  }
 
   nghttp2_priority_spec pri;
   if (s->prof->use_priority)

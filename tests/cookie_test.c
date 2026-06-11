@@ -7,6 +7,7 @@
 #include "base/base.h"
 #include "base/string8.h"
 #include "core/cookie.h"
+#include "core/header.h"
 #include "core/url.h"
 
 global int g_checks = 0;
@@ -187,6 +188,29 @@ internal void test_public_suffix(Arena *a) {
              "self=1"));  // host-only: never sent to subdomains
 }
 
+// cookie_crumbs: split a Cookie header value into per-cookie fields (the H2/H3
+// wire framing). One field per "; "-separated crumb; empty crumbs dropped.
+internal void test_crumbs(void) {
+  String8 out[8];
+  U64 n = cookie_crumbs(str8_lit("a=1; b=2; c=3"), out, 8);
+  CHECK(n == 3);
+  CHECK(str8_match(out[0], str8_lit("a=1")));
+  CHECK(str8_match(out[1], str8_lit("b=2")));
+  CHECK(str8_match(out[2], str8_lit("c=3")));
+  // Single cookie -> one crumb (the non-split case).
+  CHECK(cookie_crumbs(str8_lit("only=1"), out, 8) == 1);
+  CHECK(str8_match(out[0], str8_lit("only=1")));
+  // Count-only mode (out=0, cap=0) returns the same total.
+  CHECK(cookie_crumbs(str8_lit("a=1; b=2"), 0, 0) == 2);
+  // Empty value -> zero crumbs.
+  CHECK(cookie_crumbs(str8_zero(), out, 8) == 0);
+  // Values with '=' / '.' / '-' stay intact within their crumb (e.g. cf_clearance).
+  n = cookie_crumbs(str8_lit("cf_clearance=Ab.C-1.2.1; SESSION=xyz=="), out, 8);
+  CHECK(n == 2);
+  CHECK(str8_match(out[0], str8_lit("cf_clearance=Ab.C-1.2.1")));
+  CHECK(str8_match(out[1], str8_lit("SESSION=xyz==")));
+}
+
 int main(void) {
   Arena *a = arena_alloc();
   test_http_date();
@@ -196,6 +220,7 @@ int main(void) {
   test_secure(a);
   test_expiry(a);
   test_order_and_replace(a);
+  test_crumbs();
   arena_release(a);
   fprintf(stderr, "[cookie_test] %d checks, %d failures\n", g_checks, g_fails);
   return g_fails ? 1 : 0;
