@@ -404,7 +404,8 @@ internal void pool_h2_submit(PoolConn *pc, PoolReq *r) {
   r->body = build_request_headers(
       r->arena, c->profile->default_headers, c->profile->default_header_count,
       r->caller_headers, r->caller_header_count, r->caller_body.str,
-      r->caller_body.size, c->override_default_headers, &r->req_headers);
+      r->caller_body.size, c->override_default_headers, r->method_enum,
+      &r->req_headers);
   client_run_pre_hook(c, r->method_enum, r->url, &r->req_headers);
   S32 sid = h2_session_submit_request(
       pc->h2, method_str(r->method_enum), r->scheme, r->authority, r->path,
@@ -705,7 +706,7 @@ internal void pool_h3_submit(PoolConn *pc, PoolReq *r) {
       r->arena, c->h3_profile->default_headers,
       c->h3_profile->default_header_count, r->caller_headers,
       r->caller_header_count, r->caller_body.str, r->caller_body.size,
-      c->override_default_headers, &r->req_headers);
+      c->override_default_headers, r->method_enum, &r->req_headers);
   client_run_pre_hook(c, r->method_enum, r->url, &r->req_headers);
 
   if (quic_open_bidi_stream(qc, &r->h3_stream_id) != 0) {

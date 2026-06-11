@@ -205,7 +205,7 @@ internal String8 build_request_headers(Arena *arena,
                                        U64 default_count, const Header *caller,
                                        U64 caller_count, const U8 *body,
                                        U64 body_len, B32 override_defaults,
-                                       HeaderList *out) {
+                                       Method method, HeaderList *out) {
   header_list_init(out, arena);
   // Override-default-headers mode: drop the profile's browser headers entirely —
   // build_ordered_headers with zero defaults emits only the caller's headers, in
@@ -226,8 +226,32 @@ internal String8 build_request_headers(Arena *arena,
     if (!header_list_has_ci(out, str8_lit("content-length")))
       header_list_push(out, str8_lit("content-length"),
                        str8_from_u64(arena, body_len, 10, 0), 0);
+  } else if ((method == Method_POST || method == Method_PUT ||
+              method == Method_PATCH) &&
+             !header_list_has_ci(out, str8_lit("content-length"))) {
+    // Body-carrying methods send Content-Length: 0 even with an empty body, the
+    // way Chrome does (GET/HEAD/DELETE/OPTIONS do not).
+    header_list_push(out, str8_lit("content-length"), str8_lit("0"), 0);
   }
   return b;
+}
+
+// A fetch/XHR request is one whose Sec-Fetch-Mode is present and not "navigate"
+// (set by sec_fetch_merge from the FetchMode). Browsers order fetch headers
+// differently from navigations, so this selects the profile's fetch_order.
+internal B32 headers_are_fetch(HeaderList *h) {
+  String8 *m = header_list_get_ci(h, str8_lit("sec-fetch-mode"));
+  return m && m->size && !str8_match(*m, str8_lit("navigate"));
+}
+
+// Reorder `h` by a profile fetch_order (a const char* name list). No-op if the
+// profile has no fetch order. Names absent from the request are skipped.
+internal void apply_fetch_order(Arena *arena, HeaderList *h,
+                                const char *const *order, U8 count) {
+  if (!order || count == 0) return;
+  String8 *names = push_array_no_zero(arena, String8, count);
+  for (U8 i = 0; i < count; ++i) names[i] = str8_cstring(order[i]);
+  reorder_headers(arena, h, names, count);
 }
 
 // --- request/response hooks (opt-in middleware) ----------------------------
@@ -646,11 +670,14 @@ internal void h2req_start(Client *c, Method m, String8 url, const Header *header
   req->body = build_request_headers(arena, c->profile->default_headers,
                                     c->profile->default_header_count, headers,
                                     header_count, body, body_len, c->override_default_headers,
-                                    &req->req_headers);
+                                    m, &req->req_headers);
   client_run_pre_hook(c, m, u, &req->req_headers);
   if (c->header_order_count)  // custom wire order (after hooks); composes with raw
     reorder_headers(arena, &req->req_headers, c->header_order,
                     c->header_order_count);
+  else if (!c->override_default_headers && headers_are_fetch(&req->req_headers))
+    apply_fetch_order(arena, &req->req_headers, c->profile->fetch_order,
+                      c->profile->fetch_order_count);
 
   req->timeout = req_timer_arm(c->loop, deadline_ns, h2req_on_timeout, req);
   h2req_connect(req, /*allow_early=*/1);
@@ -898,11 +925,14 @@ internal void quicreq_start(Client *c, Method m, String8 url,
   req->body = build_request_headers(arena, c->h3_profile->default_headers,
                                     c->h3_profile->default_header_count, headers,
                                     header_count, body, body_len, c->override_default_headers,
-                                    &req->req_headers);
+                                    m, &req->req_headers);
   client_run_pre_hook(c, m, u, &req->req_headers);
   if (c->header_order_count)  // custom wire order (after hooks); composes with raw
     reorder_headers(arena, &req->req_headers, c->header_order,
                     c->header_order_count);
+  else if (!c->override_default_headers && headers_are_fetch(&req->req_headers))
+    apply_fetch_order(arena, &req->req_headers, c->h3_profile->fetch_order,
+                      c->h3_profile->fetch_order_count);
 
   req->timeout = req_timer_arm(c->loop, deadline_ns, quicreq_on_timeout, req);
   quicreq_connect(req, /*allow_early=*/1);

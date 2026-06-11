@@ -133,6 +133,11 @@ struct Http3Profile {
 
 //- combined profiles --------------------------------------------------------
 
+// Header order for fetch/XHR (non-navigation) requests, which a browser orders
+// differently from navigations (client-hint block reordered, content-length
+// first, origin/referer in fixed mid-list slots, no UIR/sec-fetch-user). Names
+// absent from a given request are skipped. fetch_order == 0 => reuse the
+// navigation order (default_headers).
 typedef struct Profile Profile;
 struct Profile {
   const char *name;
@@ -141,6 +146,8 @@ struct Profile {
   Http2Profile h2;
   const DefaultHeader *default_headers;
   U8 default_header_count;
+  const char *const *fetch_order;
+  U8 fetch_order_count;
 };
 
 typedef struct QuicProfile QuicProfile;
@@ -151,6 +158,8 @@ struct QuicProfile {
   Http3Profile h3;
   const DefaultHeader *default_headers;
   U8 default_header_count;
+  const char *const *fetch_order;
+  U8 fetch_order_count;
 };
 
 const Profile *profile_chrome148(void);

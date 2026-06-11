@@ -152,10 +152,51 @@ internal void test_client_api(void) {
   loop_shutdown(&loop);
 }
 
+// The profile's fetch_order reshapes a navigation-ordered XHR header set into
+// Chrome's distinct fetch order (content-length first, client-hint block
+// reordered, origin after accept, referer after sec-fetch-dest).
+internal void test_fetch_order(Arena *a) {
+  const Profile *p = profile_chrome149();
+  CHECK(p->fetch_order_count > 0);  // Chrome profiles define a fetch order
+
+  HeaderList l;
+  header_list_init(&l, a);
+  push(&l, "sec-ch-ua", "x");
+  push(&l, "sec-ch-ua-mobile", "?0");
+  push(&l, "sec-ch-ua-platform", "\"Windows\"");
+  push(&l, "user-agent", "ua");
+  push(&l, "accept", "*/*");
+  push(&l, "sec-fetch-site", "same-origin");
+  push(&l, "sec-fetch-mode", "cors");
+  push(&l, "sec-fetch-dest", "empty");
+  push(&l, "accept-encoding", "gzip");
+  push(&l, "accept-language", "en");
+  push(&l, "cookie", "a=1");
+  push(&l, "priority", "u=1, i");
+  push(&l, "origin", "https://a.com");
+  push(&l, "referer", "https://a.com/p");
+  push(&l, "content-length", "0");
+
+  String8 order[32];
+  for (U8 i = 0; i < p->fetch_order_count; ++i)
+    order[i] = str8_cstring(p->fetch_order[i]);
+  reorder_headers(a, &l, order, p->fetch_order_count);
+
+  CHECK(order_is(&l,
+                 (const char *[]){"content-length", "sec-ch-ua-platform",
+                                  "user-agent", "sec-ch-ua", "sec-ch-ua-mobile",
+                                  "accept", "origin", "sec-fetch-site",
+                                  "sec-fetch-mode", "sec-fetch-dest", "referer",
+                                  "accept-encoding", "accept-language", "cookie",
+                                  "priority"},
+                 15));
+}
+
 int main(void) {
   Arena *a = arena_alloc();
   test_reorder(a);
   test_override_defaults(a);
+  test_fetch_order(a);
   test_client_api();
   arena_release(a);
   fprintf(stderr, "[header_order_test] %d checks, %d failures\n", g_checks,

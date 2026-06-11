@@ -67,6 +67,8 @@ global const Profile k_template = {
     },
     0,
     0,
+    0 /*fetch_order*/,
+    0 /*fetch_order_count*/,
 };
 
 //- Chrome 148 shared TLS lists ----------------------------------------------
@@ -124,6 +126,21 @@ global const DefaultHeader k_chrome148_headers[] = {
 };
 #define K_CHROME148_HEADER_COUNT ArrayCount(k_chrome148_headers)
 
+// Chrome's header order for fetch/XHR (non-navigation) requests. Differs from the
+// navigation order above: the client-hint block is reordered (platform, UA, ua,
+// mobile), content-length leads, origin sits after accept and referer after
+// sec-fetch-dest, and Upgrade-Insecure-Requests / Sec-Fetch-User are absent.
+// Shared by all Chrome profiles (stable across versions). reorder_headers applies
+// it to non-navigate requests; names not present in a given request are skipped.
+global const char *const k_chrome_fetch_order[] = {
+    "content-length",  "sec-ch-ua-platform", "user-agent",
+    "sec-ch-ua",       "sec-ch-ua-mobile",   "accept",
+    "origin",          "sec-fetch-site",     "sec-fetch-mode",
+    "sec-fetch-dest",  "referer",            "accept-encoding",
+    "accept-language", "cookie",             "priority",
+};
+#define K_CHROME_FETCH_ORDER_COUNT ArrayCount(k_chrome_fetch_order)
+
 global const QuicProfile k_chrome148_h3 = {
     "chrome148-h3",
     148,
@@ -142,6 +159,8 @@ global const QuicProfile k_chrome148_h3 = {
     },
     k_chrome148_headers,
     K_CHROME148_HEADER_COUNT,
+    k_chrome_fetch_order,
+    K_CHROME_FETCH_ORDER_COUNT,
 };
 
 //- Chrome 148 HTTP/2 (TCP) --------------------------------------------------
@@ -188,6 +207,8 @@ global const Profile k_chrome148 = {
     },
     k_chrome148_headers,
     K_CHROME148_HEADER_COUNT,
+    k_chrome_fetch_order,
+    K_CHROME_FETCH_ORDER_COUNT,
 };
 
 //- Chrome 149 -------------------------------------------------------------
@@ -248,6 +269,8 @@ global const QuicProfile k_chrome149_h3 = {
     },
     k_chrome149_headers,
     K_CHROME149_HEADER_COUNT,
+    k_chrome_fetch_order,
+    K_CHROME_FETCH_ORDER_COUNT,
 };
 
 // TCP/H2 — identical TLS+H2 tables to chrome148, only the headers differ.
@@ -268,6 +291,8 @@ global const Profile k_chrome149 = {
     },
     k_chrome149_headers,
     K_CHROME149_HEADER_COUNT,
+    k_chrome_fetch_order,
+    K_CHROME_FETCH_ORDER_COUNT,
 };
 
 const Profile *profile_template(void) { return &k_template; }
