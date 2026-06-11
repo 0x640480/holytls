@@ -1,15 +1,27 @@
 cmake_minimum_required(VERSION 3.20)
 project(holytls LANGUAGES C CXX)  # CXX only for building BoringSSL (a dep)
 
+# Top-level vs pulled in via add_subdirectory/FetchContent. As a subproject we
+# build only the library (no tests/examples) and don't force global settings
+# (CMAKE_BUILD_TYPE / FETCHCONTENT_QUIET / cache BUILD_*) onto the parent build.
+if(NOT DEFINED PROJECT_IS_TOP_LEVEL)  # the built-in is CMake >= 3.21
+  set(PROJECT_IS_TOP_LEVEL OFF)
+  if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
+    set(PROJECT_IS_TOP_LEVEL ON)
+  endif()
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
 option(HOLYTLS_ASAN "Build with Address/UB sanitizers" OFF)
 option(HOLYTLS_ARENA_STATS "Compile in arena allocation counters (for benchmarks)" OFF)
+option(HOLYTLS_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
+option(HOLYTLS_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 
 set(HOLYTLS_WARN -Wall -Wextra -Wpedantic -Wshadow)
 
@@ -21,10 +33,16 @@ set(HOLYTLS_WARN -Wall -Wextra -Wpedantic -Wshadow)
 #   BoringSSL: TLS (ClientHello impersonation) — needs Go + perl to build
 # ---------------------------------------------------------------------------
 include(FetchContent)
-set(FETCHCONTENT_QUIET OFF)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# Build the deps static. As a subproject, use a NORMAL var (scopes to holytls +
+# its FetchContent deps) so we don't clobber a parent build's cached settings.
+set(BUILD_SHARED_LIBS OFF)
+if(PROJECT_IS_TOP_LEVEL)
+  set(FETCHCONTENT_QUIET OFF)
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)  # keep the deps' tests out of our build
+else()
+  set(BUILD_TESTING OFF)
+endif()
 # nghttp2/ngtcp2/nghttp3 each define a `check` custom target — allow the dupes.
 set_property(GLOBAL PROPERTY ALLOW_DUPLICATE_CUSTOM_TARGETS TRUE)
 
@@ -193,8 +211,6 @@ if(HOLYTLS_ARENA_STATS)
   target_compile_definitions(holytls PUBLIC HOLYTLS_ARENA_STATS)
 endif()
 
-enable_testing()
-
 # Extra ${ARGN} sources are added to the test executable (e.g. a shared helper
 # like tests/support/loopback_server.c). The tests/ dir is on the include path so
 # such helpers resolve as "support/...".
@@ -214,6 +230,8 @@ function(holytls_test_defer name)
   target_compile_options(${name} PRIVATE -Wno-pedantic)
 endfunction()
 
+if(HOLYTLS_BUILD_TESTS)
+enable_testing()
 holytls_test(base_test)
 holytls_test(base64_test)
 holytls_test(str8_test)
@@ -269,7 +287,12 @@ holytls_test(proxy_loopback_test tests/support/loopback_server.c)
 holytls_test(proxy_switch_test  tests/support/loopback_server.c)
 holytls_test(proxy_live_test)
 holytls_test_defer(defer_test)
+holytls_test(h1_test)
+holytls_test_defer(h1_live_test)
+holytls_test(json_test)
+endif()  # HOLYTLS_BUILD_TESTS
 
+if(HOLYTLS_BUILD_EXAMPLES)
 # Example: the holytls equivalent of the bogdanfinn/tls-client (Go) GET example.
 add_executable(peet_compare examples/peet_compare.c)
 target_link_libraries(peet_compare PRIVATE holytls)
@@ -286,7 +309,4 @@ target_compile_options(google_fidelity PRIVATE ${HOLYTLS_WARN})
 add_executable(powhttp_proxy examples/powhttp_proxy.c)
 target_link_libraries(powhttp_proxy PRIVATE holytls)
 target_compile_options(powhttp_proxy PRIVATE ${HOLYTLS_WARN})
-
-holytls_test(h1_test)
-holytls_test_defer(h1_live_test)
-holytls_test(json_test)
+endif()  # HOLYTLS_BUILD_EXAMPLES
