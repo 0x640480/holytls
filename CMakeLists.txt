@@ -195,9 +195,13 @@ endif()
 
 enable_testing()
 
+# Extra ${ARGN} sources are added to the test executable (e.g. a shared helper
+# like tests/support/loopback_server.c). The tests/ dir is on the include path so
+# such helpers resolve as "support/...".
 function(holytls_test name)
-  add_executable(${name} tests/${name}.c)
+  add_executable(${name} tests/${name}.c ${ARGN})
   target_link_libraries(${name} PRIVATE holytls)
+  target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
   target_compile_options(${name} PRIVATE ${HOLYTLS_WARN})
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
@@ -206,7 +210,7 @@ endfunction()
 # GCC path uses nested functions (a GNU extension), so relax -Wpedantic for that
 # one TU (the appended flag wins over HOLYTLS_WARN's -Wpedantic).
 function(holytls_test_defer name)
-  holytls_test(${name})
+  holytls_test(${name} ${ARGN})
   target_compile_options(${name} PRIVATE -Wno-pedantic)
 endfunction()
 
@@ -258,9 +262,11 @@ holytls_test(http_version_test)
 holytls_test_defer(http_version_live_test)
 holytls_test(proxy_test)
 holytls_test(response_test)
-holytls_test(timeout_test)
-holytls_test(proxy_loopback_test)
-holytls_test(proxy_switch_test)
+# Offline tests sharing the in-process loopback origin (tests/support).
+holytls_test(request_test       tests/support/loopback_server.c)
+holytls_test(timeout_test       tests/support/loopback_server.c)
+holytls_test(proxy_loopback_test tests/support/loopback_server.c)
+holytls_test(proxy_switch_test  tests/support/loopback_server.c)
 holytls_test(proxy_live_test)
 holytls_test_defer(defer_test)
 
