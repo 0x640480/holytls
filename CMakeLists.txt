@@ -1,0 +1,286 @@
+cmake_minimum_required(VERSION 3.20)
+project(holytls LANGUAGES C CXX)  # CXX only for building BoringSSL (a dep)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+option(HOLYTLS_ASAN "Build with Address/UB sanitizers" OFF)
+option(HOLYTLS_ARENA_STATS "Compile in arena allocation counters (for benchmarks)" OFF)
+
+set(HOLYTLS_WARN -Wall -Wextra -Wpedantic -Wshadow)
+
+# ---------------------------------------------------------------------------
+# Dependencies (fetched at configure time, built static, linked in).
+#   libuv    : event loop / non-blocking sockets
+#   nghttp2  : HTTP/2 framing
+#   ngtcp2   : QUIC transport      nghttp3 : HTTP/3 framing + QPACK
+#   BoringSSL: TLS (ClientHello impersonation) — needs Go + perl to build
+# ---------------------------------------------------------------------------
+include(FetchContent)
+set(FETCHCONTENT_QUIET OFF)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# nghttp2/ngtcp2/nghttp3 each define a `check` custom target — allow the dupes.
+set_property(GLOBAL PROPERTY ALLOW_DUPLICATE_CUSTOM_TARGETS TRUE)
+
+set(LIBUV_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LIBUV_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(libuv
+  GIT_REPOSITORY https://github.com/libuv/libuv.git GIT_TAG v1.52.1 GIT_SHALLOW TRUE)
+
+set(ENABLE_LIB_ONLY ON CACHE BOOL "" FORCE)
+set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+set(ENABLE_DOC OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(nghttp2
+  GIT_REPOSITORY https://github.com/nghttp2/nghttp2.git GIT_TAG v1.69.0 GIT_SHALLOW TRUE)
+
+# ngtcp2 (QUIC) + nghttp3 (HTTP/3) — core libs only, TLS-agnostic. ngtcp2's own
+# BoringSSL crypto helper is compiled by us below (its CMake detection link-tests
+# against not-yet-built FetchContent libs).
+set(ENABLE_STATIC_LIB ON CACHE BOOL "" FORCE)
+set(ENABLE_SHARED_LIB OFF CACHE BOOL "" FORCE)
+set(ENABLE_OPENSSL OFF CACHE BOOL "" FORCE)
+set(ENABLE_BORINGSSL OFF CACHE BOOL "" FORCE)
+set(ENABLE_GNUTLS OFF CACHE BOOL "" FORCE)
+set(ENABLE_WOLFSSL OFF CACHE BOOL "" FORCE)
+set(ENABLE_PICOTLS OFF CACHE BOOL "" FORCE)
+set(ENABLE_OSSL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(ngtcp2
+  GIT_REPOSITORY https://github.com/ngtcp2/ngtcp2.git GIT_TAG v1.23.0 GIT_SHALLOW TRUE)
+FetchContent_Declare(nghttp3
+  GIT_REPOSITORY https://github.com/ngtcp2/nghttp3.git GIT_TAG v1.9.0 GIT_SHALLOW TRUE)
+
+# picohttpparser (HTTP/1.1 response parsing) — a 2-file MIT/Perl lib that ships no
+# CMake of its own; MakeAvailable only populates its source dir.
+FetchContent_Declare(picohttpparser
+  GIT_REPOSITORY https://github.com/h2o/picohttpparser.git
+  GIT_TAG f4d94b48b31e0abae029ebeafcfd9ca0680ede58 GIT_SHALLOW TRUE)
+
+# yyjson (the project-wide JSON library) — single src/yyjson.c + .h, MIT.
+FetchContent_Declare(yyjson
+  GIT_REPOSITORY https://github.com/ibireme/yyjson.git
+  GIT_TAG 0.12.0 GIT_SHALLOW TRUE)
+
+# BoringSSL — lexiforest fork (default) for exact JA4 parity. Needs Go + perl.
+option(HOLYTLS_BORINGSSL_FORK "Use the lexiforest/boringssl impersonation fork" ON)
+if(HOLYTLS_BORINGSSL_FORK)
+  FetchContent_Declare(boringssl
+    GIT_REPOSITORY https://github.com/lexiforest/boringssl.git
+    GIT_TAG 77dc0ca663ad0bdc6fd5006cbd398bc27d0af4ab GIT_SHALLOW TRUE)
+else()
+  FetchContent_Declare(boringssl
+    GIT_REPOSITORY https://github.com/google/boringssl.git
+    GIT_TAG 0.20251124.0 GIT_SHALLOW TRUE)
+endif()
+
+# yyjson ships its own CMake: MakeAvailable creates a static `yyjson` target (built
+# with yyjson's own flags, separate from our strict warnings) + propagates its include.
+FetchContent_MakeAvailable(libuv nghttp2 boringssl ngtcp2 nghttp3 picohttpparser
+  yyjson)
+
+# picohttpparser as a separate static lib with relaxed warnings (its SSE/code
+# trips -Wpedantic/-Wshadow); the unity TU keeps full warnings.
+add_library(picohttpparser STATIC ${picohttpparser_SOURCE_DIR}/picohttpparser.c)
+target_include_directories(picohttpparser PUBLIC ${picohttpparser_SOURCE_DIR})
+target_compile_options(picohttpparser PRIVATE -Wall -Wextra)
+
+add_library(holytls_deps INTERFACE)
+if(TARGET uv_a)
+  target_link_libraries(holytls_deps INTERFACE uv_a)
+else()
+  target_link_libraries(holytls_deps INTERFACE uv)
+endif()
+if(TARGET nghttp2_static)
+  target_link_libraries(holytls_deps INTERFACE nghttp2_static)
+else()
+  target_link_libraries(holytls_deps INTERFACE nghttp2)
+endif()
+target_include_directories(holytls_deps INTERFACE
+  ${nghttp2_SOURCE_DIR}/lib/includes ${nghttp2_BINARY_DIR}/lib/includes)
+
+# BoringSSL: ssl + crypto (linking propagates the include dir).
+target_link_libraries(holytls_deps INTERFACE ssl crypto)
+target_include_directories(holytls_deps INTERFACE ${boringssl_SOURCE_DIR}/include)
+if(HOLYTLS_BORINGSSL_FORK)
+  target_compile_definitions(holytls_deps INTERFACE HOLYTLS_TLS_FORK)
+endif()
+
+# ngtcp2 core (QUIC transport).
+if(TARGET ngtcp2_static)
+  target_link_libraries(holytls_deps INTERFACE ngtcp2_static)
+else()
+  target_link_libraries(holytls_deps INTERFACE ngtcp2)
+endif()
+target_include_directories(holytls_deps INTERFACE
+  ${ngtcp2_SOURCE_DIR}/lib/includes ${ngtcp2_BINARY_DIR}/lib/includes)
+
+# nghttp3 (HTTP/3 framing + standalone QPACK).
+if(TARGET nghttp3_static)
+  target_link_libraries(holytls_deps INTERFACE nghttp3_static)
+else()
+  target_link_libraries(holytls_deps INTERFACE nghttp3)
+endif()
+target_include_directories(holytls_deps INTERFACE
+  ${nghttp3_SOURCE_DIR}/lib/includes ${nghttp3_BINARY_DIR}/lib/includes)
+
+# ngtcp2 BoringSSL crypto helper — compiled here (not via ngtcp2's CMake, whose
+# BoringSSL detection link-tests against not-yet-built FetchContent libs). The
+# fork's classic SSL_QUIC_METHOD matches ngtcp2's boringssl.c.
+add_library(ngtcp2_crypto_boringssl STATIC
+  ${ngtcp2_SOURCE_DIR}/crypto/boringssl/boringssl.c
+  ${ngtcp2_SOURCE_DIR}/crypto/shared.c)
+target_include_directories(ngtcp2_crypto_boringssl PUBLIC
+  ${ngtcp2_SOURCE_DIR}/lib/includes ${ngtcp2_BINARY_DIR}/lib/includes
+  ${ngtcp2_SOURCE_DIR}/lib ${ngtcp2_SOURCE_DIR}/crypto/includes
+  ${ngtcp2_SOURCE_DIR}/crypto ${boringssl_SOURCE_DIR}/include)
+target_compile_definitions(ngtcp2_crypto_boringssl PUBLIC NGTCP2_STATICLIB)
+target_link_libraries(ngtcp2_crypto_boringssl PUBLIC ssl crypto)
+target_link_libraries(holytls_deps INTERFACE ngtcp2_crypto_boringssl)
+target_link_libraries(holytls_deps INTERFACE picohttpparser)
+target_link_libraries(holytls_deps INTERFACE yyjson)
+
+# Certificate-compression codecs (zlib required; brotli/zstd if present).
+function(holytls_find_codec out_var)
+  find_library(${out_var} NAMES ${ARGN})
+  if(NOT ${out_var})
+    foreach(n ${ARGN})
+      file(GLOB _hits /usr/lib/*/lib${n}.so* /usr/lib/lib${n}.so* /lib/*/lib${n}.so*)
+      if(_hits)
+        list(GET _hits 0 _first)
+        set(${out_var} ${_first} CACHE FILEPATH "" FORCE)
+        break()
+      endif()
+    endforeach()
+  endif()
+endfunction()
+holytls_find_codec(HOLYTLS_ZLIB z)
+holytls_find_codec(HOLYTLS_BROTLIDEC brotlidec)
+holytls_find_codec(HOLYTLS_ZSTD zstd)
+if(HOLYTLS_ZLIB)
+  target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_ZLIB)
+  target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_ZLIB})
+endif()
+if(HOLYTLS_BROTLIDEC)
+  target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_BROTLI)
+  target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_BROTLIDEC})
+endif()
+if(HOLYTLS_ZSTD)
+  target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_ZSTD)
+  target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_ZSTD})
+endif()
+
+# ---------------------------------------------------------------------------
+# The unity library: one TU (src/holytls.c) that #includes every subsystem .c.
+# ---------------------------------------------------------------------------
+add_library(holytls STATIC src/holytls.c)
+target_include_directories(holytls PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(holytls PUBLIC holytls_deps)
+target_compile_options(holytls PRIVATE ${HOLYTLS_WARN})
+
+if(HOLYTLS_ASAN)
+  target_compile_options(holytls PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(holytls PUBLIC -fsanitize=address,undefined)
+endif()
+
+# Arena allocation counters — PUBLIC so targets linking holytls (the benchmark)
+# also see the define for arena_stats(). Off by default = zero hot-path overhead.
+if(HOLYTLS_ARENA_STATS)
+  target_compile_definitions(holytls PUBLIC HOLYTLS_ARENA_STATS)
+endif()
+
+enable_testing()
+
+function(holytls_test name)
+  add_executable(${name} tests/${name}.c)
+  target_link_libraries(${name} PRIVATE holytls)
+  target_compile_options(${name} PRIVATE ${HOLYTLS_WARN})
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+# Like holytls_test, but for tests that use the `defer` macro (base/defer.h): the
+# GCC path uses nested functions (a GNU extension), so relax -Wpedantic for that
+# one TU (the appended flag wins over HOLYTLS_WARN's -Wpedantic).
+function(holytls_test_defer name)
+  holytls_test(${name})
+  target_compile_options(${name} PRIVATE -Wno-pedantic)
+endfunction()
+
+holytls_test(base_test)
+holytls_test(base64_test)
+holytls_test(str8_test)
+holytls_test(ring_alloc_test)
+holytls_test(pool_test)
+holytls_test(cookie_test)
+holytls_test(psl_test)
+holytls_test(sec_ch_ua_test)
+holytls_test(manager_test)
+holytls_test(ech_test)
+holytls_test(sec_fetch_test)
+holytls_test(loop_test)
+holytls_test(h2_test)
+holytls_test(ja4_test)
+holytls_test(conn_test)
+holytls_test(h3_control_test)
+holytls_test(fingerprint_h3_test)
+holytls_test(core_test)
+holytls_test_defer(client_live_test)
+holytls_test_defer(altsvc_live_test)
+holytls_test_defer(top_sites_live_test)
+holytls_test_defer(trackme_local_test)
+holytls_test(header_order_test)
+holytls_test_defer(header_order_live_test)
+holytls_test_defer(redirect_live_test)
+holytls_test_defer(pool_live_test)
+holytls_test_defer(session_live_test)
+holytls_test_defer(ech_live_test)
+holytls_test_defer(sec_fetch_live_test)
+holytls_test_defer(resumption_live_test)
+holytls_test(zero_rtt_live_test)
+holytls_test_defer(zero_rtt_h3_live_test)
+holytls_test(session_serial_test)
+holytls_test_defer(session_persist_live_test)
+holytls_test_defer(key_log_test)
+holytls_test(key_log_live_test)
+holytls_test(cert_pin_test)
+holytls_test_defer(cert_pin_live_test)
+holytls_test(hook_test)
+holytls_test_defer(hook_live_test)
+holytls_test(timing_test)
+holytls_test_defer(timing_live_test)
+holytls_test(dns_cache_test)
+holytls_test_defer(dns_cache_live_test)
+holytls_test(http_version_test)
+holytls_test_defer(http_version_live_test)
+holytls_test(proxy_test)
+holytls_test(response_test)
+holytls_test(timeout_test)
+holytls_test(proxy_loopback_test)
+holytls_test(proxy_switch_test)
+holytls_test(proxy_live_test)
+holytls_test_defer(defer_test)
+
+# Example: the holytls equivalent of the bogdanfinn/tls-client (Go) GET example.
+add_executable(peet_compare examples/peet_compare.c)
+target_link_libraries(peet_compare PRIVATE holytls)
+target_compile_options(peet_compare PRIVATE ${HOLYTLS_WARN})
+
+# Example: fetch google.com with the highest-fidelity Chrome configuration
+# (dual H2/H3, ECH, resumption, 0-RTT, cookies).
+add_executable(google_fidelity examples/google_fidelity.c)
+target_link_libraries(google_fidelity PRIVATE holytls)
+target_compile_options(google_fidelity PRIVATE ${HOLYTLS_WARN})
+
+# Example: route requests through powhttp (MITM proxy) for wire-truth inspection,
+# trusting its root CA (client_add_ca_file) + client_set_proxy.
+add_executable(powhttp_proxy examples/powhttp_proxy.c)
+target_link_libraries(powhttp_proxy PRIVATE holytls)
+target_compile_options(powhttp_proxy PRIVATE ${HOLYTLS_WARN})
+
+holytls_test(h1_test)
+holytls_test_defer(h1_live_test)
+holytls_test(json_test)

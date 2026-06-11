@@ -1,0 +1,18 @@
+/build/
+/build-*/
+*.o
+*.a
+*.so
+compile_commands.json
+.cache/
+*.keylog
+NOTES.md
+*.local.*
+.env
+*.pem
+*.key
+.vscode/
+.claude/
+
+# Local proxy credentials (sensitive — never commit)
+proxies.txt

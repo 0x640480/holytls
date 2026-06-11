@@ -1,0 +1,1610 @@
+#include "core/client.h"
+
+#include <uv.h>
+
+#include "core/alt_svc.h"
+#include "core/decompress.h"
+#include "core/ech.h"
+#include "core/header_order.h"
+#include "core/json.h"
+#include "core/pool.h"
+#include "core/url.h"
+#include "h1/h1.h"
+#include "h2/h2.h"
+#include "h3/h3_session.h"
+#include "net/connection.h"
+#include "net/quic_connection.h"
+#include "tls/cert_pin.h"
+#include "tls/keylog.h"
+
+// Chrome's default Accept-Encoding (added when the caller didn't set one, so the
+// response is decoded transparently and the request stays Chrome-coherent).
+#define DEFAULT_ACCEPT_ENCODING "gzip, deflate, br, zstd"
+
+// ALPN wire (RFC 7301: length-prefixed) advertising only HTTP/1.1, used when the
+// caller forces HttpVersion_H1 so the server cannot negotiate h2.
+global const U8 k_alpn_http11[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+
+internal String8 method_str(Method m) {
+  switch (m) {
+    case Method_GET:
+      return str8_lit("GET");
+    case Method_POST:
+      return str8_lit("POST");
+    case Method_PUT:
+      return str8_lit("PUT");
+    case Method_DELETE:
+      return str8_lit("DELETE");
+    case Method_HEAD:
+      return str8_lit("HEAD");
+    case Method_PATCH:
+      return str8_lit("PATCH");
+    case Method_OPTIONS:
+      return str8_lit("OPTIONS");
+  }
+  return str8_lit("GET");
+}
+
+internal String8 origin_of(Arena *a, ParsedUrl pu) {
+  return push_str8f(a, "%.*s:%u", (int)pu.host.size, pu.host.str, pu.port);
+}
+
+// ---------------------------------------------------------------------------
+// TLS 1.3 session resumption (opt-in ticket cache; client_set_resumption_enabled)
+// ---------------------------------------------------------------------------
+// Per-connection context stashed at SSL ex_data so the single SSL_CTX-level
+// new-session callback can route a freshly issued ticket to its origin. Lives in
+// the connection's arena; the callback only fires while the connection is
+// processing received handshake records, so the pointer is always valid then.
+typedef struct ResumeCtx ResumeCtx;
+struct ResumeCtx {
+  Client *client;
+  String8 origin;  // copied into the connection arena
+};
+
+// Re-entrancy guard: a response callback may issue new requests on this
+// client, but must NOT call client_cleanup — on return, the delivery path
+// still touches state cleanup frees (pool, contexts, caches). Tracked as a
+// depth counter around every user-callback invocation; client_cleanup asserts
+// it is zero in debug builds.
+internal void client_cb_enter(Client *c) { c->in_callback += 1; }
+internal void client_cb_exit(Client *c) { c->in_callback -= 1; }
+
+internal SSL_SESSION *resume_cache_get(Client *c, String8 origin) {
+  for (int i = 0; i < c->resume_cache_count; ++i)
+    if (str8_match(origin, str8_cstring(c->resume_cache[i].origin))) {
+      c->resume_cache[i].last_used_ms = uv_now(loop_uv(c->loop));
+      return c->resume_cache[i].session;
+    }
+  return 0;
+}
+
+// Find the entry for `origin`, or claim one: a fresh slot while the cache has
+// room, else the least-recently-used entry is evicted (its ticket freed) and
+// recycled. A new origin always gets a slot — a full cache degrades to LRU
+// instead of silently refusing resumption for every origin past capacity.
+internal ResumeCacheEntry *resume_cache_slot(Client *c, String8 origin) {
+  ResumeCacheEntry *e = 0;
+  for (int i = 0; i < c->resume_cache_count; ++i)
+    if (str8_match(origin, str8_cstring(c->resume_cache[i].origin))) {
+      e = &c->resume_cache[i];
+      break;
+    }
+  if (!e) {
+    if (c->resume_cache_count < (int)ArrayCount(c->resume_cache)) {
+      e = &c->resume_cache[c->resume_cache_count++];
+    } else {
+      e = &c->resume_cache[0];
+      for (int i = 1; i < c->resume_cache_count; ++i)
+        if (c->resume_cache[i].last_used_ms < e->last_used_ms)
+          e = &c->resume_cache[i];
+      if (e->session) SSL_SESSION_free(e->session);
+      MemoryZeroStruct(e);
+    }
+    U64 n = origin.size < sizeof e->origin - 1 ? origin.size : sizeof e->origin - 1;
+    MemoryCopy(e->origin, origin.str, n);
+    e->origin[n] = 0;
+  }
+  e->last_used_ms = uv_now(loop_uv(c->loop));
+  return e;
+}
+
+// Store the most recent ticket for `origin`, taking ownership of `session` (the
+// callback returned 1). Replaces (and frees) any prior ticket for the origin.
+internal void resume_cache_put(Client *c, String8 origin, SSL_SESSION *session) {
+  ResumeCacheEntry *e = resume_cache_slot(c, origin);
+  if (e->session) SSL_SESSION_free(e->session);  // supersede the older ticket
+  e->session = session;
+}
+
+// After a 0-RTT rejection, replace the origin's cached session with an
+// early-data-stripped copy so subsequent connections still resume (1-RTT) but no
+// longer re-attempt 0-RTT (which the server just refused). Also drops any cached
+// QUIC 0-RTT transport params for the origin (so the H3 gate fails too).
+internal void resume_cache_strip_early(Client *c, String8 origin) {
+  for (int i = 0; i < c->resume_cache_count; ++i)
+    if (str8_match(origin, str8_cstring(c->resume_cache[i].origin))) {
+      ResumeCacheEntry *e = &c->resume_cache[i];
+      if (e->session) {
+        SSL_SESSION *stripped = SSL_SESSION_copy_without_early_data(e->session);
+        // On copy failure (OOM) keep the original 1-RTT-resumable ticket rather
+        // than dropping it; the next 0-RTT attempt simply re-strips, harmlessly.
+        if (stripped) {
+          SSL_SESSION_free(e->session);
+          e->session = stripped;
+        }
+      }
+      e->zrtt_tp_len = 0;
+      return;
+    }
+}
+
+// Cache the QUIC 0-RTT transport params for `origin` (paired with the ticket so a
+// future connection can offer 0-RTT). Updates an existing entry or appends one.
+internal void resume_cache_put_tp(Client *c, String8 origin, const U8 *tp,
+                                  U64 tp_len) {
+  // Transport params are only useful PAIRED with a ticket: when the cache is
+  // full and this origin has no entry, drop the tp rather than letting
+  // resume_cache_slot evict another origin's usable ticket for an orphan tp.
+  if (c->resume_cache_count >= (int)ArrayCount(c->resume_cache)) {
+    B32 found = 0;
+    for (int i = 0; i < c->resume_cache_count; ++i)
+      if (str8_match(origin, str8_cstring(c->resume_cache[i].origin))) {
+        found = 1;
+        break;
+      }
+    if (!found) return;
+  }
+  ResumeCacheEntry *e = resume_cache_slot(c, origin);
+  U64 n = tp_len < sizeof e->zrtt_tp ? tp_len : sizeof e->zrtt_tp;
+  if (n) MemoryCopy(e->zrtt_tp, tp, n);
+  e->zrtt_tp_len = n;
+}
+
+// Fetch the cached QUIC 0-RTT transport params for `origin` (0 if none).
+internal const U8 *resume_cache_tp(Client *c, String8 origin, U64 *out_len) {
+  *out_len = 0;
+  for (int i = 0; i < c->resume_cache_count; ++i)
+    if (str8_match(origin, str8_cstring(c->resume_cache[i].origin)) &&
+        c->resume_cache[i].zrtt_tp_len) {
+      *out_len = c->resume_cache[i].zrtt_tp_len;
+      return c->resume_cache[i].zrtt_tp;
+    }
+  return 0;
+}
+
+// SSL_CTX new-session callback: cache the ticket against its origin. Returning 1
+// takes ownership of the reference (we free it on replacement / client_cleanup).
+internal int client_resume_new_cb(SSL *ssl, SSL_SESSION *session) {
+  ResumeCtx *rc = (ResumeCtx *)SSL_get_ex_data(ssl, ssl_resume_ex_index());
+  if (!rc || !rc->client) return 0;  // not ours -> library frees it
+  resume_cache_put(rc->client, rc->origin, session);
+  return 1;
+}
+
+// Build the per-connection resume context (origin copied into `a`).
+internal void *client_resume_ctx_make(Client *c, Arena *a, String8 origin) {
+  ResumeCtx *rc = push_struct(a, ResumeCtx);
+  rc->client = c;
+  rc->origin = push_str8_copy(a, origin);
+  return rc;
+}
+
+internal void client_note_alt_svc(Client *c, String8 origin, String8 value);
+internal EchConfigEntry *ech_cache_get(Client *c, String8 origin);
+internal void client_dispatch_inner(Client *c, Method m, String8 url,
+                                    const Header *headers, U64 header_count,
+                                    const U8 *body, U64 body_len, ResponseFn cb,
+                                    void *user, U64 deadline_ns);
+
+// Build the ordered request headers (+ default accept-encoding / content-length)
+// for a request into `out` (initialised on `arena`). Returns the arena-dup'd
+// body view.
+internal String8 build_request_headers(Arena *arena,
+                                       const DefaultHeader *defaults,
+                                       U64 default_count, const Header *caller,
+                                       U64 caller_count, const U8 *body,
+                                       U64 body_len, B32 override_defaults,
+                                       HeaderList *out) {
+  header_list_init(out, arena);
+  // Override-default-headers mode: drop the profile's browser headers entirely —
+  // build_ordered_headers with zero defaults emits only the caller's headers, in
+  // their array order — and skip the Accept-Encoding default. Content-Length is
+  // still added below (framing correctness). client_set_header_order, if set,
+  // still reorders at the call site (this is the SET; the order override is the
+  // ORDER).
+  build_ordered_headers(arena, override_defaults ? 0 : defaults,
+                        override_defaults ? 0 : default_count, caller,
+                        caller_count, out);
+  if (!override_defaults &&
+      !header_list_has_ci(out, str8_lit("accept-encoding")))
+    header_list_push(out, str8_lit("accept-encoding"),
+                     str8_lit(DEFAULT_ACCEPT_ENCODING), 0);
+  String8 b = str8_zero();
+  if (body_len) {
+    b = push_str8_copy(arena, str8((U8 *)body, body_len));
+    if (!header_list_has_ci(out, str8_lit("content-length")))
+      header_list_push(out, str8_lit("content-length"),
+                       str8_from_u64(arena, body_len, 10, 0), 0);
+  }
+  return b;
+}
+
+// --- request/response hooks (opt-in middleware) ----------------------------
+internal B32 name_ci_prefix(String8 n, String8 p) {
+  return n.size >= p.size && str8_match_ci(str8_prefix(n, p.size), p);
+}
+// Headers the profile owns (fingerprint-defining): a hook may not change them.
+internal B32 hook_header_protected(String8 n) {
+  return str8_match_ci(n, str8_lit("user-agent")) ||
+         str8_match_ci(n, str8_lit("accept-encoding")) ||
+         name_ci_prefix(n, str8_lit("sec-fetch-")) ||
+         name_ci_prefix(n, str8_lit("sec-ch-ua"));
+}
+B32 hook_request_set_header(HookRequest *req, String8 name, String8 value) {
+  if (!req || !req->headers || hook_header_protected(name)) return 0;
+  String8 *existing = header_list_get_ci(req->headers, name);
+  if (existing) {
+    *existing = push_str8_copy(req->headers->arena, value);  // override in place
+    return 1;
+  }
+  header_list_push(req->headers, push_str8_copy(req->headers->arena, name),
+                   push_str8_copy(req->headers->arena, value), 0);
+  return 1;
+}
+// Fired once per wire request, right after headers are finalized. Mutates the
+// already-arena-backed HeaderList in place (no copy). No-op when no hook is set.
+internal void client_run_pre_hook(Client *c, Method m, String8 url,
+                                  HeaderList *h) {
+  if (!c->pre_hook) return;
+  HookRequest req = {m, url, h};
+  client_cb_enter(c);  // hooks are user code: same no-cleanup contract as cbs
+  (void)c->pre_hook(&req, c->pre_hook_user);  // return value reserved
+  client_cb_exit(c);
+}
+// Fired once per wire response, on the live Response (no copy), just before the
+// caller callback. No-op when no hook is set.
+internal void client_run_post_hook(Client *c, Response *resp) {
+  if (!c || !c->post_hook) return;
+  client_cb_enter(c);  // hooks are user code: same no-cleanup contract as cbs
+  c->post_hook(resp, c->post_hook_user);
+  client_cb_exit(c);
+}
+
+// Resolve a header's HTTP/1.1 wire casing (mirrors wreq's original-case map): a
+// profile default's `wire_name`, a builtin for the managed names, else the name
+// as the caller passed it (already original-case).
+internal String8 h1_wire_name(const Profile *p, String8 name) {
+  for (U64 i = 0; i < p->default_header_count; ++i)
+    if (str8_match_ci(name, str8_cstring(p->default_headers[i].name))) {
+      const char *w = p->default_headers[i].wire_name;
+      return w ? str8_cstring(w) : name;
+    }
+  if (str8_match_ci(name, str8_lit("content-length")))
+    return str8_lit("Content-Length");
+  if (str8_match_ci(name, str8_lit("accept-encoding")))
+    return str8_lit("Accept-Encoding");
+  return name;
+}
+
+// Re-case the merged (lowercase-default) request headers to their HTTP/1.1 wire
+// spelling, preserving order, into `out`. h2/h3 keep using the lowercase list.
+internal void build_h1_headers(Arena *arena, const Profile *p, HeaderList *src,
+                               HeaderList *out) {
+  header_list_init(out, arena);
+  for (U64 i = 0; i < src->count; ++i)
+    header_list_push(out, h1_wire_name(p, src->v[i].name), src->v[i].value,
+                     src->v[i].flags);
+}
+
+// ---------------------------------------------------------------------------
+// H2 / TCP request
+// ---------------------------------------------------------------------------
+typedef struct H2Request H2Request;
+struct H2Request {
+  Arena *arena;
+  Client *client;
+  Connection conn;
+  H2Session *h2;  // one of h2/h1 is set after on_ready (decided by ALPN)
+  H1Session *h1;
+  ResponseFn cb;
+  void *user;
+  U64 t_start_ns;  // request start (uv_hrtime) for Response.timing.total_ms
+  String8 method, scheme, authority, path, origin, body, url, host;
+  U16 port;
+  HeaderList req_headers;
+  HeaderList resp_headers;  // filtered view when the body is decoded
+  B32 responded;
+  B32 closing;
+  B32 idempotent;        // GET/HEAD: eligible to be sent as 0-RTT early data
+  B32 submitted;         // the request was handed to the h2/h1 session
+  B32 retrying;          // closing in order to reconnect (0-RTT reject fallback)
+  B32 retried_no_early;  // already retried once without 0-RTT (one-shot guard)
+  ReqTimer *timeout;     // whole-operation deadline timer (0 = no timeout)
+};
+
+internal void h2req_deliver_error(H2Request *req, const char *err);
+internal void h2req_finish(H2Request *req);
+internal void tcp_deliver(H2Request *req, int status, HeaderList *headers,
+                          const U8 *body, U64 body_len, B32 ok, String8 alpn);
+internal void h1req_on_response(void *user, const H1Response *r);
+internal void build_h1_headers(Arena *arena, const Profile *p, HeaderList *src,
+                               HeaderList *out);
+
+internal void h2req_send(void *user, const U8 *data, U64 len) {
+  H2Request *req = (H2Request *)user;
+  conn_send_plaintext(&req->conn, data, len);
+}
+
+internal void h2req_drain(void *user) {
+  H2Request *req = (H2Request *)user;
+  if (req->closing) return;
+  U8 buf[16384];
+  for (;;) {
+    int n = conn_read_plaintext(&req->conn, buf, sizeof buf);
+    if (n <= 0) break;
+    S64 r;
+    if (req->h2)
+      r = h2_session_recv(req->h2, buf, (U64)n);
+    else if (req->h1)
+      r = h1_session_recv(req->h1, buf, (U64)n);
+    else
+      break;
+    if (r < 0) {
+      h2req_deliver_error(req, req->h2 ? "h2 protocol error" : "h1 parse error");
+      h2req_finish(req);
+      return;
+    }
+    if (req->closing) return;
+  }
+}
+
+// Transparently decode the response's Content-Encoding in place: on success the
+// body is replaced with the decoded bytes and the headers are rebuilt into
+// `scratch` without content-encoding/content-length (both describe the wire
+// form, not the decoded body). A decode failure (unknown coding, bomb cap,
+// corrupt stream) leaves the response as received. The one copy of this logic —
+// shared by the non-pooled H2/H1 + QUIC paths and (via the unity build) pool.c.
+internal void response_decode_encoding(Arena *arena, Response *resp,
+                                       HeaderList *scratch) {
+  String8 ce = str8_zero();
+  for (U64 i = 0; i < resp->header_count; ++i)
+    if (str8_match_ci(resp->headers[i].name, str8_lit("content-encoding"))) {
+      ce = resp->headers[i].value;
+      break;
+    }
+  String8 decoded;
+  if (!ce.size ||
+      !decode_content(arena, ce, resp->body, resp->body_len, &decoded))
+    return;
+  resp->body = decoded.str;
+  resp->body_len = decoded.size;
+  header_list_init(scratch, arena);
+  for (U64 i = 0; i < resp->header_count; ++i) {
+    const Header *h = &resp->headers[i];
+    if (!str8_match_ci(h->name, str8_lit("content-encoding")) &&
+        !str8_match_ci(h->name, str8_lit("content-length")))
+      header_list_push(scratch, h->name, h->value, h->flags);
+  }
+  resp->headers = scratch->v;
+  resp->header_count = scratch->count;
+}
+
+// Build the unified Response from a completed exchange (h2 or h1): record alt-svc,
+// transparently decode Content-Encoding (stripping the stale c-e/c-l headers),
+// deliver to the caller, finish. Shared by both transports.
+internal void tcp_deliver(H2Request *req, int status, HeaderList *headers,
+                          const U8 *body, U64 body_len, B32 ok, String8 alpn) {
+  if (req->responded) return;
+  req->responded = 1;
+  if (req->client && headers) {
+    String8 *as = header_list_get_ci(headers, str8_lit("alt-svc"));
+    if (as) client_note_alt_svc(req->client, req->origin, *as);
+  }
+  Response resp;
+  MemoryZeroStruct(&resp);
+  resp.ok = ok;
+  resp.status = status;
+  resp.headers = headers ? headers->v : 0;
+  resp.header_count = headers ? headers->count : 0;
+  resp.body = body;
+  resp.body_len = body_len;
+  resp.alpn = alpn;
+  resp.resumed = conn_resumed(&req->conn);
+  resp.early_data = conn_early_data_accepted(&req->conn);
+  resp.final_url = req->url;
+  conn_timing_ms(&req->conn, req->t_start_ns, &resp.timing.dns_ms,
+                 &resp.timing.tcp_ms, &resp.timing.tls_ms);
+  resp.timing.total_ms = (uv_hrtime() - req->t_start_ns) / 1000000;
+  response_decode_encoding(req->arena, &resp, &req->resp_headers);
+  client_run_post_hook(req->client, &resp);
+  client_cb_enter(req->client);
+  if (req->cb) req->cb(req->user, &resp);
+  client_cb_exit(req->client);
+  h2req_finish(req);
+}
+
+internal void h2req_on_response(void *user, const H2Response *r) {
+  H2Request *req = (H2Request *)user;
+  tcp_deliver(req, r->status, r->headers, r->body, r->body_len, r->ok,
+              str8_lit("h2"));
+}
+
+internal void h1req_on_response(void *user, const H1Response *r) {
+  H2Request *req = (H2Request *)user;
+  tcp_deliver(req, r->status, r->headers, r->body, r->body_len, r->ok,
+              str8_lit("http/1.1"));
+}
+
+// Allocate the protocol session (h2/h1 by ALPN) and submit the request. The same
+// path runs whether the bytes go out as 0-RTT early data (the early-ready window)
+// or after a completed handshake. Returns 1 on success; on failure it has already
+// delivered an error + finished the request.
+internal B32 h2req_send_request(H2Request *req) {
+  if (str8_match(conn_alpn(&req->conn), str8_lit("h2"))) {
+    req->h2 = h2_session_alloc(&req->client->profile->h2, h2req_send, req);
+    if (!req->h2 || !h2_session_start(req->h2)) {
+      h2req_deliver_error(req, "h2 session init failed");
+      h2req_finish(req);
+      return 0;
+    }
+    conn_on_readable(&req->conn, h2req_drain, req);
+    S32 sid = h2_session_submit_request(
+        req->h2, req->method, req->scheme, req->authority, req->path,
+        req->req_headers.v, req->req_headers.count, req->body.str,
+        req->body.size, h2req_on_response, req);
+    if (sid < 0) {
+      h2req_deliver_error(req, "submit failed");
+      h2req_finish(req);
+      return 0;
+    }
+  } else {
+    // http/1.1 (or empty ALPN -> assume HTTP/1.1).
+    HeaderList h1_headers;
+    build_h1_headers(req->arena, req->client->profile, &req->req_headers,
+                     &h1_headers);
+    req->h1 = h1_session_alloc(h2req_send, req);
+    if (!req->h1) {
+      h2req_deliver_error(req, "h1 session init failed");
+      h2req_finish(req);
+      return 0;
+    }
+    conn_on_readable(&req->conn, h2req_drain, req);
+    B32 is_head = str8_match(req->method, str8_lit("HEAD"));
+    if (h1_session_submit_request(req->h1, req->method, req->authority,
+                                  req->path, h1_headers.v, h1_headers.count,
+                                  req->body.str, req->body.size, is_head,
+                                  h1req_on_response, req) < 0) {
+      h2req_deliver_error(req, "submit failed");
+      h2req_finish(req);
+      return 0;
+    }
+  }
+  req->submitted = 1;
+  return 1;
+}
+
+// 0-RTT window is open: submit the request now so it is written as early data.
+internal void h2req_on_early_ready(void *user) {
+  H2Request *req = (H2Request *)user;
+  h2req_send_request(req);
+}
+
+internal void h2req_connect(H2Request *req, B32 allow_early);
+
+internal void h2req_on_ready(void *user, B32 ok, const char *err) {
+  H2Request *req = (H2Request *)user;
+  if (!ok) {
+    // The server rejected our 0-RTT early data: retry the (idempotent) request
+    // once on a fresh, non-0-RTT connection. The early-data bytes were discarded;
+    // strip 0-RTT from the cached session so the retry resumes plain 1-RTT.
+    if (conn_early_rejected(&req->conn) && !req->retried_no_early) {
+      req->retried_no_early = 1;
+      req->retrying = 1;
+      resume_cache_strip_early(req->client, req->origin);
+      conn_close(&req->conn);  // -> h2req_on_fully_closed reconnects (no 0-RTT)
+      return;
+    }
+    h2req_deliver_error(req, err ? err : "connect failed");
+    h2req_finish(req);
+    return;
+  }
+  // Submit now unless it already went out as early data (0-RTT accepted). Then
+  // drain any response the server already sent (incl. an accepted 0-RTT one).
+  if (!req->submitted && !h2req_send_request(req)) return;
+  h2req_drain(req);
+}
+
+internal void h2req_deliver_error(H2Request *req, const char *err) {
+  if (req->responded) return;
+  req->responded = 1;
+  Response resp;
+  MemoryZeroStruct(&resp);
+  resp.error = err;
+  resp.final_url = req->url;
+  client_cb_enter(req->client);
+  if (req->cb) req->cb(req->user, &resp);
+  client_cb_exit(req->client);
+}
+
+internal void h2req_finish(H2Request *req) {
+  if (req->closing) return;
+  req->closing = 1;
+  conn_close(&req->conn);
+}
+
+// Deadline reached: deliver a timeout error + tear the request down (both guarded,
+// so a response landing in the same loop tick is a no-op). The teardown's
+// on_fully_closed disarms the timer.
+internal void h2req_on_timeout(void *user) {
+  H2Request *req = (H2Request *)user;
+  h2req_deliver_error(req, "timeout");
+  h2req_finish(req);
+}
+
+internal void h2req_on_closed(void *user, const char *e) {
+  H2Request *req = (H2Request *)user;
+  // A clean EOF finalizes a close-delimited HTTP/1.1 body (success).
+  if (req->h1 && !req->responded) h1_session_eof(req->h1);
+  if (!req->responded) {
+    h2req_deliver_error(req, e ? e : "connection closed");
+    h2req_finish(req);
+  }
+}
+
+internal void h2req_on_fully_closed(void *user) {
+  H2Request *req = (H2Request *)user;
+  if (req->h2) {
+    h2_session_release(req->h2);
+    req->h2 = 0;
+  }
+  if (req->h1) {
+    h1_session_release(req->h1);
+    req->h1 = 0;
+  }
+  conn_cleanup(&req->conn);
+  if (req->retrying) {
+    // 0-RTT-reject fallback: re-dispatch the same request on a fresh connection
+    // with early data disabled. The request state (headers/body) is intact.
+    req->retrying = 0;
+    req->closing = 0;
+    req->submitted = 0;
+    h2req_connect(req, /*allow_early=*/0);  // keep the timer armed (same deadline)
+    return;
+  }
+  req_timer_disarm(req->timeout);  // before the arena holding `req` is freed
+  arena_release(req->arena);       // frees req itself
+}
+
+// Open the connection for this request and (re)wire its callbacks + per-conn TLS
+// options. allow_early controls whether 0-RTT is attempted (off on a retry).
+internal void h2req_connect(H2Request *req, B32 allow_early) {
+  Client *c = req->client;
+  // Forced HTTP/1.1 uses the http/1.1-only ALPN profile so the server picks h1.
+  const TlsProfile *tls =
+      c->http_version == HttpVersion_H1 ? &c->h1_tls : &c->profile->tls;
+  conn_init(&req->conn, c->loop, c->ctx.ctx, tls);
+  conn_on_fully_closed(&req->conn, h2req_on_fully_closed, req);
+  conn_on_closed(&req->conn, h2req_on_closed, req);
+  conn_set_dns_cache(&req->conn, &c->dns_cache);
+  if (c->proxy.type != ProxyType_None)  // tunnel through the configured proxy
+    conn_set_proxy(&req->conn, &c->proxy, c->proxy_ctx.ctx, &c->proxy_tls);
+  if (c->ech_enabled) {  // offer real ECH if the origin's config is cached
+    EchConfigEntry *e = ech_cache_get(c, req->origin);
+    if (e && e->config_len) conn_set_ech(&req->conn, e->config, e->config_len);
+  }
+  if (c->resume_enabled) {  // offer a cached ticket + capture new ones
+    SSL_SESSION *sess = resume_cache_get(c, req->origin);
+    conn_set_resume(&req->conn, sess, client_resume_ctx_make(c, req->arena,
+                                                             req->origin));
+    // 0-RTT only for an idempotent, bodyless request with a cached session; the
+    // connection then verifies the session is actually 0-RTT-capable. Early data
+    // is replayable, so this gate is a correctness requirement (GET/HEAD only).
+    if (allow_early && c->early_data_enabled && req->idempotent &&
+        req->body.size == 0 && sess) {
+      conn_set_early_data(&req->conn, 1);
+      conn_on_early_ready(&req->conn, h2req_on_early_ready, req);
+    }
+  }
+  conn_connect(&req->conn, push_str8_cstr(req->arena, req->host), req->port,
+               h2req_on_ready, req);
+}
+
+internal void h2req_start(Client *c, Method m, String8 url, const Header *headers,
+                          U64 header_count, const U8 *body, U64 body_len,
+                          ResponseFn cb, void *user, U64 deadline_ns) {
+  Arena *arena = arena_alloc();
+  H2Request *req = push_array(arena, H2Request, 1);
+  req->arena = arena;
+  req->client = c;
+  req->cb = cb;
+  req->user = user;
+  req->t_start_ns = uv_hrtime();
+  req->method = method_str(m);
+  req->idempotent = (m == Method_GET || m == Method_HEAD);
+
+  String8 u = push_str8_copy(arena, url);  // views below point into this
+  req->url = u;
+  ParsedUrl pu = url_parse(u);
+  if (!pu.ok || !pu.https) {
+    Response resp;
+    MemoryZeroStruct(&resp);
+    resp.error = "invalid or non-https URL";
+    resp.final_url = u;
+    client_cb_enter(c);
+    if (cb) cb(user, &resp);
+    client_cb_exit(c);
+    arena_release(arena);
+    return;
+  }
+  req->scheme = pu.scheme;
+  req->authority = pu.authority;
+  req->path = pu.path;
+  req->host = pu.host;
+  req->port = pu.port;
+  req->origin = origin_of(arena, pu);
+  req->body = build_request_headers(arena, c->profile->default_headers,
+                                    c->profile->default_header_count, headers,
+                                    header_count, body, body_len, c->override_default_headers,
+                                    &req->req_headers);
+  client_run_pre_hook(c, m, u, &req->req_headers);
+  if (c->header_order_count)  // custom wire order (after hooks); composes with raw
+    reorder_headers(arena, &req->req_headers, c->header_order,
+                    c->header_order_count);
+
+  req->timeout = req_timer_arm(c->loop, deadline_ns, h2req_on_timeout, req);
+  h2req_connect(req, /*allow_early=*/1);
+}
+
+// ---------------------------------------------------------------------------
+// H3 / QUIC request
+// ---------------------------------------------------------------------------
+typedef struct QuicRequest QuicRequest;
+struct QuicRequest {
+  Arena *arena;
+  Client *client;
+  QuicConnection conn;
+  H3Session *h3;
+  ResponseFn cb;
+  void *user;
+  U64 t_start_ns;  // request start (uv_hrtime) for Response.timing.total_ms
+  Method method;
+  String8 authority, path, body, url, host, origin;
+  U16 port;
+  HeaderList req_headers;
+  HeaderList resp_headers;
+  B32 responded;
+  B32 closing;
+  B32 idempotent;        // GET/HEAD: eligible for 0-RTT
+  B32 submitted;         // the request was handed to the h3 session
+  B32 retrying;          // closing to reconnect (0-RTT reject fallback)
+  B32 retried_no_early;  // already retried once without 0-RTT (one-shot guard)
+  ReqTimer *timeout;     // whole-operation deadline timer (0 = no timeout)
+};
+
+internal void quicreq_deliver_error(QuicRequest *req, const char *err);
+internal void quicreq_finish(QuicRequest *req);
+internal void quicreq_connect(QuicRequest *req, B32 allow_early);
+
+// Capture this (now-established) connection's QUIC 0-RTT transport params so the
+// next connection to the origin can offer 0-RTT (paired with the ticket).
+internal void quicreq_capture_tp(QuicRequest *req) {
+  if (!req->client->resume_enabled) return;
+  U8 tp[256];
+  U64 n = quic_conn_encode_0rtt_tp(&req->conn, tp, sizeof tp);
+  if (n) resume_cache_put_tp(req->client, req->origin, tp, n);
+}
+
+internal void quicreq_on_response(void *user, const H3Response *r) {
+  QuicRequest *req = (QuicRequest *)user;
+  if (req->responded) return;
+  req->responded = 1;
+  Response resp;
+  MemoryZeroStruct(&resp);
+  resp.ok = r->ok;
+  resp.error = r->error;
+  resp.status = r->status;
+  resp.headers = r->headers;
+  resp.header_count = r->header_count;
+  resp.body = r->body;
+  resp.body_len = r->body_len;
+  resp.alpn = str8_lit("h3");
+  resp.resumed = quic_conn_resumed(&req->conn);
+  resp.early_data = quic_conn_early_accepted(&req->conn);
+  resp.final_url = req->url;
+  quic_conn_timing_ms(&req->conn, req->t_start_ns, &resp.timing.dns_ms,
+                      &resp.timing.tcp_ms, &resp.timing.tls_ms);
+  resp.timing.total_ms = (uv_hrtime() - req->t_start_ns) / 1000000;
+  response_decode_encoding(req->arena, &resp, &req->resp_headers);
+  client_run_post_hook(req->client, &resp);
+  client_cb_enter(req->client);
+  if (req->cb) req->cb(req->user, &resp);
+  client_cb_exit(req->client);
+  quicreq_finish(req);
+}
+
+// Create the H3 session + submit the request. Same path whether the bytes go out
+// as 0-RTT (early window) or after a completed handshake. Returns 1 on success;
+// on failure it has already delivered an error + finished.
+internal B32 quicreq_send_request(QuicRequest *req) {
+  req->h3 = h3_session_alloc(&req->conn, req->conn.h3);
+  if (!req->h3) {
+    quicreq_deliver_error(req, "h3 session init failed");
+    quicreq_finish(req);
+    return 0;
+  }
+  if (!h3_session_request(req->h3, method_str(req->method), str8_lit("https"),
+                          req->authority, req->path, req->req_headers.v,
+                          req->req_headers.count, req->body.str, req->body.size,
+                          quicreq_on_response, req)) {
+    quicreq_deliver_error(req, "h3 request submit failed");
+    quicreq_finish(req);
+    return 0;
+  }
+  req->submitted = 1;
+  return 1;
+}
+
+// 0-RTT window open: submit the request now so it is written as early data.
+internal void quicreq_on_early_ready(void *user) {
+  QuicRequest *req = (QuicRequest *)user;
+  quicreq_send_request(req);
+}
+
+internal void quicreq_on_ready(void *user, B32 ok, const char *err) {
+  QuicRequest *req = (QuicRequest *)user;
+  if (!ok) {
+    quicreq_deliver_error(req, err ? err : "connect failed");
+    quicreq_finish(req);
+    return;
+  }
+  // 0-RTT rejected: ngtcp2 discarded the early streams. Retry the (idempotent)
+  // request once on a fresh, non-0-RTT connection; strip 0-RTT from the cache.
+  if (quic_conn_early_rejected(&req->conn) && !req->retried_no_early) {
+    req->retried_no_early = 1;
+    req->retrying = 1;
+    resume_cache_strip_early(req->client, req->origin);
+    quic_conn_close(&req->conn);  // -> quicreq_on_fully_closed reconnects
+    return;
+  }
+  // Cache this connection's 0-RTT transport params for a future 0-RTT attempt.
+  quicreq_capture_tp(req);
+  // Submit now unless it already went out as 0-RTT (the response arrives via the
+  // request stream, delivered through quicreq_on_response).
+  if (!req->submitted) quicreq_send_request(req);
+}
+
+internal void quicreq_deliver_error(QuicRequest *req, const char *err) {
+  if (req->responded) return;
+  req->responded = 1;
+  Response resp;
+  MemoryZeroStruct(&resp);
+  resp.error = err;
+  resp.final_url = req->url;
+  client_cb_enter(req->client);
+  if (req->cb) req->cb(req->user, &resp);
+  client_cb_exit(req->client);
+}
+
+internal void quicreq_finish(QuicRequest *req) {
+  if (req->closing) return;
+  req->closing = 1;
+  quic_conn_close(&req->conn);
+}
+
+internal void quicreq_on_timeout(void *user) {  // deadline reached (both guarded)
+  QuicRequest *req = (QuicRequest *)user;
+  quicreq_deliver_error(req, "timeout");
+  quicreq_finish(req);
+}
+
+internal void quicreq_on_closed(void *user, const char *e) {
+  QuicRequest *req = (QuicRequest *)user;
+  if (req->retrying) return;  // a stray close during the 0-RTT-reject retry window
+  if (!req->responded) {
+    quicreq_deliver_error(req, e ? e : "connection closed");
+    quicreq_finish(req);
+  }
+}
+
+internal void quicreq_on_fully_closed(void *user) {
+  QuicRequest *req = (QuicRequest *)user;
+  if (req->h3) {
+    h3_session_release(req->h3);
+    req->h3 = 0;
+  }
+  quic_conn_cleanup(&req->conn);
+  if (req->retrying) {
+    // 0-RTT-reject fallback: re-dispatch on a fresh connection, no early data.
+    req->retrying = 0;
+    req->closing = 0;
+    req->submitted = 0;
+    quicreq_connect(req, /*allow_early=*/0);  // keep the timer armed (same deadline)
+    return;
+  }
+  req_timer_disarm(req->timeout);  // before the arena holding `req` is freed
+  arena_release(req->arena);
+}
+
+// Open the QUIC connection for this request + (re)wire callbacks / TLS options.
+// allow_early controls whether 0-RTT is attempted (off on a retry).
+internal void quicreq_connect(QuicRequest *req, B32 allow_early) {
+  Client *c = req->client;
+  quic_conn_init(&req->conn, c->loop, c->h3_ctx.ctx, &c->h3_profile->tls,
+                 &c->h3_profile->h3);
+  quic_on_fully_closed(&req->conn, quicreq_on_fully_closed, req);
+  quic_on_closed(&req->conn, quicreq_on_closed, req);
+  quic_set_dns_cache(&req->conn, &c->dns_cache);
+  if (c->proxy.type == ProxyType_Socks5)  // tunnel QUIC via SOCKS5 UDP ASSOCIATE
+    quic_set_proxy(&req->conn, &c->proxy);
+  if (c->ech_enabled) {  // offer real ECH if the origin's config is cached
+    EchConfigEntry *e = ech_cache_get(c, req->origin);
+    if (e && e->config_len) quic_set_ech(&req->conn, e->config, e->config_len);
+  }
+  if (c->resume_enabled) {  // offer a cached ticket + capture new ones
+    SSL_SESSION *sess = resume_cache_get(c, req->origin);
+    quic_set_resume(&req->conn, sess, client_resume_ctx_make(c, req->arena,
+                                                             req->origin));
+    // 0-RTT needs an idempotent bodyless request, a cached session, AND cached
+    // transport params (the connection then verifies the session is 0-RTT
+    // capable). Replay safety: GET/HEAD only.
+    if (allow_early && c->early_data_enabled && req->idempotent &&
+        req->body.size == 0 && sess) {
+      U64 tp_len = 0;
+      const U8 *tp = resume_cache_tp(c, req->origin, &tp_len);
+      if (tp && tp_len) {
+        quic_set_early_data(&req->conn, tp, tp_len);
+        quic_on_early_ready(&req->conn, quicreq_on_early_ready, req);
+      }
+    }
+  }
+  quic_conn_connect(&req->conn, push_str8_cstr(req->arena, req->host), req->port,
+                    quicreq_on_ready, req);
+}
+
+internal void quicreq_start(Client *c, Method m, String8 url,
+                            const Header *headers, U64 header_count,
+                            const U8 *body, U64 body_len, ResponseFn cb,
+                            void *user, U64 deadline_ns) {
+  Arena *arena = arena_alloc();
+  QuicRequest *req = push_array(arena, QuicRequest, 1);
+  req->arena = arena;
+  req->client = c;
+  req->cb = cb;
+  req->user = user;
+  req->t_start_ns = uv_hrtime();
+  req->method = m;
+  req->idempotent = (m == Method_GET || m == Method_HEAD);
+
+  String8 u = push_str8_copy(arena, url);
+  req->url = u;
+  ParsedUrl pu = url_parse(u);
+  if (!pu.ok || !pu.https) {
+    Response resp;
+    MemoryZeroStruct(&resp);
+    resp.error = "invalid or non-https URL";
+    resp.final_url = u;
+    client_cb_enter(c);
+    if (cb) cb(user, &resp);
+    client_cb_exit(c);
+    arena_release(arena);
+    return;
+  }
+  req->authority = pu.authority;
+  req->path = pu.path;
+  req->host = pu.host;
+  req->port = pu.port;
+  req->origin = origin_of(arena, pu);
+  req->body = build_request_headers(arena, c->h3_profile->default_headers,
+                                    c->h3_profile->default_header_count, headers,
+                                    header_count, body, body_len, c->override_default_headers,
+                                    &req->req_headers);
+  client_run_pre_hook(c, m, u, &req->req_headers);
+  if (c->header_order_count)  // custom wire order (after hooks); composes with raw
+    reorder_headers(arena, &req->req_headers, c->header_order,
+                    c->header_order_count);
+
+  req->timeout = req_timer_arm(c->loop, deadline_ns, quicreq_on_timeout, req);
+  quicreq_connect(req, /*allow_early=*/1);
+}
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+void client_init(Client *c, EventLoop *loop, const Profile *profile,
+                 B32 verify) {
+  MemoryZeroStruct(c);
+  c->loop = loop;
+  c->profile = profile;
+  c->ctx = build_ctx(&profile->tls, verify);
+  dns_cache_init(&c->dns_cache, DNS_CACHE_DEFAULT_TTL_MS);
+}
+
+void client_init_dual(Client *c, EventLoop *loop, const Profile *h2,
+                      const QuicProfile *h3, B32 verify) {
+  MemoryZeroStruct(c);
+  c->loop = loop;
+  c->profile = h2;
+  c->h3_profile = h3;
+  c->ctx = build_ctx(&h2->tls, verify);
+  c->h3_ctx = build_ctx(&h3->tls, verify);
+  dns_cache_init(&c->dns_cache, DNS_CACHE_DEFAULT_TTL_MS);
+}
+
+void client_cleanup(Client *c) {
+  // Cleanup from inside a response callback is a use-after-free: the delivery
+  // path touches client state after the callback returns (see client.h).
+  Assert(c->in_callback == 0);
+  if (c->pool) {
+    pool_drain(c->pool);
+    // Pump the loop so each conn's fully-closed cb frees its arena (loop_shutdown
+    // closes handles with a NULL cb and would skip them). Bounded as a backstop.
+    for (int guard = 0; c->pool->count > 0 && guard < 1000; ++guard)
+      uv_run(loop_uv(c->loop), UV_RUN_NOWAIT);
+    pool_free(c->pool);
+    c->pool = 0;
+  }
+  // Free cached resumption tickets (done after draining the pool so any ticket a
+  // closing connection issued during the pump above is freed here too).
+  for (int i = 0; i < c->resume_cache_count; ++i)
+    if (c->resume_cache[i].session) SSL_SESSION_free(c->resume_cache[i].session);
+  c->resume_cache_count = 0;
+  if (c->ctx.ctx) SSL_CTX_free(c->ctx.ctx);
+  if (c->h3_ctx.ctx) SSL_CTX_free(c->h3_ctx.ctx);
+  if (c->proxy_ctx.ctx) SSL_CTX_free(c->proxy_ctx.ctx);  // HTTPS-proxy outer TLS
+  c->ctx.ctx = 0;
+  c->h3_ctx.ctx = 0;
+  c->proxy_ctx.ctx = 0;
+}
+
+B32 client_ok(Client *c) { return ctx_ok(&c->ctx); }
+
+internal void client_note_alt_svc(Client *c, String8 origin, String8 value) {
+  AltSvcInfo info = alt_svc_parse(value);
+  if (!info.h3) return;
+  U64 expiry = uv_now(loop_uv(c->loop)) + info.ma_seconds * 1000;
+  for (int i = 0; i < c->alt_svc_count; ++i)
+    if (str8_match(origin, str8_cstring(c->alt_svc[i].origin))) {
+      c->alt_svc[i].h3 = 1;
+      c->alt_svc[i].expiry_ms = expiry;
+      return;
+    }
+  AltSvcEntry *e;
+  if (c->alt_svc_count < (int)ArrayCount(c->alt_svc)) {
+    e = &c->alt_svc[c->alt_svc_count++];
+  } else {
+    // Full: recycle the entry closest to expiry (expired first) so new origins
+    // keep getting alt-svc upgrades instead of being silently ignored.
+    e = &c->alt_svc[0];
+    for (int i = 1; i < c->alt_svc_count; ++i)
+      if (c->alt_svc[i].expiry_ms < e->expiry_ms) e = &c->alt_svc[i];
+  }
+  U64 n = origin.size < sizeof e->origin - 1 ? origin.size : sizeof e->origin - 1;
+  MemoryCopy(e->origin, origin.str, n);
+  e->origin[n] = 0;
+  e->h3 = 1;
+  e->expiry_ms = expiry;
+}
+
+B32 client_h3_available(Client *c, String8 origin) {
+  U64 now = uv_now(loop_uv(c->loop));
+  for (int i = 0; i < c->alt_svc_count; ++i)
+    if (c->alt_svc[i].h3 && str8_match(origin, str8_cstring(c->alt_svc[i].origin)))
+      return now < c->alt_svc[i].expiry_ms;
+  return 0;
+}
+
+// Internal dispatch: client_ok check + Chrome-style H3-vs-H2 selection. The public
+// client_request wraps this with redirect handling when enabled.
+internal void client_dispatch_inner(Client *c, Method m, String8 url,
+                                    const Header *headers, U64 header_count,
+                                    const U8 *body, U64 body_len, ResponseFn cb,
+                                    void *user, U64 deadline_ns) {
+  if (!client_ok(c)) {
+    Response r;
+    MemoryZeroStruct(&r);
+    r.error = "TLS context init failed";
+    client_cb_enter(c);
+    if (cb) cb(user, &r);
+    client_cb_exit(c);
+    return;
+  }
+  HttpVersion hv = c->http_version;
+
+  // HTTP/HTTPS CONNECT proxies are TCP-only, so H3 can't tunnel through them. A
+  // SOCKS5 proxy carries UDP (UDP ASSOCIATE), so H3 IS allowed through SOCKS5.
+  if ((c->proxy.type == ProxyType_Http || c->proxy.type == ProxyType_Https) &&
+      hv == HttpVersion_H3) {
+    Response r;
+    MemoryZeroStruct(&r);
+    r.error = "HTTP/3 cannot be used through an HTTP/HTTPS proxy (use SOCKS5)";
+    client_cb_enter(c);
+    if (cb) cb(user, &r);
+    client_cb_exit(c);
+    return;
+  }
+
+  // Forced HTTP/3: dispatch straight to QUIC (no alt-svc warmup). Strict — needs a
+  // dual-transport client; otherwise the request fails rather than falling back.
+  if (hv == HttpVersion_H3) {
+    if (!(c->h3_profile && ctx_ok(&c->h3_ctx))) {
+      Response r;
+      MemoryZeroStruct(&r);
+      r.error = "HTTP/3 forced but client has no QUIC profile (use client_init_dual)";
+      client_cb_enter(c);
+      if (cb) cb(user, &r);
+      client_cb_exit(c);
+      return;
+    }
+    if (c->pool && c->max_conns_per_origin)
+      pool_dispatch(c, PoolProto_H3, m, url, headers, header_count, body, body_len,
+                    cb, user, deadline_ns);
+    else
+      quicreq_start(c, m, url, headers, header_count, body, body_len, cb, user,
+                    deadline_ns);
+    return;
+  }
+
+  // Forced HTTP/1.1: the legacy TCP path (never pooled — pooled conns advertise
+  // h2); h2req_connect swaps in c->h1_tls so the server negotiates http/1.1.
+  if (hv == HttpVersion_H1) {
+    h2req_start(c, m, url, headers, header_count, body, body_len, cb, user, deadline_ns);
+    return;
+  }
+
+  // Auto (Chrome-style): prefer QUIC for origins known (via alt-svc) to support
+  // h3. Forced H2 skips this gate and stays on TCP. A SOCKS5 proxy permits H3
+  // (UDP ASSOCIATE); HTTP/HTTPS proxies force TCP.
+  if (hv == HttpVersion_Auto &&
+      (c->proxy.type == ProxyType_None || c->proxy.type == ProxyType_Socks5) &&
+      c->h3_profile && ctx_ok(&c->h3_ctx)) {
+    ParsedUrl pu = url_parse(url);
+    if (pu.ok) {
+      Temp scratch = scratch_begin(0, 0);
+      B32 avail = client_h3_available(c, origin_of(scratch.arena, pu));
+      scratch_end(scratch);
+      if (avail) {
+        if (c->pool && c->max_conns_per_origin)  // opt-in pooling (H3/QUIC)
+          pool_dispatch(c, PoolProto_H3, m, url, headers, header_count, body,
+                        body_len, cb, user, deadline_ns);
+        else
+          quicreq_start(c, m, url, headers, header_count, body, body_len, cb,
+                        user, deadline_ns);
+        return;
+      }
+    }
+  }
+  if (c->pool && c->max_conns_per_origin) {  // opt-in pooling (H2/TCP)
+    pool_dispatch(c, PoolProto_H2, m, url, headers, header_count, body, body_len,
+                  cb, user, deadline_ns);
+    return;
+  }
+  h2req_start(c, m, url, headers, header_count, body, body_len, cb, user, deadline_ns);
+}
+
+//- real ECH: per-origin ECHConfigList cache + DoH prefetch gate -------------
+
+#define ECH_DOH_ORIGIN "dns.google:443"
+#define ECH_CACHE_TTL_MS 600000  // 10 min (HTTPS-RR TTLs ~5 min)
+
+internal EchConfigEntry *ech_cache_get(Client *c, String8 origin) {
+  U64 now = uv_now(loop_uv(c->loop));
+  for (int i = 0; i < c->ech_cache_count; ++i)
+    if (str8_match(origin, str8_cstring(c->ech_cache[i].origin)))
+      return now < c->ech_cache[i].expiry_ms ? &c->ech_cache[i] : 0;
+  return 0;
+}
+
+// Cache the resolved config for `origin`. An empty config is a cached negative
+// result (no ECH published -> GREASE) so we don't re-query every request.
+internal void ech_cache_put(Client *c, String8 origin, String8 config) {
+  U64 expiry = uv_now(loop_uv(c->loop)) + ECH_CACHE_TTL_MS;
+  EchConfigEntry *e = 0;
+  for (int i = 0; i < c->ech_cache_count; ++i)
+    if (str8_match(origin, str8_cstring(c->ech_cache[i].origin))) {
+      e = &c->ech_cache[i];
+      break;
+    }
+  if (!e) {
+    if (c->ech_cache_count < (int)ArrayCount(c->ech_cache)) {
+      e = &c->ech_cache[c->ech_cache_count++];
+    } else {
+      // Full: recycle the entry closest to expiry (expired first) so new
+      // origins still get real ECH instead of silently degrading to GREASE.
+      e = &c->ech_cache[0];
+      for (int i = 1; i < c->ech_cache_count; ++i)
+        if (c->ech_cache[i].expiry_ms < e->expiry_ms) e = &c->ech_cache[i];
+    }
+    U64 n = origin.size < sizeof e->origin - 1 ? origin.size : sizeof e->origin - 1;
+    MemoryCopy(e->origin, origin.str, n);
+    e->origin[n] = 0;
+  }
+  U64 clen = config.size < sizeof e->config ? config.size : sizeof e->config;
+  if (clen) MemoryCopy(e->config, config.str, clen);
+  e->config_len = clen;
+  e->expiry_ms = expiry;
+}
+
+typedef struct EchPrefetch EchPrefetch;
+struct EchPrefetch {
+  Arena *arena;  // own; holds the stashed request until the DoH completes
+  Client *client;
+  String8 origin;
+  Method method;
+  String8 url;
+  HeaderList headers;
+  String8 body;
+  ResponseFn cb;
+  void *user;
+  U64 deadline_ns;  // the operation deadline (the DoH round-trip eats into it)
+};
+
+internal void client_ech_doh_cb(void *user, const Response *r) {
+  EchPrefetch *pf = (EchPrefetch *)user;
+  Client *c = pf->client;
+  String8 config = str8_zero();
+  if (r->ok && r->body && r->body_len)
+    config = ech_config_from_doh(pf->arena, str8((U8 *)r->body, r->body_len));
+  ech_cache_put(c, pf->origin, config);
+  // Replay the original request, bypassing the gate (already prefetched).
+  client_dispatch_inner(c, pf->method, pf->url, pf->headers.v, pf->headers.count,
+                        pf->body.str, pf->body.size, pf->cb, pf->user,
+                        pf->deadline_ns);
+  arena_release(pf->arena);
+}
+
+// Stash the request, fetch the origin's ECHConfigList over DoH, then replay.
+internal void client_ech_prefetch(Client *c, Method m, String8 url,
+                                  const Header *headers, U64 header_count,
+                                  const U8 *body, U64 body_len, ResponseFn cb,
+                                  void *user, ParsedUrl pu, U64 deadline_ns) {
+  Arena *a = arena_alloc();
+  EchPrefetch *pf = push_struct(a, EchPrefetch);
+  pf->arena = a;
+  pf->client = c;
+  pf->origin = origin_of(a, pu);
+  pf->deadline_ns = deadline_ns;
+  pf->method = m;
+  pf->url = push_str8_copy(a, url);
+  header_list_init(&pf->headers, a);
+  for (U64 i = 0; i < header_count; ++i)
+    header_list_push(&pf->headers, push_str8_copy(a, headers[i].name),
+                     push_str8_copy(a, headers[i].value), headers[i].flags);
+  pf->body =
+      body_len ? push_str8_copy(a, str8((U8 *)body, body_len)) : str8_zero();
+  pf->cb = cb;
+  pf->user = user;
+  String8 doh = push_str8f(a, "https://dns.google/resolve?name=%.*s&type=HTTPS",
+                           (int)pu.host.size, pu.host.str);
+  client_dispatch_inner(c, Method_GET, doh, 0, 0, 0, 0, client_ech_doh_cb, pf,
+                        deadline_ns);
+}
+
+// The dispatch gate: when ECH is on and the target's config isn't cached yet,
+// fetch it first (DoH) and replay; otherwise dispatch normally.
+internal void client_dispatch(Client *c, Method m, String8 url,
+                              const Header *headers, U64 header_count,
+                              const U8 *body, U64 body_len, ResponseFn cb,
+                              void *user, U64 deadline_ns) {
+  if (c->ech_enabled) {
+    ParsedUrl pu = url_parse(url);
+    if (pu.ok && pu.https) {
+      Temp scr = scratch_begin(0, 0);
+      String8 origin = origin_of(scr.arena, pu);
+      B32 prefetch = !str8_match(origin, str8_lit(ECH_DOH_ORIGIN)) &&
+                     !ech_cache_get(c, origin);
+      scratch_end(scr);
+      if (prefetch) {
+        client_ech_prefetch(c, m, url, headers, header_count, body, body_len, cb,
+                            user, pu, deadline_ns);
+        return;
+      }
+    }
+  }
+  client_dispatch_inner(c, m, url, headers, header_count, body, body_len, cb,
+                        user, deadline_ns);
+}
+
+// The absolute deadline (uv_hrtime ns) for a new operation from the client's
+// timeout, or 0 when no timeout is configured.
+internal U64 client_deadline(Client *c) {
+  return c->timeout_ms ? uv_hrtime() + c->timeout_ms * 1000000ull : 0;
+}
+
+//- redirect following
+
+internal B32 is_redirect_status(int s) {
+  return s == 301 || s == 302 || s == 303 || s == 307 || s == 308;
+}
+
+// Browser-faithful next method for a `status` redirect of method `m`; sets
+// *drop_body when the request body should be dropped.
+Method redirect_next_method(Method m, int status, B32 *drop_body) {
+  *drop_body = 0;
+  if (status == 303) {  // See Other -> GET
+    *drop_body = 1;
+    return Method_GET;
+  }
+  if ((status == 301 || status == 302) && m == Method_POST) {  // POST -> GET
+    *drop_body = 1;
+    return Method_GET;
+  }
+  return m;  // 307/308, and non-POST on 301/302: preserve method + body
+}
+
+// One redirect hop's state transition — the single copy shared by the client's
+// redirect loop and the Session's cookie-aware loop (drift between the two
+// would mean subtly different redirect behavior with vs without cookies).
+// Given the current request state and its response, decides whether to follow:
+// on yes, fills `out` with the resolved next URL, the browser-faithful next
+// method, whether the body must be dropped, and the carried headers rebuilt in
+// `arena` (stale content-length/type dropped with the body, Authorization
+// dropped cross-origin, Sec-Fetch-Site recomputed). Returns 0 to deliver the
+// response instead (not a 3xx, no Location, or a non-https target).
+typedef struct RedirectHop RedirectHop;
+struct RedirectHop {
+  String8 next_url;
+  Method next_method;
+  B32 drop_body;
+  HeaderList headers;
+};
+internal B32 redirect_prepare_hop(Arena *arena, String8 cur_url, Method m,
+                                  const HeaderList *carried, const Response *r,
+                                  RedirectHop *out) {
+  if (!r->ok || !is_redirect_status(r->status)) return 0;
+  String8 loc = str8_zero();
+  for (U64 i = 0; i < r->header_count; ++i)
+    if (str8_match_ci(r->headers[i].name, str8_lit("location"))) {
+      loc = r->headers[i].value;
+      break;
+    }
+  if (!loc.size) return 0;
+  String8 next = url_resolve(arena, cur_url, loc);
+  ParsedUrl npu = url_parse(next);
+  if (!npu.ok || !npu.https) return 0;  // only follow http(s)
+  out->drop_body = 0;
+  out->next_method = redirect_next_method(m, r->status, &out->drop_body);
+  out->next_url = next;
+  ParsedUrl cpu = url_parse(cur_url);
+  B32 cross = !(cpu.ok && str8_match_ci(cpu.host, npu.host));
+  // Recompute Sec-Fetch-Site for the new hop (monotonic; from the carried
+  // running value + Referer). str8_zero() => leave it as-is (navigations).
+  String8 new_site =
+      sec_fetch_site_for_redirect(carried->v, carried->count, next);
+  header_list_init(&out->headers, arena);
+  for (U64 i = 0; i < carried->count; ++i) {
+    String8 name = carried->v[i].name;
+    if (out->drop_body && (str8_match_ci(name, str8_lit("content-length")) ||
+                           str8_match_ci(name, str8_lit("content-type"))))
+      continue;  // body gone -> these are stale
+    if (cross && str8_match_ci(name, str8_lit("authorization")))
+      continue;  // don't leak credentials cross-origin
+    String8 value = carried->v[i].value;
+    if (new_site.size && str8_match_ci(name, str8_lit("sec-fetch-site")))
+      value = new_site;
+    header_list_push(&out->headers, name, value, carried->v[i].flags);
+  }
+  return 1;
+}
+
+typedef struct RedirectState RedirectState;
+struct RedirectState {
+  Arena *arena;  // own arena, persists across hops (freed at chain end)
+  Client *client;
+  ResponseFn user_cb;
+  void *user;
+  Method method;
+  HeaderList headers;  // carried caller headers (own arena)
+  String8 body;        // carried body (own arena)
+  String8 cur_url;     // current absolute URL
+  U64 left;            // remaining redirect budget
+  U64 chain_start_ns;  // whole-chain start (uv_hrtime) for total_ms
+  U64 deadline_ns;     // whole-chain timeout deadline (0 = none), shared by all hops
+};
+
+internal void client_redirect_cb(void *user, const Response *r) {
+  RedirectState *st = (RedirectState *)user;
+  RedirectHop hop;
+  if (st->left > 0 &&
+      redirect_prepare_hop(st->arena, st->cur_url, st->method, &st->headers, r,
+                           &hop)) {
+    st->headers = hop.headers;
+    st->method = hop.next_method;
+    if (hop.drop_body) st->body = str8_zero();
+    st->cur_url = hop.next_url;
+    st->left--;
+    client_dispatch(st->client, st->method, st->cur_url, st->headers.v,
+                    st->headers.count, st->body.str, st->body.size,
+                    client_redirect_cb, st, st->deadline_ns);
+    return;
+  }
+  // Final response (or no Location / budget exhausted / error): deliver + free.
+  // Override total_ms to span the whole redirect chain (the per-hop value on `r`
+  // covers only the final hop). Shallow copy is safe — header/body pointers stay
+  // valid for the callback's duration.
+  if (st->user_cb) {
+    Response rc = *r;
+    rc.timing.total_ms = (uv_hrtime() - st->chain_start_ns) / 1000000;
+    st->user_cb(st->user, &rc);
+  }
+  arena_release(st->arena);
+}
+
+void client_request(Client *c, Method m, String8 url, const Header *headers,
+                    U64 header_count, const U8 *body, U64 body_len,
+                    ResponseFn cb, void *user) {
+  if (c->max_redirects == 0) {  // following disabled -> dispatch directly
+    client_dispatch(c, m, url, headers, header_count, body, body_len, cb, user,
+                    client_deadline(c));
+    return;
+  }
+  // Carry the request across hops in its own arena (the per-hop request arenas
+  // are independent and freed as each hop completes).
+  Arena *arena = arena_alloc();
+  RedirectState *st = push_struct(arena, RedirectState);
+  st->arena = arena;
+  st->client = c;
+  st->user_cb = cb;
+  st->user = user;
+  st->method = m;
+  st->left = c->max_redirects;
+  st->chain_start_ns = uv_hrtime();
+  st->deadline_ns = client_deadline(c);  // one deadline for the whole chain
+  st->cur_url = push_str8_copy(arena, url);
+  header_list_init(&st->headers, arena);
+  for (U64 i = 0; i < header_count; ++i)
+    header_list_push(&st->headers, push_str8_copy(arena, headers[i].name),
+                     push_str8_copy(arena, headers[i].value), headers[i].flags);
+  st->body = body_len ? push_str8_copy(arena, str8((U8 *)body, body_len))
+                      : str8_zero();
+  client_dispatch(c, m, st->cur_url, st->headers.v, st->headers.count,
+                  st->body.str, st->body.size, client_redirect_cb, st,
+                  st->deadline_ns);
+}
+
+void client_get(Client *c, String8 url, ResponseFn cb, void *user) {
+  client_request(c, Method_GET, url, 0, 0, 0, 0, cb, user);
+}
+
+void client_send_deadline(Client *c, Method m, String8 url, const Header *headers,
+                          U64 header_count, const U8 *body, U64 body_len,
+                          ResponseFn cb, void *user, U64 deadline_ns) {
+  client_dispatch(c, m, url, headers, header_count, body, body_len, cb, user,
+                  deadline_ns);
+}
+
+void client_send(Client *c, Method m, String8 url, const Header *headers,
+                 U64 header_count, const U8 *body, U64 body_len, ResponseFn cb,
+                 void *user) {
+  client_send_deadline(c, m, url, headers, header_count, body, body_len, cb, user,
+                       client_deadline(c));
+}
+
+void client_fetch(Client *c, FetchMode mode, Method m, String8 url,
+                  const Header *headers, U64 header_count, const U8 *body,
+                  U64 body_len, ResponseFn cb, void *user) {
+  Arena *a = arena_alloc();
+  HeaderList merged;
+  header_list_init(&merged, a);
+  sec_fetch_merge(&merged, mode, url, headers, header_count);
+  client_request(c, m, url, merged.v, merged.count, body, body_len, cb, user);
+  arena_release(a);  // merged headers are copied synchronously by client_request
+}
+
+void client_set_max_redirects(Client *c, U64 max) { c->max_redirects = max; }
+
+void client_set_timeout_ms(Client *c, U64 ms) { c->timeout_ms = ms; }
+U64 client_get_timeout_ms(Client *c) { return c->timeout_ms; }
+
+void client_set_ech_enabled(Client *c, B32 on) { c->ech_enabled = on; }
+
+void client_set_resumption_enabled(Client *c, B32 on) {
+  c->resume_enabled = on;
+  if (!on) return;
+  // Turn on the client session cache + capture callback on both TLS contexts.
+  // This only controls whether tickets are captured; the ClientHello changes
+  // solely when a cached session is later offered (on reconnect).
+  SSL_CTX *ctxs[2] = {c->ctx.ctx, c->h3_ctx.ctx};
+  for (int i = 0; i < 2; ++i) {
+    if (!ctxs[i]) continue;
+    SSL_CTX_set_session_cache_mode(ctxs[i], SSL_SESS_CACHE_CLIENT);
+    SSL_CTX_sess_set_new_cb(ctxs[i], client_resume_new_cb);
+  }
+}
+
+void client_set_early_data_enabled(Client *c, B32 on) {
+  c->early_data_enabled = on;
+  // 0-RTT needs a cached, 0-RTT-capable session, which only the resumption cache
+  // provides — enabling early data implies enabling resumption.
+  if (on && !c->resume_enabled) client_set_resumption_enabled(c, 1);
+}
+
+void client_set_key_log_file(Client *c, const char *path) {
+  if (!keylog_open(path)) return;
+  // Register on both contexts; the same callback serves TLS and QUIC.
+  if (c->ctx.ctx) SSL_CTX_set_keylog_callback(c->ctx.ctx, keylog_callback);
+  if (c->h3_ctx.ctx) SSL_CTX_set_keylog_callback(c->h3_ctx.ctx, keylog_callback);
+}
+
+B32 client_pin_certificate(Client *c, const char *hostname,
+                           const char *sha256_b64, B32 include_subdomains) {
+  if (!cert_pin_add(&c->pin_store, hostname, sha256_b64, include_subdomains))
+    return 0;
+  // Make the store reachable from per-connection verification on both contexts
+  // (configure_ssl looks it up via the SSL's CTX). Idempotent.
+  cert_pin_attach_ctx(c->ctx.ctx, &c->pin_store);
+  cert_pin_attach_ctx(c->h3_ctx.ctx, &c->pin_store);
+  return 1;
+}
+
+B32 client_add_ca_file(Client *c, const char *path) {
+  // Add the file's CA cert(s) to BOTH contexts' trust stores, on top of the
+  // system roots build_ctx loaded (the X509_STORE accumulates). Same file => same
+  // result on both, so a first-failure return is safe. Only matters with verify=1.
+  SSL_CTX *ctxs[2] = {c->ctx.ctx, c->h3_ctx.ctx};
+  B32 any = 0;
+  for (int i = 0; i < 2; ++i) {
+    if (!ctxs[i]) continue;
+    if (!SSL_CTX_load_verify_locations(ctxs[i], path, 0)) return 0;
+    any = 1;
+  }
+  return any;
+}
+
+void client_set_dns_cache_ttl_ms(Client *c, U64 ms) { c->dns_cache.ttl_ms = ms; }
+
+void client_set_http_version(Client *c, HttpVersion v) {
+  c->http_version = v;
+  if (v == HttpVersion_H1) {
+    // Chrome's TLS knobs, but advertise only http/1.1 and drop ALPS (an h2-only
+    // extension). The SSL_CTX (ciphers/extensions) is unchanged; only the
+    // per-connection ALPN/ALPS that configure_ssl applies differ.
+    c->h1_tls = c->profile->tls;
+    c->h1_tls.alpn_wire = k_alpn_http11;
+    c->h1_tls.alpn_wire_len = (U16)sizeof k_alpn_http11;
+    c->h1_tls.alps_count = 0;
+  }
+}
+
+B32 client_set_header_order(Client *c, const String8 *names, U64 count) {
+  if (count > CLIENT_HEADER_ORDER_MAX) return 0;
+  for (U64 i = 0; i < count; ++i) {
+    U64 cap = sizeof c->header_order_buf[i] - 1;
+    U64 n = names[i].size < cap ? names[i].size : cap;
+    MemoryCopy(c->header_order_buf[i], names[i].str, n);
+    c->header_order_buf[i][n] = 0;
+    c->header_order[i] = str8((U8 *)c->header_order_buf[i], n);
+  }
+  c->header_order_count = (U8)count;  // 0 resets to the profile order
+  return 1;
+}
+
+B32 client_set_header_order_str(Client *c, const char *names) {
+  // Split on commas and/or whitespace, so "accept, accept-language, user-agent"
+  // and "accept accept-language user-agent" both work. An empty string resets.
+  String8 s = str8_cstring(names);
+  String8 list[CLIENT_HEADER_ORDER_MAX];
+  U64 n = 0, i = 0;
+  while (i < s.size) {
+    while (i < s.size &&
+           (s.str[i] == ',' || s.str[i] == ' ' || s.str[i] == '\t'))
+      i++;  // skip delimiters
+    U64 start = i;
+    while (i < s.size && s.str[i] != ',' && s.str[i] != ' ' && s.str[i] != '\t')
+      i++;
+    if (i > start) {
+      if (n >= CLIENT_HEADER_ORDER_MAX) return 0;  // too many names
+      list[n++] = str8(s.str + start, i - start);
+    }
+  }
+  return client_set_header_order(c, list, n);  // copies the views
+}
+
+U64 client_get_header_order(Client *c, String8 *out, U64 cap) {
+  if (c->header_order_count) {  // the active override
+    U64 n = c->header_order_count < cap ? c->header_order_count : cap;
+    for (U64 i = 0; i < n; ++i) out[i] = c->header_order[i];
+    return c->header_order_count;
+  }
+  const DefaultHeader *d = c->profile->default_headers;  // else the profile order
+  U64 dc = c->profile->default_header_count;
+  U64 n = dc < cap ? dc : cap;
+  for (U64 i = 0; i < n; ++i) out[i] = str8_cstring(d[i].name);
+  return dc;
+}
+
+void client_override_default_headers(Client *c, B32 on) { c->override_default_headers = on; }
+B32 client_get_override_default_headers(Client *c) { return c->override_default_headers; }
+
+// Safe to call at runtime to rotate the proxy. An empty URL goes direct. A bad URL
+// leaves the current proxy untouched and returns 0. Re-setting the same proxy is a
+// no-op (warm pooled conns are kept). On a real change the new proxy applies to
+// every subsequent request; in-flight requests finish on the old proxy.
+B32 client_set_proxy(Client *c, String8 proxy_url, B32 verify_proxy) {
+  // Parse the requested config (empty == direct). proxy_parse zeroes first, so a
+  // MemoryCompare against the current config reliably detects a real change.
+  ProxyConfig next;
+  MemoryZeroStruct(&next);
+  if (proxy_url.size && !proxy_parse(proxy_url, &next))
+    return 0;  // malformed URL: keep the existing proxy unchanged
+  if (MemoryCompare(&next, &c->proxy, sizeof next) == 0) return 1;  // no change
+
+  // Changed. The old HTTPS-proxy ctx is safe to free now — any live connection
+  // holds its own ref (conn_set_proxy). Install the new config + outer ctx.
+  if (c->proxy_ctx.ctx) {
+    SSL_CTX_free(c->proxy_ctx.ctx);
+    MemoryZeroStruct(&c->proxy_ctx);
+  }
+  c->proxy = next;
+  if (c->proxy.type == ProxyType_Https) {
+    // Speak to the proxy with Chrome's TLS knobs but http/1.1-only ALPN (CONNECT
+    // is HTTP/1.1) and no ALPS — the same idiom as the forced-H1 profile.
+    c->proxy_tls = c->profile->tls;
+    c->proxy_tls.alpn_wire = k_alpn_http11;
+    c->proxy_tls.alpn_wire_len = (U16)sizeof k_alpn_http11;
+    c->proxy_tls.alps_count = 0;
+    c->proxy_ctx = build_ctx(&c->proxy_tls, verify_proxy);
+  }
+  // Stop reusing pooled conns established through the old proxy (new requests open
+  // fresh conns through the new one). No-op when pooling is off.
+  if (c->pool) pool_evict_all(c->pool);
+  return 1;
+}
+
+String8 client_get_proxy(Client *c, Arena *arena) {
+  return proxy_to_url(arena, &c->proxy);
+}
+
+//- response convenience accessors -------------------------------------------
+
+String8 response_text(const Response *r) {
+  return r->body ? str8((U8 *)r->body, r->body_len) : str8_zero();
+}
+
+String8 response_get_header(const Response *r, String8 name) {
+  for (U64 i = 0; i < r->header_count; ++i)
+    if (str8_match_ci(r->headers[i].name, name)) return r->headers[i].value;
+  return str8_zero();
+}
+
+B32 response_is_success(const Response *r) {
+  return r->ok && r->status >= 200 && r->status < 300;
+}
+
+B32 response_is_redirect(const Response *r) {
+  return r->status >= 300 && r->status < 400;
+}
+
+yyjson_doc *response_json(const Response *r, Arena *arena) {
+  return json_parse(arena, response_text(r));
+}
+
+void client_set_pre_hook(Client *c, PreRequestHook fn, void *user) {
+  c->pre_hook = fn;
+  c->pre_hook_user = user;
+}
+
+void client_set_post_hook(Client *c, PostResponseHook fn, void *user) {
+  c->post_hook = fn;
+  c->post_hook_user = user;
+}
+
+//- connection pooling (opt-in)
+
+void client_set_max_conns_per_origin(Client *c, U64 max) {
+  c->max_conns_per_origin = max;
+  if (max > 0 && !c->pool)
+    c->pool = pool_alloc(c);
+  else if (max == 0 && c->pool)
+    pool_drain(c->pool);  // stop reusing; freed in client_cleanup
+}
+
+void client_set_pool_idle_timeout_ms(Client *c, U64 ms) {
+  c->pool_idle_timeout_ms = ms;
+}
+
+PoolStats client_pool_stats(Client *c) { return c->pool_stats; }
+
+void client_pool_drain(Client *c) {
+  if (c->pool) pool_drain(c->pool);
+}
