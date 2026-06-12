@@ -44,6 +44,18 @@ String8 json_ptr_str(yyjson_doc *doc, const char *ptr) {
   return str8((U8 *)yyjson_get_str(v), (U64)yyjson_get_len(v));
 }
 
+S64 json_obj_int(yyjson_val *obj, const char *key, S64 fallback) {
+  yyjson_val *v = yyjson_obj_get(obj, key);
+  if (!v || !yyjson_is_int(v)) return fallback;
+  return (S64)yyjson_get_sint(v);
+}
+
+B32 json_obj_bool(yyjson_val *obj, const char *key) {
+  yyjson_val *v = yyjson_obj_get(obj, key);
+  if (!v || !yyjson_is_bool(v)) return 0;
+  return yyjson_get_bool(v) ? 1 : 0;
+}
+
 B32 json_get_str(String8 src, const char *key, char *out, U64 cap) {
   if (!out || cap == 0) return 0;
   out[0] = 0;
@@ -67,6 +79,11 @@ B32 json_get_str(String8 src, const char *key, char *out, U64 cap) {
 yyjson_mut_doc *json_mut(Arena *arena) {
   yyjson_alc alc = json_arena_alc(arena);
   return yyjson_mut_doc_new(&alc);
+}
+
+void json_mut_obj_str8(yyjson_mut_doc *doc, yyjson_mut_val *obj, const char *key,
+                       String8 val) {
+  yyjson_mut_obj_add_strn(doc, obj, key, (const char *)val.str, (size_t)val.size);
 }
 
 String8 json_mut_write(Arena *arena, yyjson_mut_doc *doc, B32 pretty) {

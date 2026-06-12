@@ -28,6 +28,14 @@ internal inline yyjson_val *json_root(yyjson_doc *doc) {
 String8 json_obj_str(yyjson_val *obj, const char *key);
 String8 json_ptr_str(yyjson_doc *doc, const char *ptr);
 
+// Integer value of object field `key`. Returns `fallback` if the field is missing or is
+// not a JSON number (so callers get a clean sentinel instead of hand-scanning digits).
+S64 json_obj_int(yyjson_val *obj, const char *key, S64 fallback);
+
+// Boolean value of object field `key`. Returns 0 if the field is missing or is not a
+// JSON bool — distinguishing "false" from "absent" needs a presence check, not this.
+B32 json_obj_bool(yyjson_val *obj, const char *key);
+
 // One-shot: parse `src` (scratch arena) and copy the root object's string field `key`
 // into `out` (NUL-terminated, truncated to cap-1). Returns false if absent / not a
 // string. The common "extract a field into a fixed buffer" case.
@@ -36,5 +44,11 @@ B32 json_get_str(String8 src, const char *key, char *out, U64 cap);
 // Serialization (arena-backed): a fresh mutable doc, then write it to an arena String8.
 yyjson_mut_doc *json_mut(Arena *arena);
 String8 json_mut_write(Arena *arena, yyjson_mut_doc *doc, B32 pretty);
+
+// Add a String8 field to a mutable object: obj[key] = val (the String8 builder's
+// counterpart to json_obj_str). The value bytes are referenced, NOT copied, so `val`
+// must stay alive until json_mut_write — the usual arena-built case satisfies this.
+void json_mut_obj_str8(yyjson_mut_doc *doc, yyjson_mut_val *obj, const char *key,
+                       String8 val);
 
 #endif  // HOLYTLS_JSON_H
