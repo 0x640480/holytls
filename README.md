@@ -61,12 +61,6 @@ browser actually performs:
 | Concurrency | one libuv loop, thousands of conns | goroutines |
 | Proxy | HTTP / HTTPS / SOCKS5 **+ QUIC-over-SOCKS5**, runtime switching, custom CA | HTTP / SOCKS |
 | Header control | full override + explicit order | order key |
-
-holytls trades **profile breadth for fidelity depth**: it impersonates Chrome
-(149/148) across every transport with verified precision, rather than offering many
-shallower TLS-only profiles. New Chrome versions are data entries; other browsers
-are a profile away.
-
 ---
 
 ## Quick start
@@ -92,7 +86,7 @@ A minimal request (async: submit, run the loop, get the result in a callback):
 #include "net/loop.h"
 #include "profile/profile.h"
 
-static void on_response(void *user, const Response *resp) {
+static void handle_response(void *user, const Response *resp) {
   (void)user;
   if (!resp->ok) { fprintf(stderr, "error: %s\n", resp->error); return; }
   String8 body = response_text(resp);  // valid only during this callback
@@ -104,7 +98,7 @@ int main(void) {
   EventLoop loop; loop_init(&loop);
   Client c;
   client_init(&c, &loop, profile_chrome149(), /*verify=*/1);   // Chrome 149 over H2
-  client_get(&c, str8_lit("https://tls.peet.ws/api/all"), on_response, 0);
+  client_get(&c, str8_lit("https://tls.peet.ws/api/all"), handle_response, 0);
   loop_run(&loop);                                             // drives the request
   client_cleanup(&c); loop_shutdown(&loop);
 }
@@ -138,7 +132,7 @@ client_set_timeout_ms(&client, 30000);       // whole-operation deadline
 SessionConfig cfg; session_config_default(&cfg);   // cookies on, 10 redirects
 Session session; session_init(&session, &cfg);
 
-session_get(&session, &client, str8_lit("https://www.google.com/"), on_response, 0);
+session_get(&session, &client, str8_lit("https://www.google.com/"), handle_response, 0);
 loop_run(&loop);
 ```
 
@@ -168,33 +162,22 @@ only reconnects resume / send 0-RTT — exactly like a browser.
 
 ---
 
-## Feature tour
+## Features
 
-All of these are `Client` setters (off by default unless noted) — see
-[`src/core/client.h`](src/core/client.h):
+Browser-grade HTTP with the knobs a real Chrome needs. Most are opt-in — the full
+surface lives in [`src/core/client.h`](src/core/client.h).
 
-- **Transports** — `client_init` (H2/TCP) or `client_init_dual` (+ HTTP/3);
-  `client_set_http_version` to pin H1/H2/H3.
-- **Browser behaviors** — `client_set_ech_enabled`, `client_set_resumption_enabled`,
-  `client_set_early_data_enabled`.
-- **Sessions** — `session_init` gives a lightweight per-task identity (cookie jar +
-  redirect budget); thousands of sessions over one shared transport `Client`.
-- **Proxies** — `client_set_proxy` for `http://`, `https://`, `socks5://`
-  (with `user:pass@`); SOCKS5 also carries HTTP/3 (UDP ASSOCIATE). Switch at runtime;
-  the target fingerprint is unchanged. `client_add_ca_file` trusts a MITM root.
-- **Headers** — full Chrome set by default; `client_override_default_headers` for
-  caller-controlled headers and `client_set_header_order` /
-  `client_set_header_order_str` for explicit wire order (the
-  `req.Header` + `HeaderOrderKey` equivalent). `header_lit("name","value")` helper.
-- **Pooling** — `client_set_max_conns_per_origin` (opt-in H2 + H3 keep-alive).
-- **Reliability** — `client_set_timeout_ms` (whole-operation deadline),
-  `client_set_max_redirects` (browser-faithful method transitions),
-  `client_set_dns_cache_ttl_ms`.
-- **Inspection / security** — request/response hooks (`client_set_pre_hook` /
-  `client_set_post_hook`), `client_pin_certificate`, `client_set_key_log_file`
-  (`SSLKEYLOGFILE` for Wireshark).
-- **Bodies** — transparent decompression (gzip / deflate / br / zstd);
-  `response_text` / `response_get_header` / `response_json` accessors.
+| Area | What you get | Key calls |
+|------|--------------|-----------|
+| **Transports** | HTTP/1.1, HTTP/2, HTTP/3 — pin one, or run H2 with automatic H2→H3 upgrade | `client_init`, `client_init_dual`, `client_set_http_version` |
+| **TLS behaviors** | Real ECH (encrypted SNI), TLS 1.3 resumption, 0-RTT early data | `client_set_ech_enabled`, `client_set_resumption_enabled`, `client_set_early_data_enabled` |
+| **Sessions** | Lightweight per-task identity — cookie jar + redirect budget over one shared transport | `session_init`, `session_get` |
+| **Proxies** | HTTP / HTTPS / SOCKS5 (incl. HTTP/3 over SOCKS5), runtime switching, custom CA for MITM | `client_set_proxy`, `client_add_ca_file` |
+| **Headers** | Full Chrome set by default, or caller-controlled headers with explicit wire order | `client_override_default_headers`, `client_set_header_order` |
+| **Pooling** | Opt-in H2 / H3 connection keep-alive | `client_set_max_conns_per_origin` |
+| **Reliability** | Whole-operation timeout, browser-faithful redirects, DNS caching | `client_set_timeout_ms`, `client_set_max_redirects`, `client_set_dns_cache_ttl_ms` |
+| **Inspection** | Request/response hooks, certificate pinning, TLS key log for Wireshark | `client_set_pre_hook`, `client_pin_certificate`, `client_set_key_log_file` |
+| **Response bodies** | Transparent gzip / deflate / br / zstd decompression, typed accessors | `response_text`, `response_get_header`, `response_json` |
 
 ---
 
