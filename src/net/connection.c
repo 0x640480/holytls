@@ -308,12 +308,12 @@ internal void conn_pump_to_socket(Connection *c, SslPump *pump) {
   for (;;) {
     if (!c->tcp_inited || uv_is_closing((uv_handle_t *)&c->tcp)) return;
     if (c->egress) {
-      size_t max = 0;
+      U64 max = 0;
       WriteReq *wr =
           (WriteReq *)ra_reserve(c->egress, sizeof(WriteReq) + 1024, &max);
       if (wr) {
-        int n = ssl_pump_read_output(pump, (U8 *)(wr + 1),
-                                     (U64)max - sizeof(WriteReq));
+        int n =
+            ssl_pump_read_output(pump, (U8 *)(wr + 1), max - sizeof(WriteReq));
         if (n <= 0) {
           ra_abort(c->egress);
           return;

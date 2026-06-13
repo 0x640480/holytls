@@ -52,21 +52,21 @@
  *
  * API (producer side / consumer side must each be a single thread):
  *
- *   int      ra_init(ra_ring*, void *mem, size_t capacity);  // pow2 cap
+ *   int      ra_init(ra_ring*, void *mem, U64 capacity);  // pow2 cap
  *   void     ra_reset(ra_ring*);                  // both sides quiesced
  *
- *   void    *ra_reserve(ra_ring*, size_t min_size, size_t *max_size);
- *   void    *ra_commit (ra_ring*, size_t size, uint64_t tag);
+ *   void    *ra_reserve(ra_ring*, U64 min_size, U64 *max_size);
+ *   void    *ra_commit (ra_ring*, U64 size, U64 tag);
  *   void     ra_abort  (ra_ring*);                // cancel reservation
- *   void    *ra_alloc  (ra_ring*, size_t size, uint64_t tag);
+ *   void    *ra_alloc  (ra_ring*, U64 size, U64 tag);
  *
  *   ra_block ra_peek   (ra_ring*);                // oldest live block
  *   void     ra_release(ra_ring*);                // free oldest live block
  *   void     ra_free   (ra_ring*, void *p);       // release + FIFO assert
  *
- *   size_t   ra_capacity(ra_ring*), ra_used(ra_ring*), ra_free_space(ra_ring*);
- *   void    *ra_mem_map(size_t, int try_huge);    // Linux helper
- *   void     ra_mem_unmap(void*, size_t);
+ *   U64   ra_capacity(ra_ring*), ra_used(ra_ring*), ra_free_space(ra_ring*);
+ *   void    *ra_mem_map(U64, B32 try_huge);    // Linux helper
+ *   void     ra_mem_unmap(void*, U64);
  *
  * Guarantees & limits:
  *   - Returned pointers are 16-byte aligned; per-block overhead is 16 bytes
@@ -75,7 +75,7 @@
  *     regardless of where head currently sits. Larger blocks (up to
  *     capacity - 32) fit only when head's phase allows it.
  *   - At most one un-committed reservation at a time.
- *   - Offsets are uint64_t and never wrap in practice (2^64 bytes).
+ *   - Offsets are U64 and never wrap in practice (2^64 bytes).
  *   - 64-bit platforms only (lock-free 8-byte atomics assumed).
  */
 #ifndef RING_ALLOC_H
@@ -87,6 +87,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "base/base.h"  // holytls scalar types (U8 / U32 / U64 / B32)
+
 _Static_assert(sizeof(void *) == 8, "ring_alloc assumes a 64-bit platform");
 
 /* Cache line size used to partition the control block. 64 on x86-64 and
@@ -97,21 +99,21 @@ _Static_assert(sizeof(void *) == 8, "ring_alloc assumes a 64-bit platform");
 #define RA_CACHELINE 64
 #endif
 
-#define RA_ALIGN 16u                /* block alignment & granularity */
-#define RA_HDR_BYTES 16u            /* inline header size            */
-#define RA_SKIP (UINT64_C(1) << 63) /* header flag: wrap padding     */
+#define RA_ALIGN 16u           /* block alignment & granularity */
+#define RA_HDR_BYTES 16u       /* inline header size            */
+#define RA_SKIP ((U64)1 << 63) /* header flag: wrap padding     */
 
 typedef struct ra_hdr {
-  uint64_t size_flags; /* bits 0..62: data size in bytes; bit 63: SKIP */
-  uint64_t tag;        /* opaque user data (request id, conn ptr, ...) */
+  U64 size_flags; /* bits 0..62: data size in bytes; bit 63: SKIP */
+  U64 tag;        /* opaque user data (request id, conn ptr, ...) */
 } ra_hdr;
 
 _Static_assert(sizeof(ra_hdr) == RA_HDR_BYTES, "header must be 16 bytes");
 
 typedef struct ra_block {
   void *data; /* NULL when the ring is empty */
-  size_t size;
-  uint64_t tag;
+  U64 size;
+  U64 tag;
 } ra_block;
 
 /*
@@ -133,44 +135,44 @@ typedef struct ra_block {
  */
 typedef struct ra_ring {
   /* -- shared, read-only after init ---------------------------------- */
-  unsigned char *buf;
-  uint64_t mask; /* capacity - 1; capacity is a power of two */
+  U8 *buf;
+  U64 mask; /* capacity - 1; capacity is a power of two */
 
   /* -- producer-published --------------------------------------------- */
-  _Alignas(RA_CACHELINE) _Atomic uint64_t head; /* committed bytes  */
+  _Alignas(RA_CACHELINE) _Atomic U64 head; /* committed bytes  */
 
   /* -- producer-private ------------------------------------------------ */
-  _Alignas(RA_CACHELINE) uint64_t tail_cache; /* last seen tail   */
-  uint64_t rsv_hdr; /* monotonic offset of the staged header        */
-  uint64_t rsv_max; /* max committable data bytes for staged rsv    */
-  int rsv_active;   /* a reservation is outstanding                 */
+  _Alignas(RA_CACHELINE) U64 tail_cache; /* last seen tail   */
+  U64 rsv_hdr;    /* monotonic offset of the staged header        */
+  U64 rsv_max;    /* max committable data bytes for staged rsv    */
+  B32 rsv_active; /* a reservation is outstanding                 */
 
   /* -- consumer-published ---------------------------------------------- */
-  _Alignas(RA_CACHELINE) _Atomic uint64_t tail; /* released bytes   */
+  _Alignas(RA_CACHELINE) _Atomic U64 tail; /* released bytes   */
 
   /* -- consumer-private ------------------------------------------------ */
-  _Alignas(RA_CACHELINE) uint64_t head_cache; /* last seen head   */
+  _Alignas(RA_CACHELINE) U64 head_cache; /* last seen head   */
 } ra_ring;
 
 /* ---------------------------------------------------------------------- */
 /* internals                                                                */
 /* ---------------------------------------------------------------------- */
 
-static inline uint64_t ra__pad(uint64_t n) {
-  return (n + (RA_ALIGN - 1)) & ~(uint64_t)(RA_ALIGN - 1);
+static inline U64 ra__pad(U64 n) {
+  return (n + (RA_ALIGN - 1)) & ~(U64)(RA_ALIGN - 1);
 }
 
 /* Headers are written/read through memcpy: the backing storage is a plain
  * byte buffer, and memcpy of 16 bytes compiles to two 8-byte moves while
  * staying strict-aliasing clean. */
-static inline void ra__hdr_write(ra_ring *ra, uint64_t off, uint64_t size_flags,
-                                 uint64_t tag) {
-  unsigned char *p = ra->buf + (off & ra->mask);
+static inline void ra__hdr_write(ra_ring *ra, U64 off, U64 size_flags,
+                                 U64 tag) {
+  U8 *p = ra->buf + (off & ra->mask);
   memcpy(p, &size_flags, 8);
   memcpy(p + 8, &tag, 8);
 }
 
-static inline ra_hdr ra__hdr_read(ra_ring *ra, uint64_t off) {
+static inline ra_hdr ra__hdr_read(ra_ring *ra, U64 off) {
   ra_hdr h;
   memcpy(&h, ra->buf + (off & ra->mask), sizeof h);
   return h;
@@ -182,13 +184,13 @@ static inline ra_hdr ra__hdr_read(ra_ring *ra, uint64_t off) {
 
 /* mem must be at least 16-byte aligned and `capacity` bytes (a power of
  * two, >= 32). Returns 0 on success, -1 on bad arguments. */
-static inline int ra_init(ra_ring *ra, void *mem, size_t capacity) {
+static inline int ra_init(ra_ring *ra, void *mem, U64 capacity) {
   if (!ra || !mem) return -1;
   if (capacity < 2 * RA_HDR_BYTES) return -1;
   if ((capacity & (capacity - 1)) != 0) return -1; /* pow2 only */
   if (((uintptr_t)mem & (RA_ALIGN - 1)) != 0) return -1;
-  ra->buf = (unsigned char *)mem;
-  ra->mask = (uint64_t)capacity - 1;
+  ra->buf = (U8 *)mem;
+  ra->mask = (U64)capacity - 1;
   atomic_init(&ra->head, 0);
   atomic_init(&ra->tail, 0);
   ra->tail_cache = 0;
@@ -221,22 +223,22 @@ static inline void ra_reset(ra_ring *ra) {
  * contiguous span available at the chosen position. Nothing is visible to
  * the consumer until ra_commit().
  */
-static inline void *ra_reserve(ra_ring *ra, size_t min_size, size_t *max_size) {
+static inline void *ra_reserve(ra_ring *ra, U64 min_size, U64 *max_size) {
   assert(!ra->rsv_active &&
          "ra_reserve: previous reservation not committed/aborted");
 
-  uint64_t const cap = ra->mask + 1;
-  if ((uint64_t)min_size > cap) return NULL; /* can never fit */
-  uint64_t const need = ra__pad((uint64_t)min_size);
+  U64 const cap = ra->mask + 1;
+  if ((U64)min_size > cap) return NULL; /* can never fit */
+  U64 const need = ra__pad((U64)min_size);
 
   /* `head` is producer-owned: relaxed load is just reading our own var. */
-  uint64_t const head = atomic_load_explicit(&ra->head, memory_order_relaxed);
-  uint64_t to_end = cap - (head & ra->mask); /* contiguous bytes to wrap */
+  U64 const head = atomic_load_explicit(&ra->head, memory_order_relaxed);
+  U64 to_end = cap - (head & ra->mask); /* contiguous bytes to wrap */
 
   /* Header + data must not straddle the wrap: pad to the end if needed.
    * to_end is always a multiple of 16, so a skip marker always fits. */
-  uint64_t const skip = (to_end < RA_HDR_BYTES + need) ? to_end : 0;
-  uint64_t const total_min = skip + RA_HDR_BYTES + need;
+  U64 const skip = (to_end < RA_HDR_BYTES + need) ? to_end : 0;
+  U64 const total_min = skip + RA_HDR_BYTES + need;
 
 #ifdef RA_NO_CACHE
   /* Benchmark mode: behave like the article's naive ring buffer and read
@@ -248,14 +250,14 @@ static inline void *ra_reserve(ra_ring *ra, size_t min_size, size_t *max_size) {
    * first; only on apparent exhaustion refresh it from the shared line.
    * The acquire pairs with the consumer's release store and is what makes
    * it safe to recycle the bytes the consumer has finished reading. */
-  uint64_t free_bytes = cap - (head - ra->tail_cache);
+  U64 free_bytes = cap - (head - ra->tail_cache);
   if (free_bytes < total_min) {
     ra->tail_cache = atomic_load_explicit(&ra->tail, memory_order_acquire);
     free_bytes = cap - (head - ra->tail_cache);
     if (free_bytes < total_min) return NULL; /* genuinely full */
   }
 
-  uint64_t hdr_off = head;
+  U64 hdr_off = head;
   if (skip) {
     /* Wrap padding. Not yet visible: head is only published at commit,
      * and any published head always lands past skip + following block. */
@@ -266,14 +268,14 @@ static inline void *ra_reserve(ra_ring *ra, size_t min_size, size_t *max_size) {
 
   /* Largest committable size: bounded by the physical end of the buffer
    * and by how much free space remains after the skip + header. */
-  uint64_t const room_end = to_end - RA_HDR_BYTES;
-  uint64_t const free_data = free_bytes - skip - RA_HDR_BYTES;
-  uint64_t const max_data = room_end < free_data ? room_end : free_data;
+  U64 const room_end = to_end - RA_HDR_BYTES;
+  U64 const free_data = free_bytes - skip - RA_HDR_BYTES;
+  U64 const max_data = room_end < free_data ? room_end : free_data;
 
   ra->rsv_hdr = hdr_off;
   ra->rsv_max = max_data;
   ra->rsv_active = 1;
-  if (max_size) *max_size = (size_t)max_data;
+  if (max_size) *max_size = (U64)max_data;
   return ra->buf + ((hdr_off + RA_HDR_BYTES) & ra->mask);
 }
 
@@ -283,17 +285,16 @@ static inline void *ra_reserve(ra_ring *ra, size_t min_size, size_t *max_size) {
  * pointer. The release store on head is the only synchronizing write: it
  * makes the header, the payload, and any skip marker visible together.
  */
-static inline void *ra_commit(ra_ring *ra, size_t size, uint64_t tag) {
+static inline void *ra_commit(ra_ring *ra, U64 size, U64 tag) {
   assert(ra->rsv_active && "ra_commit: no active reservation");
-  assert((uint64_t)size <= ra->rsv_max &&
-         "ra_commit: size exceeds reservation");
+  assert((U64)size <= ra->rsv_max && "ra_commit: size exceeds reservation");
 
-  uint64_t const hdr_off = ra->rsv_hdr;
-  ra__hdr_write(ra, hdr_off, (uint64_t)size, tag);
+  U64 const hdr_off = ra->rsv_hdr;
+  ra__hdr_write(ra, hdr_off, (U64)size, tag);
   ra->rsv_active = 0;
   ra->rsv_max = 0;
 
-  uint64_t const new_head = hdr_off + RA_HDR_BYTES + ra__pad((uint64_t)size);
+  U64 const new_head = hdr_off + RA_HDR_BYTES + ra__pad((U64)size);
   atomic_store_explicit(&ra->head, new_head, memory_order_release);
   return ra->buf + ((hdr_off + RA_HDR_BYTES) & ra->mask);
 }
@@ -307,7 +308,7 @@ static inline void ra_abort(ra_ring *ra) {
 }
 
 /* Exact-size allocation: reserve + commit. NULL if it doesn't fit. */
-static inline void *ra_alloc(ra_ring *ra, size_t size, uint64_t tag) {
+static inline void *ra_alloc(ra_ring *ra, U64 size, U64 tag) {
   if (!ra_reserve(ra, size, NULL)) return NULL;
   return ra_commit(ra, size, tag);
 }
@@ -323,7 +324,7 @@ static inline void *ra_alloc(ra_ring *ra, size_t size, uint64_t tag) {
 static inline ra_block ra_peek(ra_ring *ra) {
   ra_block b = {0, 0, 0};
 
-  uint64_t tail = atomic_load_explicit(&ra->tail, memory_order_relaxed);
+  U64 tail = atomic_load_explicit(&ra->tail, memory_order_relaxed);
 
 #ifdef RA_NO_CACHE
   ra->head_cache = atomic_load_explicit(&ra->head, memory_order_acquire);
@@ -359,7 +360,7 @@ static inline ra_block ra_peek(ra_ring *ra) {
   }
 
   b.data = ra->buf + ((tail + RA_HDR_BYTES) & ra->mask);
-  b.size = (size_t)h.size_flags;
+  b.size = (U64)h.size_flags;
   b.tag = h.tag;
   return b;
 }
@@ -370,7 +371,7 @@ static inline ra_block ra_peek(ra_ring *ra) {
  * hands the bytes (including any skip padding) back to the producer.
  */
 static inline void ra_release(ra_ring *ra) {
-  uint64_t tail = atomic_load_explicit(&ra->tail, memory_order_relaxed);
+  U64 tail = atomic_load_explicit(&ra->tail, memory_order_relaxed);
   assert(tail != atomic_load_explicit(&ra->head, memory_order_acquire) &&
          "ra_release: ring is empty");
 
@@ -402,15 +403,15 @@ static inline void ra_free(ra_ring *ra, void *p) {
 /* introspection (racy snapshots; fine for stats and backpressure hints)    */
 /* ---------------------------------------------------------------------- */
 
-static inline size_t ra_capacity(ra_ring *ra) { return (size_t)(ra->mask + 1); }
+static inline U64 ra_capacity(ra_ring *ra) { return (U64)(ra->mask + 1); }
 
-static inline size_t ra_used(ra_ring *ra) { /* bytes incl. headers/padding */
-  uint64_t h = atomic_load_explicit(&ra->head, memory_order_relaxed);
-  uint64_t t = atomic_load_explicit(&ra->tail, memory_order_relaxed);
-  return (size_t)(h - t);
+static inline U64 ra_used(ra_ring *ra) { /* bytes incl. headers/padding */
+  U64 h = atomic_load_explicit(&ra->head, memory_order_relaxed);
+  U64 t = atomic_load_explicit(&ra->tail, memory_order_relaxed);
+  return (U64)(h - t);
 }
 
-static inline size_t ra_free_space(ra_ring *ra) {
+static inline U64 ra_free_space(ra_ring *ra) {
   return ra_capacity(ra) - ra_used(ra);
 }
 
@@ -434,7 +435,7 @@ static inline void ra_cpu_relax(void) {
  * pages (MAP_HUGETLB) first to cut TLB misses — the article's "further
  * optimizations" — then falls back to normal pages with MADV_HUGEPAGE so
  * THP can still kick in. Returns NULL on failure. */
-static inline void *ra_mem_map(size_t capacity, int try_huge) {
+static inline void *ra_mem_map(U64 capacity, B32 try_huge) {
   void *p = MAP_FAILED;
 #ifdef MAP_HUGETLB
   if (try_huge)
@@ -451,7 +452,7 @@ static inline void *ra_mem_map(size_t capacity, int try_huge) {
   return p == MAP_FAILED ? NULL : p;
 }
 
-static inline void ra_mem_unmap(void *p, size_t capacity) {
+static inline void ra_mem_unmap(void *p, U64 capacity) {
   if (p) munmap(p, capacity);
 }
 #endif /* __linux__ */
