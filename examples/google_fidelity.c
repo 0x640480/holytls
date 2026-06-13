@@ -24,8 +24,7 @@
 #include "net/loop.h"
 #include "profile/profile.h"
 
-#define GOOGLE_URL \
-  "https://www.walmart.com/"  // where google.com 301-redirects to
+#define GOOGLE_URL "https://www.google.com/"
 #define REQUESTS 3
 
 typedef struct App App;
