@@ -1,0 +1,83 @@
+# Build + test gate. Runs the full ctest suite in two configs on every push/PR:
+#   - release : -O2 -DNDEBUG production build (no sanitizers).
+#   - asan    : Debug + -fsanitize=address,undefined, which also turns on the
+#               arena ASan poisoning (intra-arena overflow / use-after-recycle).
+# The offline suite runs everywhere; the network-gated live tests skip without
+# HOLYTLS_LIVE (so CI stays deterministic). BoringSSL (a bundled dep) is built
+# from source with Go + perl; ccache makes that a cache hit on later runs.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref supersedes in-flight runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: release
+            build_type: Release
+            asan: "OFF"
+          - name: asan
+            build_type: Debug
+            asan: "ON"
+    steps:
+      - uses: actions/checkout@v4
+
+      # gcc/g++/cmake are preinstalled on the runner; perl + Go build BoringSSL,
+      # ninja + ccache speed the from-source dependency build.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build ccache perl
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # ccache turns the heavy dep build (BoringSSL, ngtcp2, nghttp2, ...) into a
+      # cache hit after the first run. Fresh key per run; restore the most recent.
+      - name: ccache cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ matrix.name }}-
+      - name: ccache prep
+        run: |
+          ccache --max-size=1G
+          ccache --zero-stats
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DHOLYTLS_ASAN=${{ matrix.asan }}
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build
+
+      - name: ccache stats
+        run: ccache --show-stats
+
+      # Offline suite (live tests skip without HOLYTLS_LIVE). ASan/UBSan abort on
+      # any finding, which fails the job; the arena poisoning is live in the asan cell.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: abort_on_error=1:detect_leaks=1:strict_string_checks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
