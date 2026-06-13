@@ -15,10 +15,6 @@ against `tls.peet.ws`, `browserleaks.com`, and a fingerprint-preserving MITM pro
 | HTTP/2 — **Akamai** | `1:65536;2:0;4:6291456;6:262144\|15663105\|0\|m,a,s,p` |
 | HTTP/3 — **QUIC-JA4** | `q13d0311h3_55b375c5d22e_653d80c3fe9d` |
 | HTTP/3 — **h3 settings hash** | `ba909fc3dc419ea5c5b26c6323ac1879` |
-
-It's written in plain C (arena allocation, length-carrying strings, no GC, no OOP),
-runs single-threaded on one libuv event loop, and embeds into any CMake project.
-
 ---
 
 ## What sets it apart
@@ -39,8 +35,7 @@ browser actually performs:
   visits look like a real browser's (the resumed-handshake fingerprint, not a fresh
   one).
 - **Massive concurrency, tiny footprint** — one event loop drives thousands of
-  concurrent requests; no threads, no goroutines, no GC. Per-request arenas mean
-  bulk-freed memory with nothing to leak.
+  concurrent requests; no threads, no goroutines, no GC.
 - **Wire-truth verifiable** — route through a MITM proxy (e.g. powhttp/mitmproxy)
   with `client_add_ca_file`, keep verification on, and inspect exactly what you
   send. holytls's fingerprint is unchanged by the proxy.
@@ -48,7 +43,7 @@ browser actually performs:
   list is produced by Chrome's own deterministic per-version algorithm, so a new
   Chrome version is a one-line bump, not a guess.
 
-### vs. bogdanfinn/tls-client and friends
+### vs. bogdanfinn/tls-client
 
 | | **holytls** | typical TLS-impersonation client |
 |---|---|---|
@@ -149,19 +144,6 @@ only reconnects resume / send 0-RTT — exactly like a browser.
 
 ---
 
-## Use cases
-
-- **Web scraping / automation** against anti-bot stacks that fingerprint TLS, H2,
-  and H3 — where a JA3/JA4-only match isn't enough.
-- **High-concurrency crawling** — one loop, thousands of in-flight requests, minimal
-  memory (per-request arenas), no GC pauses.
-- **Embedding browser-grade HTTP** in a C/C++/native app or another language via FFI
-  — a static lib, not a service.
-- **Fingerprint research / QA** — verify your client (or your server's detection)
-  against a byte-exact Chrome baseline; route through powhttp to read the wire.
-
----
-
 ## Features
 
 Browser-grade HTTP with the knobs a real Chrome needs. Most are opt-in — the full
@@ -183,7 +165,7 @@ surface lives in [`src/core/client.h`](src/core/client.h).
 
 ## Verifying the fingerprint
 
-Route holytls through [powhttp](https://github.com/) (or any MITM proxy) and inspect
+Route holytls through [powhttp](https://powhttp.com/) (or any MITM proxy) and inspect
 the exact bytes it sends — verification stays **on**, you just trust the proxy root:
 
 ```c
@@ -217,8 +199,38 @@ Chrome 149 fingerprints above. See [`examples/powhttp_proxy.c`](examples/powhttp
 - [`examples/powhttp_proxy.c`](examples/powhttp_proxy.c) — route through a MITM proxy
   for wire-truth inspection.
 
-## Code style
+---
 
-holytls is plain C — arena allocation, length-carrying `String8`, plain structs +
-free functions, and a callback-driven libuv event loop. When extending it, match the
-structure, naming, and comment density of the surrounding subsystem.
+## Third-party libraries
+
+holytls is a thin C layer over some excellent open-source work. The networking
+and TLS libraries are built from source (pinned versions) at configure time; the
+compression codecs are linked from the system if present; `stb_sprintf` is
+vendored in-tree (`src/vendor/`). Thanks to all their authors.
+
+| Library | Role in holytls | Source | License |
+|---|---|---|---|
+| **BoringSSL** (lexiforest fork) | TLS 1.2/1.3, the byte-exact impersonation ClientHello, and QUIC crypto. Default is the impersonation fork; falls back to upstream | [lexiforest/boringssl](https://github.com/lexiforest/boringssl) · [google/boringssl](https://github.com/google/boringssl) | Apache-2.0 / OpenSSL / ISC |
+| **libuv** `v1.52.1` | event loop, non-blocking TCP/UDP sockets, async DNS | [libuv/libuv](https://github.com/libuv/libuv) | MIT |
+| **nghttp2** `v1.69.0` | HTTP/2 framing | [nghttp2/nghttp2](https://github.com/nghttp2/nghttp2) | MIT |
+| **ngtcp2** `v1.23.0` | QUIC transport | [ngtcp2/ngtcp2](https://github.com/ngtcp2/ngtcp2) | MIT |
+| **nghttp3** `v1.9.0` | HTTP/3 + QPACK | [ngtcp2/nghttp3](https://github.com/ngtcp2/nghttp3) | MIT |
+| **picohttpparser** | HTTP/1.x response parsing | [h2o/picohttpparser](https://github.com/h2o/picohttpparser) | MIT |
+| **yyjson** `0.12.0` | JSON (session persistence, fingerprint-oracle parsing) | [ibireme/yyjson](https://github.com/ibireme/yyjson) | MIT |
+| **zlib** | gzip/deflate content decoding + TLS cert compression (required) | [madler/zlib](https://github.com/madler/zlib) | zlib |
+| **brotli** | `br` content + cert decompression (optional) | [google/brotli](https://github.com/google/brotli) | MIT |
+| **zstd** | `zstd` content + cert decompression (optional) | [facebook/zstd](https://github.com/facebook/zstd) | BSD-3-Clause |
+| **stb_sprintf** | dependency-free `snprintf` (vendored) | [nothings/stb](https://github.com/nothings/stb) | Public domain / MIT |
+
+Licenses are summarized for convenience — see each project for authoritative terms.
+
+## Credits
+
+- **[curl-impersonate](https://github.com/lwthiker/curl-impersonate)** and
+  **[lexiforest/curl_cffi](https://github.com/lexiforest/curl_cffi)** — the BoringSSL
+  impersonation fork holytls builds on. It emits the extra TLS extensions stock
+  BoringSSL can't, which is what makes a byte-exact Chrome ClientHello possible.
+- **[JA4+](https://github.com/FoxIO-LLC/ja4)** (FoxIO) — the TLS / QUIC / HTTP
+  fingerprint suite holytls reproduces and tests against.
+- **[tls.peet.ws](https://tls.peet.ws)** and **[browserleaks.com](https://browserleaks.com)**
+  — the public fingerprinting oracles used to live-verify byte-exactness.
