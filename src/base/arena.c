@@ -13,14 +13,16 @@ internal void arena_stat_create(void) {
   ArenaStats *s = &g_arena_stats;
   s->arenas_created++;
   s->live_arenas++;
-  if (s->live_arenas > s->peak_live_arenas) s->peak_live_arenas = s->live_arenas;
+  if (s->live_arenas > s->peak_live_arenas)
+    s->peak_live_arenas = s->live_arenas;
 }
 ArenaStats arena_stats(void) { return g_arena_stats; }
 void arena_stats_reset(void) {
   ArenaStats *s = &g_arena_stats;
   s->arenas_created = s->arenas_released = s->blocks_allocated = 0;
   s->bytes_reserved = s->bytes_pushed = 0;
-  s->peak_live_arenas = s->live_arenas;  // rebase peaks to the current live state
+  s->peak_live_arenas =
+      s->live_arenas;  // rebase peaks to the current live state
   s->peak_live_bytes = s->live_bytes;
 }
 #else
@@ -157,8 +159,9 @@ Temp scratch_begin(Arena **conflicts, U64 conflict_count) {
 }
 
 //- thread-local arena recycle pool
-// Mirrors g_scratch: a thread_local free-list head, never torn down (every pooled
-// arena stays reachable through it, so LSAN sees still-reachable, not leaked).
+// Mirrors g_scratch: a thread_local free-list head, never torn down (every
+// pooled arena stays reachable through it, so LSAN sees still-reachable, not
+// leaked).
 #define ARENA_RECYCLE_MAX 64  // cap free-list depth; beyond it, release
 
 global thread_local Arena *g_recycle_head;
@@ -178,7 +181,8 @@ Arena *arena_acquire(void) {
 void arena_recycle(Arena *arena) {
   if (!arena) return;
   // arena_clear keeps ALL blocks, so pooling an arena that grew past its first
-  // block would retain that bloat forever — release those instead. Also cap depth.
+  // block would retain that bloat forever — release those instead. Also cap
+  // depth.
   if (arena->first->next != 0 || g_recycle_count >= ARENA_RECYCLE_MAX) {
     arena_release(arena);
     return;

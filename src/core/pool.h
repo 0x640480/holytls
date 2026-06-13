@@ -40,8 +40,8 @@ struct PoolH3Uni {
   U64 type;
 };
 
-// One HTTP exchange riding a pooled connection (its own short-lived arena, freed
-// on completion). References — never owns — its PoolConn.
+// One HTTP exchange riding a pooled connection (its own short-lived arena,
+// freed on completion). References — never owns — its PoolConn.
 struct PoolReq {
   Arena *arena;
   Client *client;
@@ -68,14 +68,14 @@ struct PoolReq {
   HeaderList resp_headers;  // filtered view when the body is decoded
   String8 body;             // dup'd body for the submit
   S32 h2_stream_id;         // H2 routing
-  int retries_left;         // retry on a fresh conn (stale reuse / GOAWAY refusal)
+  int retries_left;  // retry on a fresh conn (stale reuse / GOAWAY refusal)
   B32 responded;
-  U64 deadline_ns;          // whole-operation timeout deadline (0 = none)
-  ReqTimer *timeout;        // the armed deadline timer (0 = none)
+  U64 deadline_ns;    // whole-operation timeout deadline (0 = none)
+  ReqTimer *timeout;  // the armed deadline timer (0 = none)
 
   // H3 per-request state (proto == PoolProto_H3).
   S64 h3_stream_id;
-  U8Buf h3_in;   // buffered response on the request stream
+  U8Buf h3_in;  // buffered response on the request stream
   int h3_status;
   B32 h3_fin;
 
@@ -91,9 +91,10 @@ struct PoolConn {
   PoolProto proto;
   char origin[256];  // "host:port" key (alt-svc convention)
   PoolConnState state;
-  B32 broken;     // GOAWAY/error: stop new submits, evict once drained
-  B32 in_drain;   // inside this conn's recv loop: defer submits (no nghttp2 re-entry)
-  B32 idle;       // inflight==0 + unref'd (edge-triggered; H3 recv fires often)
+  B32 broken;    // GOAWAY/error: stop new submits, evict once drained
+  B32 in_drain;  // inside this conn's recv loop: defer submits (no nghttp2
+                 // re-entry)
+  B32 idle;      // inflight==0 + unref'd (edge-triggered; H3 recv fires often)
   U32 inflight;
   U64 idle_since_ms;
 
@@ -107,10 +108,10 @@ struct PoolConn {
   PoolReq *active_head;                  // submitted, awaiting response
 };
 
-// Per-connection HTTP/3 state: the shared QPACK codecs (encoder is static-only =
-// stateless across requests; decoder's dynamic table is per-connection by spec)
-// and the control + QPACK uni streams opened once per connection. Request bidi
-// streams route back to their PoolReq via `streams[]`.
+// Per-connection HTTP/3 state: the shared QPACK codecs (encoder is static-only
+// = stateless across requests; decoder's dynamic table is per-connection by
+// spec) and the control + QPACK uni streams opened once per connection. Request
+// bidi streams route back to their PoolReq via `streams[]`.
 #define H3_MAX_STREAMS 16
 struct H3Conn {
   const Http3Profile *prof;
@@ -141,13 +142,15 @@ struct ConnPool {
 
 // Lifecycle (called from core/client.c).
 ConnPool *pool_alloc(Client *c);
-void pool_free(ConnPool *p);    // arena_release (call once conns are drained)
-void pool_drain(ConnPool *p);   // begin closing all conns + the sweep timer
-// Stop reusing every current conn (mark broken) and close the idle ones; in-flight
-// conns finish then close. Keeps the pool live for new conns (runtime proxy switch).
+void pool_free(ConnPool *p);   // arena_release (call once conns are drained)
+void pool_drain(ConnPool *p);  // begin closing all conns + the sweep timer
+// Stop reusing every current conn (mark broken) and close the idle ones;
+// in-flight conns finish then close. Keeps the pool live for new conns (runtime
+// proxy switch).
 void pool_evict_all(ConnPool *p);
 
-// Dispatch a request through the pool (acquire/reuse a conn, multiplex a stream).
+// Dispatch a request through the pool (acquire/reuse a conn, multiplex a
+// stream).
 void pool_dispatch(Client *c, PoolProto proto, Method m, String8 url,
                    const Header *headers, U64 header_count, const U8 *body,
                    U64 body_len, ResponseFn cb, void *user, U64 deadline_ns);

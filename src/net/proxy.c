@@ -2,8 +2,9 @@
 
 #include "base/base64.h"
 
-// Copy a String8 into a fixed NUL-terminated char buffer, truncating silently at
-// cap-1 (config fields have generous bounds; truncation only on absurd input).
+// Copy a String8 into a fixed NUL-terminated char buffer, truncating silently
+// at cap-1 (config fields have generous bounds; truncation only on absurd
+// input).
 internal void proxy_copy_field(char *dst, U64 cap, String8 s) {
   U64 n = s.size < cap - 1 ? s.size : cap - 1;
   MemoryCopy(dst, s.str, n);
@@ -43,8 +44,10 @@ B32 proxy_parse(String8 url, ProxyConfig *out) {
     rest = str8_skip(rest, at + 1);
     U64 colon;
     if (str8_index_of(userinfo, ':', &colon)) {
-      proxy_copy_field(out->user, sizeof out->user, str8_prefix(userinfo, colon));
-      proxy_copy_field(out->pass, sizeof out->pass, str8_skip(userinfo, colon + 1));
+      proxy_copy_field(out->user, sizeof out->user,
+                       str8_prefix(userinfo, colon));
+      proxy_copy_field(out->pass, sizeof out->pass,
+                       str8_skip(userinfo, colon + 1));
     } else {
       proxy_copy_field(out->user, sizeof out->user, userinfo);
     }
@@ -58,7 +61,8 @@ B32 proxy_parse(String8 url, ProxyConfig *out) {
     if (!str8_index_of(rest, ']', &rb)) return 0;
     host = str8_substr(rest, 1, rb);
     String8 after = str8_skip(rest, rb + 1);  // ":port" or empty
-    if (after.size && after.str[0] == ':') port = (U16)str8_to_u64(str8_skip(after, 1));
+    if (after.size && after.str[0] == ':')
+      port = (U16)str8_to_u64(str8_skip(after, 1));
   } else {
     U64 colon;
     if (str8_index_of(rest, ':', &colon)) {
@@ -96,7 +100,8 @@ String8 proxy_to_url(Arena *arena, const ProxyConfig *p) {
 internal String8 proxy_hostport(Arena *arena, String8 host, U16 port) {
   U64 c;
   if (str8_index_of(host, ':', &c))
-    return push_str8f(arena, "[" STR8_Fmt "]:%u", STR8_Arg(host), (unsigned)port);
+    return push_str8f(arena, "[" STR8_Fmt "]:%u", STR8_Arg(host),
+                      (unsigned)port);
   return push_str8f(arena, STR8_Fmt ":%u", STR8_Arg(host), (unsigned)port);
 }
 
@@ -111,9 +116,9 @@ String8 proxy_http_connect_request(Arena *arena, const ProxyConfig *p,
                       "\r\nProxy-Authorization: Basic " STR8_Fmt "\r\n\r\n",
                       STR8_Arg(hp), STR8_Arg(hp), STR8_Arg(b64));
   }
-  return push_str8f(arena,
-                    "CONNECT " STR8_Fmt " HTTP/1.1\r\nHost: " STR8_Fmt "\r\n\r\n",
-                    STR8_Arg(hp), STR8_Arg(hp));
+  return push_str8f(
+      arena, "CONNECT " STR8_Fmt " HTTP/1.1\r\nHost: " STR8_Fmt "\r\n\r\n",
+      STR8_Arg(hp), STR8_Arg(hp));
 }
 
 U64 proxy_http_response_status(const U8 *buf, U64 len, B32 *complete,
@@ -130,7 +135,8 @@ U64 proxy_http_response_status(const U8 *buf, U64 len, B32 *complete,
     }
   if (end == 0) return 0;
   *complete = 1;
-  // Status line: "HTTP/1.x SP NNN SP reason". Parse the code after the 1st space.
+  // Status line: "HTTP/1.x SP NNN SP reason". Parse the code after the 1st
+  // space.
   String8 line = str8((U8 *)buf, end);
   U64 sp;
   if (str8_index_of(line, ' ', &sp))
@@ -211,13 +217,18 @@ U64 proxy_socks5_parse_reply(const U8 *buf, U64 len, B32 *complete, B32 *ok,
   if (len < 4) return 0;  // VER REP RSV ATYP
   U64 addr_len;
   switch (buf[3]) {
-    case 0x01: addr_len = 4; break;             // IPv4
-    case 0x04: addr_len = 16; break;            // IPv6
-    case 0x03:                                  // DOMAINNAME
+    case 0x01:
+      addr_len = 4;
+      break;  // IPv4
+    case 0x04:
+      addr_len = 16;
+      break;    // IPv6
+    case 0x03:  // DOMAINNAME
       if (len < 5) return 0;
       addr_len = 1 + buf[4];
       break;
-    default: return 0;  // malformed ATYP
+    default:
+      return 0;  // malformed ATYP
   }
   U64 total = 4 + addr_len + 2;  // + BND.PORT
   if (len < total) return 0;
@@ -233,10 +244,10 @@ U64 proxy_socks5_parse_reply(const U8 *buf, U64 len, B32 *complete, B32 *ok,
 
 U64 proxy_socks5_udp_associate_request(U8 *out, U64 cap) {
   if (cap < 10) return 0;
-  out[0] = 0x05;  // VER
-  out[1] = 0x03;  // CMD = UDP ASSOCIATE
-  out[2] = 0x00;  // RSV
-  out[3] = 0x01;  // ATYP = IPv4
+  out[0] = 0x05;                               // VER
+  out[1] = 0x03;                               // CMD = UDP ASSOCIATE
+  out[2] = 0x00;                               // RSV
+  out[3] = 0x01;                               // ATYP = IPv4
   for (int i = 4; i < 10; ++i) out[i] = 0x00;  // DST.ADDR 0.0.0.0 + DST.PORT 0
   return 10;
 }
@@ -259,13 +270,18 @@ U64 proxy_socks5_udp_header_len(const U8 *buf, U64 len) {
   if (len < 4) return 0;  // RSV RSV FRAG ATYP
   U64 addr_len;
   switch (buf[3]) {
-    case 0x01: addr_len = 4; break;   // IPv4
-    case 0x04: addr_len = 16; break;  // IPv6
-    case 0x03:                        // DOMAINNAME
+    case 0x01:
+      addr_len = 4;
+      break;  // IPv4
+    case 0x04:
+      addr_len = 16;
+      break;    // IPv6
+    case 0x03:  // DOMAINNAME
       if (len < 5) return 0;
       addr_len = 1 + buf[4];
       break;
-    default: return 0;
+    default:
+      return 0;
   }
   U64 total = 4 + addr_len + 2;  // + port
   return len < total ? 0 : total;

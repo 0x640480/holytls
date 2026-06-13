@@ -11,7 +11,8 @@
 // ---------------------------------------------------------------------------
 // store
 // ---------------------------------------------------------------------------
-// True if pin `p` covers `host` (exact, or a parent domain when include_subdomains).
+// True if pin `p` covers `host` (exact, or a parent domain when
+// include_subdomains).
 internal B32 pin_host_applies(const CertPin *p, String8 host) {
   String8 ph = str8_cstring(p->host);
   if (str8_match_ci(host, ph)) return 1;
@@ -60,7 +61,8 @@ B32 cert_pin_match(const CertPinStore *s, const char *host, const U8 *spki) {
 
 B32 cert_pin_compute_spki_sha256(X509 *cert, U8 out[32]) {
   if (!cert) return 0;
-  X509_PUBKEY *pk = X509_get_X509_PUBKEY(cert);  // internal pointer; do not free
+  X509_PUBKEY *pk =
+      X509_get_X509_PUBKEY(cert);  // internal pointer; do not free
   if (!pk) return 0;
   U8 *der = 0;
   int len = i2d_X509_PUBKEY(pk, &der);
@@ -73,7 +75,8 @@ B32 cert_pin_compute_spki_sha256(X509 *cert, U8 out[32]) {
 // ---------------------------------------------------------------------------
 // per-connection verification
 // ---------------------------------------------------------------------------
-// SSL_CTX ex_data slot for the CertPinStore; SSL ex_data slot for the host string.
+// SSL_CTX ex_data slot for the CertPinStore; SSL ex_data slot for the host
+// string.
 internal int cert_pin_store_ex_index(void) {
   static int i = -1;
   if (i < 0) i = SSL_CTX_get_ex_new_index(0, 0, 0, 0, 0);
@@ -85,12 +88,14 @@ internal int cert_pin_host_ex_index(void) {
   return i;
 }
 
-// Trust-on-pin: accept iff the leaf SPKI matches a pin for the host; else reject.
+// Trust-on-pin: accept iff the leaf SPKI matches a pin for the host; else
+// reject.
 internal enum ssl_verify_result_t cert_pin_verify_cb(SSL *ssl,
                                                      uint8_t *out_alert) {
-  const char *host = (const char *)SSL_get_ex_data(ssl, cert_pin_host_ex_index());
-  CertPinStore *s = (CertPinStore *)SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl),
-                                                        cert_pin_store_ex_index());
+  const char *host =
+      (const char *)SSL_get_ex_data(ssl, cert_pin_host_ex_index());
+  CertPinStore *s = (CertPinStore *)SSL_CTX_get_ex_data(
+      SSL_get_SSL_CTX(ssl), cert_pin_store_ex_index());
   if (!host || !s) {
     *out_alert = SSL_AD_INTERNAL_ERROR;
     return ssl_verify_invalid;
@@ -101,7 +106,8 @@ internal enum ssl_verify_result_t cert_pin_verify_cb(SSL *ssl,
     return ssl_verify_invalid;
   }
   U8 spki[32];
-  B32 ok = cert_pin_compute_spki_sha256(leaf, spki) && cert_pin_match(s, host, spki);
+  B32 ok =
+      cert_pin_compute_spki_sha256(leaf, spki) && cert_pin_match(s, host, spki);
   X509_free(leaf);
   if (ok) return ssl_verify_ok;
   *out_alert = SSL_AD_BAD_CERTIFICATE;
@@ -114,8 +120,8 @@ void cert_pin_attach_ctx(SSL_CTX *ctx, CertPinStore *store) {
 
 void cert_pin_maybe_enable(SSL *ssl, const char *host) {
   if (!host || !*host) return;
-  CertPinStore *s = (CertPinStore *)SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl),
-                                                        cert_pin_store_ex_index());
+  CertPinStore *s = (CertPinStore *)SSL_CTX_get_ex_data(
+      SSL_get_SSL_CTX(ssl), cert_pin_store_ex_index());
   if (!s || !cert_pin_host_has(s, host)) return;  // not pinned -> leave default
   // `host` points at the connection's stable host buffer, valid through the
   // handshake (where the callback fires). Trust-on-pin overrides the CTX's

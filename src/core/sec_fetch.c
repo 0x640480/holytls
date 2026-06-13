@@ -3,9 +3,9 @@
 #include "base/base.h"
 #include "core/url.h"
 
-// Registrable domain = the last two dot-labels (a.b.example.com -> example.com).
-// Pragmatic eTLD+1 (no public-suffix list) — good enough for same-site coherence,
-// imperfect for multi-label public suffixes like co.uk.
+// Registrable domain = the last two dot-labels (a.b.example.com ->
+// example.com). Pragmatic eTLD+1 (no public-suffix list) — good enough for
+// same-site coherence, imperfect for multi-label public suffixes like co.uk.
 internal String8 sec_reg_domain(String8 host) {
   U64 dot2 = 0;
   int n = 0;
@@ -37,8 +37,8 @@ internal String8 sec_fetch_site(String8 url, String8 referer) {
 
 void sec_fetch_append(HeaderList *out, FetchMode mode, String8 url,
                       String8 referer) {
-  header_list_push(out, str8_lit("sec-fetch-site"), sec_fetch_site(url, referer),
-                   0);
+  header_list_push(out, str8_lit("sec-fetch-site"),
+                   sec_fetch_site(url, referer), 0);
   String8 m, dest, usr;
   switch (mode) {
     case FetchMode_Cors:
@@ -52,18 +52,20 @@ void sec_fetch_append(HeaderList *out, FetchMode mode, String8 url,
       break;
     case FetchMode_Navigate:
     default:
-      m = str8_lit("navigate"), dest = str8_lit("document"), usr = str8_lit("?1");
+      m = str8_lit("navigate"), dest = str8_lit("document"),
+      usr = str8_lit("?1");
       break;
   }
   header_list_push(out, str8_lit("sec-fetch-mode"), m, 0);
   header_list_push(out, str8_lit("sec-fetch-dest"), dest, 0);
-  header_list_push(out, str8_lit("sec-fetch-user"), usr, 0);  // empty => omitted
+  header_list_push(out, str8_lit("sec-fetch-user"), usr,
+                   0);  // empty => omitted
 
   // Non-navigation requests (fetch/XHR) carry accept: */* and priority: u=1, i,
   // and omit Upgrade-Insecure-Requests — whereas the profile's static defaults
-  // are navigation-shaped (accept: text/html..., priority: u=0, i, UIR: 1). Emit
-  // these as overrides of the default slots (an empty value drops the default in
-  // build_ordered_headers) unless the caller set them explicitly.
+  // are navigation-shaped (accept: text/html..., priority: u=0, i, UIR: 1).
+  // Emit these as overrides of the default slots (an empty value drops the
+  // default in build_ordered_headers) unless the caller set them explicitly.
   if (mode != FetchMode_Navigate) {
     if (!header_list_has_ci(out, str8_lit("accept")))
       header_list_push(out, str8_lit("accept"), str8_lit("*/*"), 0);

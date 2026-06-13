@@ -1,6 +1,6 @@
-// Offline timing tests: conn_timing_ms / quic_conn_timing_ms phase arithmetic and
-// the pooled-reuse gate (setup phases report 0 when the connection was already
-// established before the request started). Live end-to-end timing is in
+// Offline timing tests: conn_timing_ms / quic_conn_timing_ms phase arithmetic
+// and the pooled-reuse gate (setup phases report 0 when the connection was
+// already established before the request started). Live end-to-end timing is in
 // timing_live_test.
 #include <stdio.h>
 
@@ -23,9 +23,9 @@ internal void test_tcp(void) {
   Connection c;
   MemoryZeroStruct(&c);
   c.t_connect_start_ns = 1 * MS;
-  c.t_resolved_ns = 3 * MS;    // dns = 2ms
-  c.t_connected_ns = 6 * MS;   // tcp = 3ms
-  c.t_established_ns = 10 * MS; // tls = 4ms
+  c.t_resolved_ns = 3 * MS;      // dns = 2ms
+  c.t_connected_ns = 6 * MS;     // tcp = 3ms
+  c.t_established_ns = 10 * MS;  // tls = 4ms
 
   U64 dns, tcp, tls;
   // Request started before the connection was established -> real phases.
@@ -47,7 +47,7 @@ internal void test_quic(void) {
   QuicConnection c;
   MemoryZeroStruct(&c);
   c.t_connect_start_ns = 1 * MS;
-  c.t_resolved_ns = 2 * MS;     // dns = 1ms
+  c.t_resolved_ns = 2 * MS;      // dns = 1ms
   c.t_established_ns = 12 * MS;  // tls = 10ms (combined QUIC handshake)
 
   U64 dns, tcp, tls;

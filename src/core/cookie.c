@@ -1,11 +1,11 @@
 #include "core/cookie.h"
 
-#include "core/psl.h"
-
 #include "base/base.h"
 #include "base/u8buf.h"
+#include "core/psl.h"
 
-//- HTTP-date (RFC 6265 §5.1.1: tokenize, then pick day/month/year/time heuristically)
+//- HTTP-date (RFC 6265 §5.1.1: tokenize, then pick day/month/year/time
+//heuristically)
 internal const char *k_months[12] = {"jan", "feb", "mar", "apr", "may", "jun",
                                      "jul", "aug", "sep", "oct", "nov", "dec"};
 
@@ -57,7 +57,8 @@ U64 http_date_parse(String8 s) {
         String8 t = tok;
         String8 a = str8_chop_by_delim(&t, ':');
         String8 b = str8_chop_by_delim(&t, ':');
-        if (cookie_all_digits(a) && cookie_all_digits(b) && cookie_all_digits(t)) {
+        if (cookie_all_digits(a) && cookie_all_digits(b) &&
+            cookie_all_digits(t)) {
           hh = str8_to_u64(a);
           mm = str8_to_u64(b);
           ss = str8_to_u64(t);
@@ -79,7 +80,8 @@ U64 http_date_parse(String8 s) {
         continue;
       }
     }
-    if (!have_year && tok.size >= 2 && tok.size <= 4 && cookie_all_digits(tok)) {
+    if (!have_year && tok.size >= 2 && tok.size <= 4 &&
+        cookie_all_digits(tok)) {
       year = str8_to_u64(tok);
       have_year = 1;
       continue;
@@ -137,8 +139,8 @@ internal B32 cookie_path_match(String8 req_path, String8 cp) {
   return req.str[cp.size] == '/';
 }
 
-// Default-path (§5.1.4): request path up to (excluding) the last '/'; "/" if the
-// only slash is the leading one.
+// Default-path (§5.1.4): request path up to (excluding) the last '/'; "/" if
+// the only slash is the leading one.
 internal String8 cookie_default_path(String8 path) {
   path = cookie_strip_query(path);
   if (path.size == 0 || path.str[0] != '/') return str8_lit("/");
@@ -173,7 +175,8 @@ internal Cookie *cookie_jar_push(CookieJar *jar) {
 
 internal void cookie_jar_remove(CookieJar *jar, U64 i) {
   if (i + 1 < jar->count)
-    MemoryMove(&jar->v[i], &jar->v[i + 1], (jar->count - i - 1) * sizeof(Cookie));
+    MemoryMove(&jar->v[i], &jar->v[i + 1],
+               (jar->count - i - 1) * sizeof(Cookie));
   jar->count--;
 }
 
@@ -278,16 +281,17 @@ void cookie_jar_store(CookieJar *jar, ParsedUrl req, String8 sc, U64 now) {
     } else if (str8_match_ci(an, str8_lit("httponly"))) {
       http_only = 1;
     } else if (str8_match_ci(an, str8_lit("samesite"))) {
-      same_site = str8_match_ci(val, str8_lit("strict"))  ? 2
-                  : str8_match_ci(val, str8_lit("none"))  ? 3
-                                                          : 1;
+      same_site = str8_match_ci(val, str8_lit("strict")) ? 2
+                  : str8_match_ci(val, str8_lit("none")) ? 3
+                                                         : 1;
     }
   }
 
   if (!host_only) {  // a Domain attribute was given
     for (U64 i = 0; i < domain.size; ++i)
       if (domain.str[i] >= 0x80)
-        return;  // raw-IDN bytes would bypass the ASCII/punycode PSL: fail closed
+        return;  // raw-IDN bytes would bypass the ASCII/punycode PSL: fail
+                 // closed
     if (cookie_host_is_ip(req.host)) {
       // An IP host domain-matches only itself (RFC 6265 5.1.3): accept the
       // identical Domain as a host-only cookie, reject anything else (e.g.

@@ -53,13 +53,21 @@ internal inline B32 ascii_is_space(char c) {
 internal inline B32 char_is_digit(U8 c) { return c >= '0' && c <= '9'; }
 internal inline B32 char_is_upper(U8 c) { return c >= 'A' && c <= 'Z'; }
 internal inline B32 char_is_lower(U8 c) { return c >= 'a' && c <= 'z'; }
-internal inline B32 char_is_alpha(U8 c) { return char_is_upper(c) || char_is_lower(c); }
-internal inline B32 char_is_alnum(U8 c) { return char_is_alpha(c) || char_is_digit(c); }
+internal inline B32 char_is_alpha(U8 c) {
+  return char_is_upper(c) || char_is_lower(c);
+}
+internal inline B32 char_is_alnum(U8 c) {
+  return char_is_alpha(c) || char_is_digit(c);
+}
 internal inline B32 char_is_hex(U8 c) {
   return char_is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
-internal inline U8 char_to_upper(U8 c) { return char_is_lower(c) ? (U8)(c - 32) : c; }
-internal inline U8 char_to_lower(U8 c) { return char_is_upper(c) ? (U8)(c + 32) : c; }
+internal inline U8 char_to_upper(U8 c) {
+  return char_is_lower(c) ? (U8)(c - 32) : c;
+}
+internal inline U8 char_to_lower(U8 c) {
+  return char_is_upper(c) ? (U8)(c + 32) : c;
+}
 
 //- view operations (tsoding sv.h-style; all non-allocating, return sub-views)
 
@@ -75,11 +83,13 @@ internal inline String8 str8_postfix(String8 s, U64 n) {  // last n (clamped)
   if (n > s.size) n = s.size;
   return str8(s.str + (s.size - n), n);
 }
-internal inline String8 str8_chop(String8 s, U64 n) {  // drop last n (non-mutating)
+internal inline String8 str8_chop(String8 s,
+                                  U64 n) {  // drop last n (non-mutating)
   if (n > s.size) n = s.size;
   return str8(s.str, s.size - n);
 }
-internal inline String8 str8_substr(String8 s, U64 min, U64 max) {  // [min, max)
+internal inline String8 str8_substr(String8 s, U64 min,
+                                    U64 max) {  // [min, max)
   if (min > s.size) min = s.size;
   if (max > s.size) max = s.size;
   if (max < min) max = min;
@@ -162,8 +172,9 @@ internal inline String8 str8_chop_last_dot(String8 s) {
   return str8_rindex_of(s, '.', &i) ? str8_prefix(s, i) : s;
 }
 
-// split off the head up to `delim` (or `delim` substring), advancing *s past it.
-// If the delimiter is absent, the head is the whole string and *s becomes empty.
+// split off the head up to `delim` (or `delim` substring), advancing *s past
+// it. If the delimiter is absent, the head is the whole string and *s becomes
+// empty.
 String8 str8_chop_by_delim(String8 *s, U8 delim);
 String8 str8_chop_by_str(String8 *s, String8 delim);
 // like str8_chop_by_delim but only consumes when the delimiter is present.
@@ -176,12 +187,14 @@ String8 str8_chop_left_while(String8 *s, B32 (*pred)(U8));
 // advances *s past the digits consumed.
 U64 str8_to_u64(String8 s);
 U64 str8_chop_u64(String8 *s);
-// format `value` in `radix` (2..16, lowercase hex), zero-padded to `min_digits`.
+// format `value` in `radix` (2..16, lowercase hex), zero-padded to
+// `min_digits`.
 String8 str8_from_u64(Arena *arena, U64 value, U32 radix, U8 min_digits);
 
 // split on `delim` into a String8List of the (non-empty) tokens.
 String8List str8_split(Arena *arena, String8 s, U8 delim);
-// pop the first line (up to '\n'); strips a trailing '\r'; advances *s past '\n'.
+// pop the first line (up to '\n'); strips a trailing '\r'; advances *s past
+// '\n'.
 String8 str8_chop_line(String8 *s);
 
 // printf integration: printf("ja4=" STR8_Fmt "\n", STR8_Arg(my_str8))

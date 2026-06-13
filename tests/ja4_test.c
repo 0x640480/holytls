@@ -2,6 +2,8 @@
 // build the template + chrome148 SSL_CTX with the BoringSSL fork, capture the
 // ClientHello each emits (offline, via a memory BIO), and assert the full JA4
 // byte-for-byte.
+#include "tls/ja4.h"
+
 #include <openssl/bio.h>
 #include <openssl/ssl.h>
 
@@ -9,14 +11,13 @@
 #include "base/base.h"
 #include "base/string8.h"
 #include "profile/profile.h"
-#include "tls/ja4.h"
 #include "tls/ssl_ctx.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
-#define CHECK(c)                                                  \
-  Statement(g_checks += 1; if (!(c)) {                            \
-    g_fails += 1;                                                 \
+#define CHECK(c)                                                   \
+  Statement(g_checks += 1; if (!(c)) {                             \
+    g_fails += 1;                                                  \
     fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
   })
 
@@ -75,8 +76,8 @@ internal void test_ja4_impl(Arena *a) {
   in.alpn_len = 2;
 
   Fingerprints fp = ja4_compute(a, &in);
-  CHECK(str8_match(
-      fp.ja4_r, str8_lit("t13d0304h2_1301,1302,c02b_000d,0017_0403,0804")));
+  CHECK(str8_match(fp.ja4_r,
+                   str8_lit("t13d0304h2_1301,1302,c02b_000d,0017_0403,0804")));
 }
 
 //- Part B: capture a real ClientHello and assert the full JA4.
@@ -100,7 +101,8 @@ int main(void) {
   test_profile(a, profile_template(), "t13d1717h2_5b57614c22b0_3cbfd9057e0d");
   test_profile(a, profile_chrome148(), "t13d1516h2_8daaf6152771_d8a2da3f94cd");
   // Chrome 149 is wire-identical to 148, so its ClientHello must hash to the
-  // same JA4 — which is exactly the JA4 captured from real Chrome 149 (powhttp).
+  // same JA4 — which is exactly the JA4 captured from real Chrome 149
+  // (powhttp).
   test_profile(a, profile_chrome149(), "t13d1516h2_8daaf6152771_d8a2da3f94cd");
   arena_release(a);
   fprintf(stderr, "[ja4_test] %d checks, %d failures\n", g_checks, g_fails);

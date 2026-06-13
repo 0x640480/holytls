@@ -15,12 +15,12 @@ global const char *const k_grease_versions[] = {"8", "99", "24"};
 global const U8 k_order3[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
                                   {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
 
-// Assemble the permuted brand list. `real_ver` is the version string for the two
-// real brands ("Chromium", "Google Chrome"); `grease_ver` is the GREASE brand's
-// version. The GREASE brand NAME (Not<sep>A<sep>Brand) and the brand ORDER are
-// derived from `major` (the GREASE seed) exactly as Chromium does. Version
-// strings are appended byte-wise (no NUL assumption — `real_ver` may be a
-// caller-supplied view).
+// Assemble the permuted brand list. `real_ver` is the version string for the
+// two real brands ("Chromium", "Google Chrome"); `grease_ver` is the GREASE
+// brand's version. The GREASE brand NAME (Not<sep>A<sep>Brand) and the brand
+// ORDER are derived from `major` (the GREASE seed) exactly as Chromium does.
+// Version strings are appended byte-wise (no NUL assumption — `real_ver` may be
+// a caller-supplied view).
 internal String8 sec_ch_ua_format(Arena *arena, U32 major, String8 real_ver,
                                   String8 grease_ver) {
   const char *sep1 = k_grease_chars[major % ArrayCount(k_grease_chars)];
@@ -69,7 +69,8 @@ String8 sec_ch_ua_full_version_list(Arena *arena, U32 major,
     snprintf(fallback, sizeof fallback, "%u.0.0.0", major);
     full_version = str8_cstring(fallback);
   }
-  // The GREASE brand's version in the full list is the greased digit + ".0.0.0".
+  // The GREASE brand's version in the full list is the greased digit +
+  // ".0.0.0".
   const char *digit = k_grease_versions[major % ArrayCount(k_grease_versions)];
   char gver[16];
   snprintf(gver, sizeof gver, "%s.0.0.0", digit);

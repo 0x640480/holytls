@@ -1,7 +1,8 @@
 // Live H3 verification: GET https://quic.browserleaks.com/?minify=1 over HTTP/3
 // through the C QuicConnection + H3Session, and assert the fingerprints
 // browserleaks reports for a FRESH handshake:
-//   * QUIC JA4 == q13d0311h3_55b375c5d22e_653d80c3fe9d  (fresh/incognito Chrome)
+//   * QUIC JA4 == q13d0311h3_55b375c5d22e_653d80c3fe9d  (fresh/incognito
+//   Chrome)
 //   * h3_hash  == ba909fc3dc419ea5c5b26c6323ac1879
 // Runs BOTH the Chrome 148 and 149 QUIC profiles: they ship byte-identical
 // QUIC/H3 tables, so a fresh handshake from either must hash to the same golden
@@ -42,7 +43,7 @@ struct Ctx {
   QuicConnection *conn;
   H3Session *h3;
   const QuicProfile *prof;  // profile under test (148 or 149)
-  const char *ua;           // user-agent header (cosmetic; not hashed into ja4/h3)
+  const char *ua;  // user-agent header (cosmetic; not hashed into ja4/h3)
   B32 got;
   char ja4[80];
   char h3hash[64];
@@ -59,7 +60,8 @@ internal String8 maybe_unzstd(const H3Response *r) {
   if (!is_zstd) return str8((U8 *)r->body, r->body_len);
   unsigned long long n = ZSTD_getFrameContentSize(r->body, r->body_len);
   if (n == 0 || n > sizeof g_decoded) return str8_zero();
-  size_t rv = ZSTD_decompress(g_decoded, sizeof g_decoded, r->body, r->body_len);
+  size_t rv =
+      ZSTD_decompress(g_decoded, sizeof g_decoded, r->body, r->body_len);
   if (ZSTD_isError(rv)) return str8_zero();
   return str8(g_decoded, rv);
 }

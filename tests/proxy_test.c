@@ -1,5 +1,7 @@
 // Offline proxy tests: URL parsing (schemes, auth, IPv6, defaults) and the
 // HTTP CONNECT + SOCKS5 wire framing against fixed byte vectors.
+#include "net/proxy.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -7,7 +9,6 @@
 #include "base/base.h"
 #include "base/base64.h"
 #include "base/string8.h"
-#include "net/proxy.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -32,8 +33,8 @@ internal void test_parse(void) {
                3128, "", ""));
   CHECK(cfg_is("socks5://proxy.example:1080", ProxyType_Socks5, "proxy.example",
                1080, "", ""));
-  CHECK(cfg_is("socks5h://proxy.example", ProxyType_Socks5, "proxy.example", 1080,
-               "", ""));  // proxy-side DNS; default port
+  CHECK(cfg_is("socks5h://proxy.example", ProxyType_Socks5, "proxy.example",
+               1080, "", ""));  // proxy-side DNS; default port
 
   // Default ports per scheme when omitted.
   CHECK(cfg_is("http://h", ProxyType_Http, "h", 80, "", ""));
@@ -58,10 +59,10 @@ internal void test_parse(void) {
 
   // Rejections.
   ProxyConfig p;
-  CHECK(!proxy_parse(str8_cstring("ftp://h:21"), &p));   // unknown scheme
-  CHECK(!proxy_parse(str8_cstring("h:8080"), &p));       // no scheme
-  CHECK(!proxy_parse(str8_cstring("http://"), &p));      // empty host
-  CHECK(!proxy_parse(str8_cstring("http://h:0"), &p));   // port 0
+  CHECK(!proxy_parse(str8_cstring("ftp://h:21"), &p));  // unknown scheme
+  CHECK(!proxy_parse(str8_cstring("h:8080"), &p));      // no scheme
+  CHECK(!proxy_parse(str8_cstring("http://"), &p));     // empty host
+  CHECK(!proxy_parse(str8_cstring("http://h:0"), &p));  // port 0
 }
 
 internal void test_http_connect(Arena *a) {
@@ -82,7 +83,8 @@ internal void test_http_connect(Arena *a) {
   strcpy(p.user, "user");
   strcpy(p.pass, "pass");
   String8 ra = proxy_http_connect_request(a, &p, str8_lit("h"), 443);
-  CHECK(str8_contains(ra, str8_lit("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n")));
+  CHECK(str8_contains(ra,
+                      str8_lit("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n")));
   CHECK(str8_ends_with(ra, str8_lit("\r\n\r\n")));
 }
 
@@ -97,7 +99,8 @@ internal void test_http_response(void) {
   resp_status(ok, &complete, &status, &n);
   CHECK(complete && status == 200 && n == strlen(ok));
 
-  resp_status("HTTP/1.0 407 Proxy Auth Required\r\n\r\n", &complete, &status, &n);
+  resp_status("HTTP/1.0 407 Proxy Auth Required\r\n\r\n", &complete, &status,
+              &n);
   CHECK(complete && status == 407);
 
   resp_status("HTTP/1.1 502 Bad Gateway\r\n\r\n", &complete, &status, &n);
@@ -137,17 +140,18 @@ internal void test_socks5(void) {
 
   // Username/password sub-negotiation: 01 ulen user plen pass.
   m = proxy_socks5_userpass(&p, buf, sizeof buf);
-  CHECK(bytes_eq(buf, m,
-                 (const U8[]){0x01, 0x01, 'u', 0x02, 'p', 'w'}, 6));
+  CHECK(bytes_eq(buf, m, (const U8[]){0x01, 0x01, 'u', 0x02, 'p', 'w'}, 6));
   B32 ok = 0;
-  CHECK(proxy_socks5_parse_userpass_reply((const U8[]){0x01, 0x00}, 2, &ok) && ok);
-  CHECK(proxy_socks5_parse_userpass_reply((const U8[]){0x01, 0x01}, 2, &ok) && !ok);
+  CHECK(proxy_socks5_parse_userpass_reply((const U8[]){0x01, 0x00}, 2, &ok) &&
+        ok);
+  CHECK(proxy_socks5_parse_userpass_reply((const U8[]){0x01, 0x01}, 2, &ok) &&
+        !ok);
 
   // CONNECT request: 05 01 00 03 len host port_hi port_lo.
   m = proxy_socks5_connect_request(str8_lit("ex.com"), 443, buf, sizeof buf);
   CHECK(bytes_eq(buf, m,
-                 (const U8[]){0x05, 0x01, 0x00, 0x03, 6, 'e', 'x', '.', 'c', 'o',
-                              'm', 0x01, 0xBB},
+                 (const U8[]){0x05, 0x01, 0x00, 0x03, 6, 'e', 'x', '.', 'c',
+                              'o', 'm', 0x01, 0xBB},
                  13));
 
   // CONNECT reply (IPv4 bound addr) -> success, length 4+4+2 = 10.
@@ -165,13 +169,13 @@ internal void test_socks5(void) {
 
   // Failure reply (REP != 0).
   m = proxy_socks5_parse_reply(
-      (const U8[]){0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0}, 10, &complete, &ok,
-      0, 0, 0);
+      (const U8[]){0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0}, 10, &complete,
+      &ok, 0, 0, 0);
   CHECK(complete && !ok);
 
   // Partial reply -> not complete.
-  proxy_socks5_parse_reply((const U8[]){0x05, 0x00, 0x00, 0x01, 0}, 5, &complete,
-                           &ok, 0, 0, 0);
+  proxy_socks5_parse_reply((const U8[]){0x05, 0x00, 0x00, 0x01, 0}, 5,
+                           &complete, &ok, 0, 0, 0);
   CHECK(!complete);
 }
 
@@ -180,8 +184,8 @@ internal void test_socks5_udp(void) {
 
   // UDP ASSOCIATE request: 05 03 00 01 0.0.0.0 :0.
   U64 m = proxy_socks5_udp_associate_request(buf, sizeof buf);
-  CHECK(bytes_eq(buf, m,
-                 (const U8[]){0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0}, 10));
+  CHECK(bytes_eq(buf, m, (const U8[]){0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0},
+                 10));
 
   // ASSOCIATE reply surfaces the bound relay endpoint (IPv4 1.2.3.4:5000).
   B32 complete = 0, ok = 0;
@@ -189,8 +193,8 @@ internal void test_socks5_udp(void) {
   const U8 *addr = 0;
   U16 port = 0;
   const U8 reply[] = {0x05, 0x00, 0x00, 0x01, 1, 2, 3, 4, 0x13, 0x88};  // :5000
-  m = proxy_socks5_parse_reply(reply, sizeof reply, &complete, &ok, &atyp, &addr,
-                               &port);
+  m = proxy_socks5_parse_reply(reply, sizeof reply, &complete, &ok, &atyp,
+                               &addr, &port);
   CHECK(complete && ok && m == 10 && atyp == 0x01 && port == 5000);
   CHECK(addr && addr[0] == 1 && addr[1] == 2 && addr[2] == 3 && addr[3] == 4);
 
@@ -202,15 +206,16 @@ internal void test_socks5_udp(void) {
                  10));
 
   // Inbound header length parsing for each ATYP (incl. malformed/short).
-  CHECK(proxy_socks5_udp_header_len((const U8[]){0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0},
-                                    10) == 10);
-  const U8 v6[] = {0, 0, 0, 0x04, 0, 0, 0,  0,  0, 0, 0, 0,
-                   0, 0, 0, 0,    0, 0, 0,  0,  0, 0};  // 4 + 16 + 2 = 22
+  CHECK(proxy_socks5_udp_header_len(
+            (const U8[]){0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0}, 10) == 10);
+  const U8 v6[] = {0, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0,
+                   0, 0, 0, 0,    0, 0, 0, 0, 0, 0, 0};  // 4 + 16 + 2 = 22
   CHECK(proxy_socks5_udp_header_len(v6, sizeof v6) == 22);
-  CHECK(proxy_socks5_udp_header_len((const U8[]){0, 0, 0, 0x03, 3, 'a', 'b', 'c',
-                                                 0, 0},
-                                    10) == 10);  // domain len 3 -> 4+1+3+2
-  CHECK(proxy_socks5_udp_header_len((const U8[]){0, 0, 0, 0x01, 0}, 5) == 0);  // short
+  CHECK(proxy_socks5_udp_header_len(
+            (const U8[]){0, 0, 0, 0x03, 3, 'a', 'b', 'c', 0, 0},
+            10) == 10);  // domain len 3 -> 4+1+3+2
+  CHECK(proxy_socks5_udp_header_len((const U8[]){0, 0, 0, 0x01, 0}, 5) ==
+        0);  // short
 }
 
 internal B32 url_roundtrips(Arena *a, const char *url) {

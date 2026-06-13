@@ -1,6 +1,7 @@
 // Header — an ordered request/response header. Insertion order and original
 // case are part of the fingerprint, so HeaderList is an array (not a hash map);
-// lookups are linear (header counts are tiny). Arena-backed, grows by reallocate
+// lookups are linear (header counts are tiny). Arena-backed, grows by
+// reallocate
 // + copy (the old storage is abandoned and reclaimed on arena reset/release).
 #ifndef HOLYTLS_HEADER_H
 #define HOLYTLS_HEADER_H
@@ -19,8 +20,7 @@ struct Header {
 // String8s are built by the inline str8(), not a constant expression). Works in
 // an array initializer or as an argument:
 //   Header h[] = { header_lit("accept", "*/*"), header_lit("user-agent", ua) };
-#define header_lit(name, value) \
-  ((Header){str8_lit(name), str8_lit(value), 0})
+#define header_lit(name, value) ((Header){str8_lit(name), str8_lit(value), 0})
 
 typedef struct HeaderList HeaderList;
 struct HeaderList {
@@ -39,8 +39,8 @@ B32 header_list_has_ci(HeaderList *list, String8 name);
 // Split a Cookie header value ("a=1; b=2; c=3") into its crumbs ("a=1","b=2",
 // "c=3"), as views into `value`. HTTP/2 and HTTP/3 emit one header field per
 // crumb (Chrome's wire framing); HTTP/1.1 keeps the value whole. Writes up to
-// `cap` crumbs to `out` and returns the total crumb count (empty crumbs skipped).
-// Pass out=0, cap=0 to count only.
+// `cap` crumbs to `out` and returns the total crumb count (empty crumbs
+// skipped). Pass out=0, cap=0 to count only.
 U64 cookie_crumbs(String8 value, String8 *out, U64 cap);
 
 #endif  // HOLYTLS_HEADER_H

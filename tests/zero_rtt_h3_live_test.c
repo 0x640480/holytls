@@ -36,7 +36,8 @@ internal void on_resp(void *user, const Response *r) {
   cx->status = r->status;
   cx->resumed = r->resumed;
   cx->early_data = r->early_data;
-  U64 n = r->alpn.size < sizeof cx->alpn - 1 ? r->alpn.size : sizeof cx->alpn - 1;
+  U64 n =
+      r->alpn.size < sizeof cx->alpn - 1 ? r->alpn.size : sizeof cx->alpn - 1;
   if (n) MemoryCopy(cx->alpn, r->alpn.str, n);
   cx->alpn[n] = 0;
 }
@@ -57,10 +58,13 @@ int main(void) {
   const char *url = "https://www.cloudflare.com/";
   EventLoop loop;
   loop_init(&loop);
-  defer { loop_shutdown(&loop); };  // the two clients are cleaned explicitly
-                                    // below (one freed before the next is created)
+  defer {
+    loop_shutdown(&loop);
+  };  // the two clients are cleaned explicitly
+      // below (one freed before the next is created)
 
-  //- 0-RTT ENABLED over H3 -----------------------------------------------------
+  //- 0-RTT ENABLED over H3
+  //-----------------------------------------------------
   Client c;
   client_init_dual(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
                    /*verify=*/1);
@@ -68,7 +72,8 @@ int main(void) {
   client_set_early_data_enabled(&c, 1);  // implies resumption
 
   Ctx a = fetch_once(&c, &loop, url);  // #1 H2 -> learns alt-svc h3
-  Ctx b = fetch_once(&c, &loop, url);  // #2 H3 fresh -> caches ticket + 0-RTT TP
+  Ctx b =
+      fetch_once(&c, &loop, url);  // #2 H3 fresh -> caches ticket + 0-RTT TP
   Ctx d = fetch_once(&c, &loop, url);  // #3 H3 -> offers 0-RTT
   fprintf(stderr,
           "  a{alpn=%s} b{alpn=%s resumed=%d early=%d} "
@@ -76,21 +81,23 @@ int main(void) {
           a.alpn, b.alpn, b.resumed, b.early_data, d.alpn, d.resumed,
           d.early_data);
   CHECK(a.got);
-  CHECK(b.got && str8_match(str8_cstring(b.alpn), str8_lit("h3")));  // routed H3
+  CHECK(b.got &&
+        str8_match(str8_cstring(b.alpn), str8_lit("h3")));  // routed H3
   CHECK(!b.early_data);  // the fresh H3 conn can't 0-RTT
   CHECK(d.got && str8_match(str8_cstring(d.alpn), str8_lit("h3")));
   CHECK(d.resumed);     // the H3 reconnect resumed the TLS session
   CHECK(d.early_data);  // ...and the request went as 0-RTT (server accepted it)
   client_cleanup(&c);
 
-  //- control: H3 with 0-RTT OFF never reports early_data ------------------------
+  //- control: H3 with 0-RTT OFF never reports early_data
+  //------------------------
   Client off;
   client_init_dual(&off, &loop, profile_chrome148(), profile_chrome148_h3(),
                    /*verify=*/1);
   client_set_resumption_enabled(&off, 1);  // 1-RTT resumption, NO early data
-  fetch_once(&off, &loop, url);          // #1 H2
-  fetch_once(&off, &loop, url);          // #2 H3 fresh
-  Ctx e = fetch_once(&off, &loop, url);  // #3 H3 resumed (1-RTT)
+  fetch_once(&off, &loop, url);            // #1 H2
+  fetch_once(&off, &loop, url);            // #2 H3 fresh
+  Ctx e = fetch_once(&off, &loop, url);    // #3 H3 resumed (1-RTT)
   fprintf(stderr, "  control: e{alpn=%s resumed=%d early=%d}\n", e.alpn,
           e.resumed, e.early_data);
   CHECK(!e.early_data);  // opt-in: default path never 0-RTTs

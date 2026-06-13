@@ -6,7 +6,8 @@
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #define STB_SPRINTF_IMPLEMENTATION
 #include "vendor/stb_sprintf.h"
-#undef STB_SPRINTF_IMPLEMENTATION  // prevent re-impl on subsequent includes via base.h
+#undef STB_SPRINTF_IMPLEMENTATION  // prevent re-impl on subsequent includes via
+                                   // base.h
 #pragma GCC diagnostic pop
 #include "base/arena.c"
 #include "base/string8.c"

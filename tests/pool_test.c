@@ -17,9 +17,9 @@
 
 global int g_checks = 0;
 global int g_fails = 0;
-#define CHECK(c)                                                  \
-  Statement(g_checks += 1; if (!(c)) {                            \
-    g_fails += 1;                                                 \
+#define CHECK(c)                                                   \
+  Statement(g_checks += 1; if (!(c)) {                             \
+    g_fails += 1;                                                  \
     fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
   })
 
@@ -42,8 +42,8 @@ internal void cli_sink(void *user, const U8 *d, U64 n) {
   (void)user;
   bytes_put(&g_c2s, d, n);
 }
-internal nghttp2_ssize srv_send(nghttp2_session *s, const U8 *d, size_t n, int f,
-                                void *u) {
+internal nghttp2_ssize srv_send(nghttp2_session *s, const U8 *d, size_t n,
+                                int f, void *u) {
   (void)s;
   (void)f;
   (void)u;
@@ -71,7 +71,8 @@ internal int srv_frame(nghttp2_session *s, const nghttp2_frame *f, void *u) {
       (f->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
     S32 sid = f->hd.stream_id;
     char st[16];
-    snprintf(st, sizeof st, "%d", 200 + (sid - 1) / 2);  // 1->200, 3->201, 5->202
+    snprintf(st, sizeof st, "%d",
+             200 + (sid - 1) / 2);  // 1->200, 3->201, 5->202
     nghttp2_nv nv;
     nv.name = (U8 *)":status";
     nv.namelen = 7;
@@ -104,8 +105,7 @@ internal void cli_resp(void *user, const H2Response *r) {
 
 internal void test_h2_multiplex(void) {
   g_c2s.len = g_s2c.len = 0;
-  H2Session *cli =
-      h2_session_alloc(&profile_chrome148()->h2, cli_sink, 0);
+  H2Session *cli = h2_session_alloc(&profile_chrome148()->h2, cli_sink, 0);
   CHECK(cli != 0);
   h2_session_start(cli);
 
@@ -118,7 +118,8 @@ internal void test_h2_multiplex(void) {
   nghttp2_session_callbacks_del(cbs);
   nghttp2_submit_settings(srv, NGHTTP2_FLAG_NONE, 0, 0);
 
-  // Three concurrent streams on the one session (the multiplexing pooling needs).
+  // Three concurrent streams on the one session (the multiplexing pooling
+  // needs).
   Result results[3];
   MemoryZeroArray(results);
   S32 ids[3];

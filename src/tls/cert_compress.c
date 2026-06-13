@@ -41,8 +41,8 @@ internal int zlib_dec(SSL *ssl, CRYPTO_BUFFER **out, size_t ulen, const U8 *in,
 #endif
 
 #ifdef HOLYTLS_HAVE_BROTLI
-internal int brotli_dec(SSL *ssl, CRYPTO_BUFFER **out, size_t ulen, const U8 *in,
-                        size_t in_len) {
+internal int brotli_dec(SSL *ssl, CRYPTO_BUFFER **out, size_t ulen,
+                        const U8 *in, size_t in_len) {
   (void)ssl;
   U8 *data = 0;
   CRYPTO_BUFFER *buf = CRYPTO_BUFFER_alloc(&data, ulen);
@@ -103,7 +103,8 @@ int register_cert_decompressors(SSL_CTX *ctx, const U16 *algs, int count,
       default:
         break;
     }
-    if (fn && SSL_CTX_add_cert_compression_alg(ctx, algs[i], /*compress=*/0, fn)) {
+    if (fn &&
+        SSL_CTX_add_cert_compression_alg(ctx, algs[i], /*compress=*/0, fn)) {
       registered += 1;
     } else if (skipped && skipped_n && *skipped_n < 8) {
       skipped[(*skipped_n)++] = name;

@@ -5,9 +5,10 @@
 #include "core/json.h"
 
 // Value of the ` ech=` SvcParam token in a presentation-format HTTPS-record
-// `data` string (e.g. "1 . alpn=h2 ipv4hint=1.2.3.4 ech=<base64> ipv6hint=..."),
-// up to the next space. ech is never the first token (priority + target precede
-// it), so the leading space makes this a safe token-boundary match.
+// `data` string (e.g. "1 . alpn=h2 ipv4hint=1.2.3.4 ech=<base64>
+// ipv6hint=..."), up to the next space. ech is never the first token (priority
+// + target precede it), so the leading space makes this a safe token-boundary
+// match.
 internal String8 ech_find_param(String8 data) {
   S64 i = str8_find(data, str8_lit(" ech="));
   if (i < 0) return str8_zero();
@@ -25,7 +26,8 @@ String8 ech_config_from_doh(Arena *arena, String8 body) {
   size_t idx, max;
   yyjson_val *rec;
   yyjson_arr_foreach(answer, idx, max, rec) {
-    if (yyjson_get_int(yyjson_obj_get(rec, "type")) != 65) continue;  // HTTPS RR
+    if (yyjson_get_int(yyjson_obj_get(rec, "type")) != 65)
+      continue;  // HTTPS RR
     String8 data = json_obj_str(rec, "data");
     String8 ech = ech_find_param(data);
     if (ech.size) return base64_decode(arena, ech);

@@ -11,8 +11,8 @@
 #include "net/loop.h"
 
 // resume_cache_put / resume_cache_put_tp are internal helpers in client.c; this
-// file is included into the unity TU after client.c (like pool.c / session.c), so
-// their definitions are already in scope.
+// file is included into the unity TU after client.c (like pool.c / session.c),
+// so their definitions are already in scope.
 
 // ---------------------------------------------------------------------------
 // build (marshal)
@@ -41,7 +41,8 @@ internal void persist_build_client(yyjson_mut_doc *doc, yyjson_mut_val *root,
     yyjson_mut_obj_add_strcpy(doc, o, "origin", e->origin);
     yyjson_mut_obj_add_strncpy(doc, o, "ticket", (const char *)tk.str, tk.size);
     if (e->zrtt_tp_len) {
-      String8 tp = base64_encode(scratch, str8((U8 *)e->zrtt_tp, e->zrtt_tp_len));
+      String8 tp =
+          base64_encode(scratch, str8((U8 *)e->zrtt_tp, e->zrtt_tp_len));
       if (tp.size)
         yyjson_mut_obj_add_strncpy(doc, o, "zrtt_tp", (const char *)tp.str,
                                    tp.size);
@@ -71,11 +72,13 @@ internal void persist_build_client(yyjson_mut_doc *doc, yyjson_mut_val *root,
     yyjson_mut_val *o = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_strcpy(doc, o, "origin", e->origin);
     if (e->config_len) {
-      String8 cfg = base64_encode(scratch, str8((U8 *)e->config, e->config_len));
+      String8 cfg =
+          base64_encode(scratch, str8((U8 *)e->config, e->config_len));
       yyjson_mut_obj_add_strncpy(doc, o, "config", (const char *)cfg.str,
                                  cfg.size);
     } else {
-      yyjson_mut_obj_add_strcpy(doc, o, "config", "");  // cached negative result
+      yyjson_mut_obj_add_strcpy(doc, o, "config",
+                                "");  // cached negative result
     }
     yyjson_mut_obj_add_uint(doc, o, "ttl_ms", ttl);
     yyjson_mut_arr_add_val(ec, o);
@@ -146,7 +149,8 @@ internal void persist_put_alt_svc(Client *c, String8 origin, B32 h3,
     }
   if (c->alt_svc_count >= (int)ArrayCount(c->alt_svc)) return;
   AltSvcEntry *e = &c->alt_svc[c->alt_svc_count++];
-  U64 n = origin.size < sizeof e->origin - 1 ? origin.size : sizeof e->origin - 1;
+  U64 n =
+      origin.size < sizeof e->origin - 1 ? origin.size : sizeof e->origin - 1;
   MemoryCopy(e->origin, origin.str, n);
   e->origin[n] = 0;
   e->h3 = h3;
@@ -179,7 +183,8 @@ internal void persist_put_ech(Client *c, String8 origin, const U8 *cfg,
 // clears). `scratch` backs base64 decoding; restored data is copied out of it
 // (SSL_SESSIONs are heap, alt-svc/ech into the client's fixed arrays) so it is
 // safe to release after.
-internal void persist_restore_client(Client *c, yyjson_val *root, Arena *scratch) {
+internal void persist_restore_client(Client *c, yyjson_val *root,
+                                     Arena *scratch) {
   U64 now = c->loop ? uv_now(loop_uv(c->loop)) : 0;
 
   yyjson_val *ts = yyjson_obj_get(root, "tls_sessions");
@@ -247,8 +252,8 @@ internal void persist_restore_cookies(Session *s, yyjson_val *root) {
     B32 secure = yyjson_get_bool(yyjson_obj_get(it, "secure"));
     B32 http_only = yyjson_get_bool(yyjson_obj_get(it, "http_only"));
     U8 same_site = (U8)yyjson_get_uint(yyjson_obj_get(it, "same_site"));
-    cookie_jar_put(&s->jar, name, value, domain, path, expires, host_only, secure,
-                   http_only, same_site);
+    cookie_jar_put(&s->jar, name, value, domain, path, expires, host_only,
+                   secure, http_only, same_site);
   }
 }
 
@@ -258,7 +263,8 @@ internal yyjson_val *persist_open(Arena *scratch, String8 json) {
   if (!doc) return 0;
   yyjson_val *root = json_root(doc);
   if (!yyjson_is_obj(root)) return 0;
-  if (yyjson_get_int(yyjson_obj_get(root, "version")) != HOLYTLS_PERSIST_VERSION)
+  if (yyjson_get_int(yyjson_obj_get(root, "version")) !=
+      HOLYTLS_PERSIST_VERSION)
     return 0;
   return root;
 }

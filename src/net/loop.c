@@ -50,7 +50,8 @@ ReqTimer *req_timer_arm(EventLoop *loop, U64 deadline_ns,
   rt->timer.data = rt;
   U64 now = uv_hrtime();
   U64 ms = deadline_ns > now ? (deadline_ns - now) / 1000000 : 0;
-  uv_timer_start(&rt->timer, req_timer_fire, ms ? ms : 1, 0);  // past -> fire ASAP
+  uv_timer_start(&rt->timer, req_timer_fire, ms ? ms : 1,
+                 0);  // past -> fire ASAP
   return rt;
 }
 

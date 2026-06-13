@@ -1,5 +1,8 @@
-// Offline header-order tests: the reorder_headers primitive (listed-first, rest in
-// original order, case-insensitive, no drop/dup) and the client get/set/reset API.
+// Offline header-order tests: the reorder_headers primitive (listed-first, rest
+// in original order, case-insensitive, no drop/dup) and the client
+// get/set/reset API.
+#include "core/header_order.h"
+
 #include <stdio.h>
 
 #include "base/arena.h"
@@ -7,7 +10,6 @@
 #include "base/string8.h"
 #include "core/client.h"
 #include "core/header.h"
-#include "core/header_order.h"
 #include "net/loop.h"
 #include "profile/profile.h"
 
@@ -49,7 +51,8 @@ internal HeaderList abcd(Arena *a) {
 }
 
 internal void test_reorder(Arena *a) {
-  // Listed names first (in order), the rest in original order; values follow names.
+  // Listed names first (in order), the rest in original order; values follow
+  // names.
   HeaderList l = abcd(a);
   String8 o1[] = {str8_lit("c"), str8_lit("a")};
   reorder_headers(a, &l, o1, 2);
@@ -86,9 +89,9 @@ internal void test_reorder(Arena *a) {
 }
 
 internal void test_override_defaults(Arena *a) {
-  // The mechanism override-default-headers relies on: build_ordered_headers with
-  // NO profile defaults emits exactly the caller's headers, in array order,
-  // dropping empty-value entries.
+  // The mechanism override-default-headers relies on: build_ordered_headers
+  // with NO profile defaults emits exactly the caller's headers, in array
+  // order, dropping empty-value entries.
   HeaderList out;
   header_list_init(&out, a);
   Header caller[] = {
@@ -138,7 +141,8 @@ internal void test_client_api(void) {
         str8_match(got[2], str8_lit("user-agent")));
   CHECK(client_set_header_order_str(&c, "user-agent accept"));  // space-only
   CHECK(client_get_header_order(&c, got, ArrayCount(got)) == 2);
-  CHECK(client_set_header_order_str(&c, ""));  // empty -> reset to profile order
+  CHECK(
+      client_set_header_order_str(&c, ""));  // empty -> reset to profile order
   CHECK(client_get_header_order(&c, got, ArrayCount(got)) == def);
 
   // Override-default-headers flag: off by default, set/get, reset.
@@ -182,14 +186,14 @@ internal void test_fetch_order(Arena *a) {
     order[i] = str8_cstring(p->fetch_order[i]);
   reorder_headers(a, &l, order, p->fetch_order_count);
 
-  CHECK(order_is(&l,
-                 (const char *[]){"content-length", "sec-ch-ua-platform",
-                                  "user-agent", "sec-ch-ua", "sec-ch-ua-mobile",
-                                  "accept", "origin", "sec-fetch-site",
-                                  "sec-fetch-mode", "sec-fetch-dest", "referer",
-                                  "accept-encoding", "accept-language", "cookie",
-                                  "priority"},
-                 15));
+  CHECK(order_is(
+      &l,
+      (const char *[]){"content-length", "sec-ch-ua-platform", "user-agent",
+                       "sec-ch-ua", "sec-ch-ua-mobile", "accept", "origin",
+                       "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest",
+                       "referer", "accept-encoding", "accept-language",
+                       "cookie", "priority"},
+      15));
 }
 
 int main(void) {

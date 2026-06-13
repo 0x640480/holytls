@@ -26,11 +26,13 @@ global int g_checks = 0, g_fails = 0;
   })
 
 global U16 g_port;
-global char g_slow_url[64];  // https://127.0.0.1:<port>/slow (the redirect target)
+global char
+    g_slow_url[64];  // https://127.0.0.1:<port>/slow (the redirect target)
 global EventLoop *g_loop;
 
 // Per-path behavior: /slow never answers, /redir 302s to /slow, else 200.
-static void timeout_handler(const LbRequest *req, LbResponse *resp, void *user) {
+static void timeout_handler(const LbRequest *req, LbResponse *resp,
+                            void *user) {
   (void)user;
   if (str8_contains(req->path, str8_lit("slow"))) {
     resp->withhold = 1;
@@ -67,7 +69,8 @@ internal void wd_cb(uv_timer_t *t) {
   fprintf(stderr, "  [watchdog] timed out\n");
   uv_stop(loop_uv(g_loop));
 }
-internal RC do_get(EventLoop *loop, uv_timer_t *wd, Client *c, const char *url) {
+internal RC do_get(EventLoop *loop, uv_timer_t *wd, Client *c,
+                   const char *url) {
   RC rc;
   MemoryZeroStruct(&rc);
   rc.t0 = uv_hrtime();
@@ -84,7 +87,8 @@ int main(void) {
   EventLoop loop;
   loop_init(&loop);
   g_loop = &loop;
-  LbServer *srv = lb_server_start(&loop, LB_ALPN_H2, timeout_handler, 0, &g_port);
+  LbServer *srv =
+      lb_server_start(&loop, LB_ALPN_H2, timeout_handler, 0, &g_port);
   snprintf(g_slow_url, sizeof g_slow_url, "https://127.0.0.1:%u/slow", g_port);
   uv_timer_init(loop_uv(&loop), &g_wd);
   uv_unref((uv_handle_t *)&g_wd);
@@ -100,7 +104,8 @@ int main(void) {
     client_set_http_version(&c, HttpVersion_H2);
     client_set_timeout_ms(&c, 400);
     RC rc = do_get(&loop, &g_wd, &c, g_slow_url);
-    fprintf(stderr, "  [non-pooled slow] calls=%d ok=%d err=%s elapsed=%llums\n",
+    fprintf(stderr,
+            "  [non-pooled slow] calls=%d ok=%d err=%s elapsed=%llums\n",
             rc.calls, rc.ok, rc.err, (unsigned long long)rc.elapsed_ms);
     CHECK(rc.calls == 1 && !rc.ok && strcmp(rc.err, "timeout") == 0);
     CHECK(rc.elapsed_ms >= 350 && rc.elapsed_ms < 2000);  // ~the budget, not 8s
@@ -132,10 +137,11 @@ int main(void) {
     CHECK(slow.calls == 1 && !slow.ok && strcmp(slow.err, "timeout") == 0);
     RC ok = do_get(&loop, &g_wd, &c, fast);  // reuse the same pooled conn
     PoolStats ps = client_pool_stats(&c);
-    fprintf(stderr,
-            "  [pooled] slow_err=%s fast_ok=%d conns_created=%llu reuses=%llu\n",
-            slow.err, ok.ok, (unsigned long long)ps.conns_created,
-            (unsigned long long)ps.reuses);
+    fprintf(
+        stderr,
+        "  [pooled] slow_err=%s fast_ok=%d conns_created=%llu reuses=%llu\n",
+        slow.err, ok.ok, (unsigned long long)ps.conns_created,
+        (unsigned long long)ps.reuses);
     CHECK(ok.calls == 1 && ok.ok && ok.status == 200);
     CHECK(ps.conns_created == 1);  // the cancel did NOT kill the connection
     client_cleanup(&c);

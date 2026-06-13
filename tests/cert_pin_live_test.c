@@ -1,5 +1,5 @@
-// Live certificate-pinning test: a connection whose leaf SPKI does not match the
-// pin must be REJECTED end-to-end (the custom verify fires during the real
+// Live certificate-pinning test: a connection whose leaf SPKI does not match
+// the pin must be REJECTED end-to-end (the custom verify fires during the real
 // handshake and fails it), while an unpinned control client to the same origin
 // succeeds. Proves pinning rejects a real, otherwise-CA-valid certificate.
 // Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
@@ -55,7 +55,8 @@ int main(void) {
 
   Arena *a = arena_alloc();
   defer { arena_release(a); };
-  // A deliberately wrong pin: base64 of 32 zero bytes (cannot match any real SPKI).
+  // A deliberately wrong pin: base64 of 32 zero bytes (cannot match any real
+  // SPKI).
   U8 zero[32];
   MemoryZero(zero, sizeof zero);
   String8 b = base64_encode(a, str8(zero, sizeof zero));
@@ -68,7 +69,8 @@ int main(void) {
   loop_init(&loop);
   defer { loop_shutdown(&loop); };
 
-  //- pinned with the wrong SPKI -> the handshake must be rejected --------------
+  //- pinned with the wrong SPKI -> the handshake must be rejected
+  //--------------
   Client pinned;
   client_init(&pinned, &loop, profile_chrome148(), /*verify=*/1);
   CHECK(client_ok(&pinned));
@@ -80,7 +82,8 @@ int main(void) {
   CHECK(!r1.ok);  // pin mismatch -> connection rejected
   client_cleanup(&pinned);
 
-  //- control: no pin -> normal verification succeeds ---------------------------
+  //- control: no pin -> normal verification succeeds
+  //---------------------------
   Client ctrl;
   client_init(&ctrl, &loop, profile_chrome148(), /*verify=*/1);
   CHECK(client_ok(&ctrl));

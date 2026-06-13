@@ -21,11 +21,12 @@ void loop_stop(EventLoop *loop);
 uv_loop_t *loop_uv(EventLoop *loop);
 
 // A one-shot per-request deadline timer. Arm calls `on_timeout(user)` at
-// `deadline_ns` (the uv_hrtime clock); the handle's memory is malloc'd and freed
-// in its own close callback, decoupled from any request arena (so the request can
-// be freed on its normal path; disarm just closes the timer). Returns 0 when
-// `deadline_ns == 0` (no timeout). The fire callback only invokes on_timeout — it
-// does NOT close the timer, so the request's teardown disarms it exactly once.
+// `deadline_ns` (the uv_hrtime clock); the handle's memory is malloc'd and
+// freed in its own close callback, decoupled from any request arena (so the
+// request can be freed on its normal path; disarm just closes the timer).
+// Returns 0 when `deadline_ns == 0` (no timeout). The fire callback only
+// invokes on_timeout — it does NOT close the timer, so the request's teardown
+// disarms it exactly once.
 typedef struct ReqTimer ReqTimer;
 ReqTimer *req_timer_arm(EventLoop *loop, U64 deadline_ns,
                         void (*on_timeout)(void *user), void *user);

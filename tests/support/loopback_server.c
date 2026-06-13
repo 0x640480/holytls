@@ -126,10 +126,12 @@ struct LbConn {
   nghttp2_session *h2;
   B32 is_h2, inited, closing;
   LbServer *server;
-  LbStream *streams;  // live request streams (so withheld ones are freed on close)
-  U8 *h1buf;  // HTTP/1.1 request accumulator
+  LbStream
+      *streams;  // live request streams (so withheld ones are freed on close)
+  U8 *h1buf;     // HTTP/1.1 request accumulator
   U64 h1len, h1cap;
-  uv_shutdown_t hsr;  // H1: flush queued writes before closing (Connection: close)
+  uv_shutdown_t
+      hsr;  // H1: flush queued writes before closing (Connection: close)
   LbConn *next;
 };
 
@@ -283,10 +285,10 @@ static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
   nv[nvn++] = (nghttp2_nv){(U8 *)":status", (U8 *)status_str, 7,
                            strlen(status_str), NGHTTP2_NV_FLAG_NONE};
   for (U64 i = 0; i < resp.extra_count && i < 8; ++i)
-    nv[nvn++] = (nghttp2_nv){
-        (U8 *)resp.extra_names[i], (U8 *)resp.extra_values[i],
-        strlen(resp.extra_names[i]), strlen(resp.extra_values[i]),
-        NGHTTP2_NV_FLAG_NONE};
+    nv[nvn++] =
+        (nghttp2_nv){(U8 *)resp.extra_names[i], (U8 *)resp.extra_values[i],
+                     strlen(resp.extra_names[i]), strlen(resp.extra_values[i]),
+                     NGHTTP2_NV_FLAG_NONE};
 
   B32 head = str8_match(req.method, str8_lit("HEAD"));
   if (resp.body_len && !head) {
@@ -329,7 +331,8 @@ static void lb_h2_init(LbConn *c) {
   nghttp2_session_callbacks_set_on_header_callback(cbs, lb_h2_header);
   nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, lb_h2_data);
   nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, lb_h2_frame_recv);
-  nghttp2_session_callbacks_set_on_stream_close_callback(cbs, lb_h2_stream_close);
+  nghttp2_session_callbacks_set_on_stream_close_callback(cbs,
+                                                         lb_h2_stream_close);
   nghttp2_session_server_new(&c->h2, cbs, c);
   nghttp2_session_callbacks_del(cbs);
   nghttp2_settings_entry iv[] = {
@@ -398,8 +401,8 @@ static void lb_h1_feed(LbConn *c, const U8 *data, U64 len) {
   if (resp.body_len) SSL_write(c->ssl, resp.body, (int)resp.body_len);
   lb_conn_flush(c);
   // Connection: close, but flush the (possibly multi-MB) queued writes first —
-  // uv_close would cancel them. uv_shutdown drains then half-closes; we close in
-  // its callback.
+  // uv_close would cancel them. uv_shutdown drains then half-closes; we close
+  // in its callback.
   c->hsr.data = c;
   if (uv_shutdown(&c->hsr, (uv_stream_t *)&c->tcp, lb_h1_on_shutdown) != 0)
     lb_conn_close(c);
@@ -414,7 +417,8 @@ static void lb_conn_drive(LbConn *c) {
     lb_conn_flush(c);
     if (r != 1) {
       int e = SSL_get_error(c->ssl, r);
-      if (e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE) lb_conn_close(c);
+      if (e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE)
+        lb_conn_close(c);
       return;
     }
   }
@@ -493,6 +497,7 @@ static void lb_on_listener_closed(uv_handle_t *h) {
 }
 void lb_server_stop(LbServer *s) {
   if (!s) return;
-  while (s->conns) lb_conn_close(s->conns);  // each unlinks itself from the list
+  while (s->conns)
+    lb_conn_close(s->conns);  // each unlinks itself from the list
   uv_close((uv_handle_t *)&s->listener, lb_on_listener_closed);
 }

@@ -96,7 +96,7 @@ void quic_conn_connect(QuicConnection *c, const char *host, U16 port,
   c->ready_user = user;
   c->port = port;
   strip_host(c->host, sizeof c->host, host);  // shared with connection.c
-  c->t_connect_start_ns = uv_hrtime();  // connect start (DNS begins next)
+  c->t_connect_start_ns = uv_hrtime();        // connect start (DNS begins next)
 
   // SOCKS5 UDP-ASSOCIATE proxy: negotiate the tunnel over a TCP control channel
   // first; the QUIC handshake (target SNI = c->host) then runs over the relay.
@@ -109,7 +109,8 @@ void quic_conn_connect(QuicConnection *c, const char *host, U16 port,
   if (c->dns_cache) {
     struct sockaddr_storage ss;
     socklen_t sl = 0;
-    if (dns_cache_get(c->dns_cache, c->host, uv_now(loop_uv(c->loop)), &ss, &sl)) {
+    if (dns_cache_get(c->dns_cache, c->host, uv_now(loop_uv(c->loop)), &ss,
+                      &sl)) {
       dns_sockaddr_set_port(&ss, c->port);
       MemoryCopy(&c->remote_addr, &ss, sl);
       c->remote_addrlen = sl;
@@ -133,8 +134,9 @@ void quic_conn_connect(QuicConnection *c, const char *host, U16 port,
   if (rc) quic_fail(c, uv_strerror(rc));
 }
 
-// Set up the UDP socket + ngtcp2 against c->remote_addr (already populated, from a
-// fresh resolution or the DNS cache), then open the handshake / 0-RTT window.
+// Set up the UDP socket + ngtcp2 against c->remote_addr (already populated,
+// from a fresh resolution or the DNS cache), then open the handshake / 0-RTT
+// window.
 internal void quic_begin_udp(QuicConnection *c) {
   uv_udp_init(loop_uv(c->loop), &c->udp);
   c->udp_inited = 1;
@@ -177,7 +179,8 @@ internal void quic_on_resolved(uv_getaddrinfo_t *req, int status,
   c->t_resolved_ns = uv_hrtime();  // DNS done
   MemoryCopy(&c->remote_addr, res->ai_addr, res->ai_addrlen);
   c->remote_addrlen = res->ai_addrlen;
-  if (c->dns_cache)  // remember this resolution for the next connection to the host
+  if (c->dns_cache)  // remember this resolution for the next connection to the
+                     // host
     dns_cache_put(c->dns_cache, c->host, res->ai_addr, res->ai_addrlen,
                   uv_now(loop_uv(c->loop)));
   uv_freeaddrinfo(res);
@@ -187,9 +190,10 @@ internal void quic_on_resolved(uv_getaddrinfo_t *req, int status,
 //- SOCKS5 UDP-ASSOCIATE control channel
 //
 // A TCP channel negotiates the association (greeting -> [user/pass] -> UDP
-// ASSOCIATE) and stays open for its lifetime. The reply's BND endpoint is the UDP
-// relay; QUIC datagrams ride to it wrapped in a SOCKS5 UDP header (built from the
-// target's resolved address). The QUIC Initial is unmodified -> QUIC-JA4 intact.
+// ASSOCIATE) and stays open for its lifetime. The reply's BND endpoint is the
+// UDP relay; QUIC datagrams ride to it wrapped in a SOCKS5 UDP header (built
+// from the target's resolved address). The QUIC Initial is unmodified ->
+// QUIC-JA4 intact.
 
 typedef struct QWrite QWrite;
 struct QWrite {
@@ -201,13 +205,15 @@ internal void quic_ctrl_on_write(uv_write_t *r, int st) {
   free(r);
 }
 internal void quic_ctrl_write(QuicConnection *c, const U8 *d, U64 n) {
-  if (n == 0 || !c->ctrl_inited || uv_is_closing((uv_handle_t *)&c->ctrl)) return;
+  if (n == 0 || !c->ctrl_inited || uv_is_closing((uv_handle_t *)&c->ctrl))
+    return;
   QWrite *w = (QWrite *)malloc(sizeof(QWrite) + n);
   U8 *p = (U8 *)(w + 1);
   MemoryCopy(p, d, n);
   w->buf = uv_buf_init((char *)p, (unsigned)n);
   w->req.data = w;
-  if (uv_write(&w->req, (uv_stream_t *)&c->ctrl, &w->buf, 1, quic_ctrl_on_write) != 0) {
+  if (uv_write(&w->req, (uv_stream_t *)&c->ctrl, &w->buf, 1,
+               quic_ctrl_on_write) != 0) {
     free(w);
     quic_fail(c, "proxy control write failed");
   }
@@ -263,8 +269,8 @@ internal void quic_proxy_set_relay(QuicConnection *c, U8 atyp, const U8 *addr,
   }
 }
 
-// Relay known + target resolved (udp_hdr built): set the ngtcp2 path to the relay
-// and run the normal UDP/ngtcp2 setup + handshake.
+// Relay known + target resolved (udp_hdr built): set the ngtcp2 path to the
+// relay and run the normal UDP/ngtcp2 setup + handshake.
 internal void quic_proxy_finish(QuicConnection *c) {
   MemoryCopy(&c->remote_addr, &c->relay_addr, c->relay_addrlen);
   c->remote_addrlen = c->relay_addrlen;
@@ -292,12 +298,14 @@ internal void quic_on_target_resolved(uv_getaddrinfo_t *req, int status,
   quic_proxy_finish(c);
 }
 
-// Resolve the TARGET (for the SOCKS5 UDP DST header); the relay is already known.
+// Resolve the TARGET (for the SOCKS5 UDP DST header); the relay is already
+// known.
 internal void quic_proxy_resolve_target(QuicConnection *c) {
   if (c->dns_cache) {
     struct sockaddr_storage ss;
     socklen_t sl = 0;
-    if (dns_cache_get(c->dns_cache, c->host, uv_now(loop_uv(c->loop)), &ss, &sl)) {
+    if (dns_cache_get(c->dns_cache, c->host, uv_now(loop_uv(c->loop)), &ss,
+                      &sl)) {
       dns_sockaddr_set_port(&ss, c->port);
       if (!quic_build_udp_hdr(c, (struct sockaddr *)&ss)) {
         quic_fail(c, "unsupported target address family");
@@ -315,8 +323,8 @@ internal void quic_proxy_resolve_target(QuicConnection *c) {
   hints.ai_socktype = SOCK_DGRAM;
   char portstr[8];
   snprintf(portstr, sizeof portstr, "%u", c->port);
-  int rc = uv_getaddrinfo(loop_uv(c->loop), &c->resolver, quic_on_target_resolved,
-                          c->host, portstr, &hints);
+  int rc = uv_getaddrinfo(loop_uv(c->loop), &c->resolver,
+                          quic_on_target_resolved, c->host, portstr, &hints);
   if (rc) quic_fail(c, uv_strerror(rc));
 }
 
@@ -375,7 +383,8 @@ internal void quic_proxy_advance(QuicConnection *c) {
       }
       quic_proxy_set_relay(c, atyp, addr, port);
       c->proxy_phase = QPhase_Done;
-      quic_proxy_resolve_target(c);  // -> build udp_hdr -> begin_udp -> handshake
+      quic_proxy_resolve_target(
+          c);  // -> build udp_hdr -> begin_udp -> handshake
       return;
     }
     default:
@@ -392,7 +401,8 @@ internal void quic_ctrl_read_cb(uv_stream_t *s, ssize_t nread,
     return;
   }
   if (nread == 0) return;
-  if (c->proxy_phase == QPhase_Done) return;  // association up; ignore ctrl chatter
+  if (c->proxy_phase == QPhase_Done)
+    return;  // association up; ignore ctrl chatter
   if (c->nlen + (U64)nread > sizeof c->nbuf) {
     quic_fail(c, "proxy negotiation overflow");
     return;
@@ -446,8 +456,9 @@ internal void quic_proxy_connect_ctrl(QuicConnection *c) {
   hints.ai_socktype = SOCK_STREAM;
   char portstr[8];
   snprintf(portstr, sizeof portstr, "%u", c->proxy.port);
-  int rc = uv_getaddrinfo(loop_uv(c->loop), &c->resolver, quic_on_proxy_resolved,
-                          c->proxy.host, portstr, &hints);
+  int rc =
+      uv_getaddrinfo(loop_uv(c->loop), &c->resolver, quic_on_proxy_resolved,
+                     c->proxy.host, portstr, &hints);
   if (rc) quic_fail(c, uv_strerror(rc));
 }
 
@@ -475,7 +486,8 @@ internal int quic_handshake_completed_cb(ngtcp2_conn *conn, void *user) {
   (void)conn;
   QuicConnection *c = (QuicConnection *)user;
   c->state = QuicState_Established;
-  if (!c->t_established_ns) c->t_established_ns = uv_hrtime();  // QUIC handshake done
+  if (!c->t_established_ns)
+    c->t_established_ns = uv_hrtime();  // QUIC handshake done
   // If we attempted 0-RTT but the server did not accept it, ngtcp2's BoringSSL
   // crypto helper has already discarded the early streams; flag it so the owner
   // retries the request on a fresh, non-0-RTT connection.
@@ -611,18 +623,19 @@ internal B32 quic_init_ngtcp2(QuicConnection *c) {
   callbacks.recv_stream_data = quic_recv_stream_data_cb;
   callbacks.stream_close = quic_stream_close_cb;
 
-  int rv = ngtcp2_conn_client_new(&c->conn, &dcid, &scid, &path,
-                                  NGTCP2_PROTO_VER_V1, &callbacks, &settings,
-                                  &params, 0, c);
+  int rv =
+      ngtcp2_conn_client_new(&c->conn, &dcid, &scid, &path, NGTCP2_PROTO_VER_V1,
+                             &callbacks, &settings, &params, 0, c);
   if (rv != 0) {
     quic_fail(c, ngtcp2_strerror(rv));
     return 0;
   }
   ngtcp2_conn_set_tls_native_handle(c->conn, c->ssl);
 
-  // Restore the prior connection's 0-RTT transport params so early streams can be
-  // opened. ngtcp2 requires this AFTER set_tls_native_handle and BEFORE opening
-  // any 0-RTT stream. On failure, fall back cleanly to a 1-RTT handshake.
+  // Restore the prior connection's 0-RTT transport params so early streams can
+  // be opened. ngtcp2 requires this AFTER set_tls_native_handle and BEFORE
+  // opening any 0-RTT stream. On failure, fall back cleanly to a 1-RTT
+  // handshake.
   if (c->want_early_data && c->early_tp_len) {
     if (ngtcp2_conn_decode_and_set_0rtt_transport_params(
             c->conn, c->early_tp, (size_t)c->early_tp_len) != 0)
@@ -663,8 +676,9 @@ internal void quic_recv_cb(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
   U64 dlen = (U64)nread;
   const struct sockaddr *src = addr;
   if (c->proxied) {
-    // Strip the relay's SOCKS5 UDP header; the inner payload is the QUIC packet.
-    // ngtcp2's path remote stays the relay (== remote_addr), as on egress.
+    // Strip the relay's SOCKS5 UDP header; the inner payload is the QUIC
+    // packet. ngtcp2's path remote stays the relay (== remote_addr), as on
+    // egress.
     U64 hl = proxy_socks5_udp_header_len(data, dlen);
     if (hl == 0 || hl >= dlen) return;  // malformed / empty -> drop
     data += hl;
@@ -678,7 +692,8 @@ internal void quic_recv_cb(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
   };
   ngtcp2_pkt_info pi;
   MemoryZeroStruct(&pi);
-  c->in_recv = 1;  // stream callbacks fire here: submits must defer their egress
+  c->in_recv =
+      1;  // stream callbacks fire here: submits must defer their egress
   int rv = ngtcp2_conn_read_pkt(c->conn, &path, &pi, data, (size_t)dlen,
                                 quic_now_ns());
   c->in_recv = 0;
@@ -687,7 +702,8 @@ internal void quic_recv_cb(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
     return;
   }
   quic_flush_egress(c);
-  // Safe point (outside read_pkt) to submit streams queued by response callbacks.
+  // Safe point (outside read_pkt) to submit streams queued by response
+  // callbacks.
   if (c->on_recv_done) c->on_recv_done(c->recv_done_user);
 }
 
@@ -726,8 +742,9 @@ internal void quic_flush_egress(QuicConnection *c) {
   ngtcp2_pkt_info pi;
   MemoryZeroStruct(&pi);
   U64 ts = quic_now_ns();
-  // Fresh pass: re-attempt every stream (a stream blocked last time may have had
-  // its flow-control window lifted by a MAX_STREAM_DATA/MAX_DATA frame since).
+  // Fresh pass: re-attempt every stream (a stream blocked last time may have
+  // had its flow-control window lifted by a MAX_STREAM_DATA/MAX_DATA frame
+  // since).
   for (int i = 0; i < c->send_count; ++i) c->send_bufs[i].blocked = 0;
 
   for (;;) {
@@ -753,11 +770,11 @@ internal void quic_flush_egress(QuicConnection *c) {
         }
         continue;
       }
-      // Per-stream, non-fatal (ngtcp2 contract under WRITE_STREAM_FLAG_MORE): the
-      // stream can't make progress now (e.g. its 0-RTT flow-control window from
-      // the remembered transport params is exhausted). Skip it this pass and keep
-      // building the packet; its buffered bytes drain on a later flush once the
-      // server raises flow control. Do NOT tear the connection down.
+      // Per-stream, non-fatal (ngtcp2 contract under WRITE_STREAM_FLAG_MORE):
+      // the stream can't make progress now (e.g. its 0-RTT flow-control window
+      // from the remembered transport params is exhausted). Skip it this pass
+      // and keep building the packet; its buffered bytes drain on a later flush
+      // once the server raises flow control. Do NOT tear the connection down.
       if (nwrite == NGTCP2_ERR_STREAM_DATA_BLOCKED ||
           nwrite == NGTCP2_ERR_STREAM_SHUT_WR ||
           nwrite == NGTCP2_ERR_STREAM_NOT_FOUND) {
@@ -773,8 +790,9 @@ internal void quic_flush_egress(QuicConnection *c) {
     }
     if (nwrite == 0) break;  // nothing left to send
     if (c->proxied) {
-      // Prepend the SOCKS5 UDP header; the 2 bufs gather into one datagram to the
-      // relay (no copy — the header lives in the struct). The relay strips it.
+      // Prepend the SOCKS5 UDP header; the 2 bufs gather into one datagram to
+      // the relay (no copy — the header lives in the struct). The relay strips
+      // it.
       uv_buf_t out2[2] = {
           uv_buf_init((char *)c->udp_hdr, (unsigned)c->udp_hdr_len),
           uv_buf_init((char *)buf, (unsigned)nwrite),
@@ -782,7 +800,8 @@ internal void quic_flush_egress(QuicConnection *c) {
       uv_udp_try_send(&c->udp, out2, 2, 0);
     } else {
       uv_buf_t out = uv_buf_init((char *)buf, (unsigned)nwrite);
-      uv_udp_try_send(&c->udp, &out, 1, 0);  // UDP: drop on EAGAIN, QUIC retransmits
+      uv_udp_try_send(&c->udp, &out, 1,
+                      0);  // UDP: drop on EAGAIN, QUIC retransmits
     }
   }
   quic_arm_timer(c);
@@ -841,8 +860,9 @@ void quic_stream_send(QuicConnection *c, S64 stream_id, const U8 *data, U64 len,
 
 void quic_reset_stream(QuicConnection *c, S64 stream_id) {
   if (!c->conn) return;
-  // Drop any buffered egress for this stream, then shut both directions with an H3
-  // "request cancelled" (0x010c) app error; the flush emits RESET_STREAM/STOP_SENDING.
+  // Drop any buffered egress for this stream, then shut both directions with an
+  // H3 "request cancelled" (0x010c) app error; the flush emits
+  // RESET_STREAM/STOP_SENDING.
   for (int i = 0; i < c->send_count; ++i)
     if (c->send_bufs[i].id == stream_id) {
       c->send_bufs[i] = c->send_bufs[--c->send_count];

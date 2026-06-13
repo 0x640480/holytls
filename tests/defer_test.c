@@ -1,11 +1,13 @@
-// Offline defer tests: runs on normal scope exit in LIFO order, on early return,
-// on break/continue out of a loop body, and (GCC) captures locals by reference so
-// the deferred block sees later mutations. Compiled with -Wno-pedantic because the
-// GCC defer path uses nested functions (see CMakeLists / defer.h).
+// Offline defer tests: runs on normal scope exit in LIFO order, on early
+// return, on break/continue out of a loop body, and (GCC) captures locals by
+// reference so the deferred block sees later mutations. Compiled with
+// -Wno-pedantic because the GCC defer path uses nested functions (see
+// CMakeLists / defer.h).
+#include "base/defer.h"
+
 #include <stdio.h>
 
 #include "base/base.h"
-#include "base/defer.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -38,7 +40,8 @@ internal void ret_helper(B32 early) {
 internal void test_return(void) {
   g_n = 0;
   ret_helper(1);
-  CHECK(g_n == 2 && g_seq[0] == 0 && g_seq[1] == 9);  // 1 was skipped, 9 still ran
+  CHECK(g_n == 2 && g_seq[0] == 0 &&
+        g_seq[1] == 9);  // 1 was skipped, 9 still ran
 }
 
 internal void test_loop(void) {

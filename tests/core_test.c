@@ -56,15 +56,15 @@ internal void test_url(void) {
 internal void test_url_resolve(Arena *a) {
   String8 base = str8_lit("https://example.com/a/b/c?q=1");
   CHECK(str8_match(url_resolve(a, base, str8_lit("https://other.com/x")),
-                   str8_lit("https://other.com/x")));            // absolute
+                   str8_lit("https://other.com/x")));  // absolute
   CHECK(str8_match(url_resolve(a, base, str8_lit("//cdn.com/y")),
-                   str8_lit("https://cdn.com/y")));              // protocol-rel
+                   str8_lit("https://cdn.com/y")));  // protocol-rel
   CHECK(str8_match(url_resolve(a, base, str8_lit("/newpath")),
-                   str8_lit("https://example.com/newpath")));    // absolute-path
+                   str8_lit("https://example.com/newpath")));  // absolute-path
   CHECK(str8_match(url_resolve(a, base, str8_lit("d")),
-                   str8_lit("https://example.com/a/b/d")));       // relative
+                   str8_lit("https://example.com/a/b/d")));  // relative
   CHECK(str8_match(url_resolve(a, str8_lit("https://x.com/"), str8_lit("y")),
-                   str8_lit("https://x.com/y")));                 // root base
+                   str8_lit("https://x.com/y")));  // root base
 }
 
 //- redirect method/body decision (browser-faithful)

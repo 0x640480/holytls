@@ -1,6 +1,6 @@
-// Live verification of Chrome-style Alt-Svc discovery through the unified Client:
-// request #1 over H2 (Chrome 148 fingerprint), request #2 to cloudflare learns
-// `alt-svc: h3`, then request #3 to that origin routes over H3/QUIC.
+// Live verification of Chrome-style Alt-Svc discovery through the unified
+// Client: request #1 over H2 (Chrome 148 fingerprint), request #2 to cloudflare
+// learns `alt-svc: h3`, then request #3 to that origin routes over H3/QUIC.
 //   req1 (H2):  akamai_hash == 52d84b11737d980aef856699f885ca86
 //   req2 (H2):  alpn == h2, alt-svc h3 cached
 //   req3 (H3):  alpn == h3, status >= 200
@@ -57,8 +57,8 @@ internal void on_req2(void *user, const Response *r) {
   if (r->ok) {
     cx->got_cf2 = 1;
     copy_str8(cx->alpn_h2, sizeof cx->alpn_h2, r->alpn);
-    cx->h3_cached = client_h3_available(cx->client,
-                                        str8_lit("www.cloudflare.com:443"));
+    cx->h3_cached =
+        client_h3_available(cx->client, str8_lit("www.cloudflare.com:443"));
   }
   // req3: same origin -> should now route over H3/QUIC.
   client_get(cx->client, str8_lit(CF), on_req3, cx);

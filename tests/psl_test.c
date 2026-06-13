@@ -3,11 +3,12 @@
 // exception rules (!host), the default '*' rule for unlisted single labels,
 // PRIVATE-section suffixes, case/trailing-dot normalization, and the
 // registrable-domain negatives the cookie jar depends on.
+#include "core/psl.h"
+
 #include <stdio.h>
 
 #include "base/base.h"
 #include "base/string8.h"
-#include "core/psl.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -37,9 +38,9 @@ int main(void) {
   CHECK(!P("sub.example.co.uk"));
 
   // Wildcard rule *.ck: every direct child of ck is a suffix...
-  CHECK(P("ck"));        // single label (default '*' rule; ck isn't exact-listed)
-  CHECK(P("foo.ck"));    // *.ck
-  CHECK(!P("x.foo.ck")); // wildcard covers exactly one label
+  CHECK(P("ck"));      // single label (default '*' rule; ck isn't exact-listed)
+  CHECK(P("foo.ck"));  // *.ck
+  CHECK(!P("x.foo.ck"));  // wildcard covers exactly one label
   // ...except the exception rule !www.ck.
   CHECK(!P("www.ck"));
 

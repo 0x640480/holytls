@@ -1,7 +1,8 @@
 // Live Sec-Fetch coherence: a Cors fetch to httpbin /headers (which echoes the
-// request headers) must report mode=cors, dest=empty, site=same-origin (from the
-// Referer), and NO Sec-Fetch-User — i.e. it looks like an XHR, not a navigation.
-// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// request headers) must report mode=cors, dest=empty, site=same-origin (from
+// the Referer), and NO Sec-Fetch-User — i.e. it looks like an XHR, not a
+// navigation. Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and
+// passes).
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -55,15 +56,16 @@ int main(void) {
   defer { client_cleanup(&c); };
   CHECK(client_ok(&c));
 
-  Header headers[1] = {{str8_lit("referer"), str8_lit("https://httpbin.org/"), 0}};
+  Header headers[1] = {
+      {str8_lit("referer"), str8_lit("https://httpbin.org/"), 0}};
   Ctx cx;
   MemoryZeroStruct(&cx);
   client_fetch(&c, FetchMode_Cors, Method_GET,
                str8_lit("https://httpbin.org/headers"), headers, 1, 0, 0,
                on_resp, &cx);
   loop_run(&loop);
-  fprintf(stderr, "  status=%d cors=%d empty=%d same=%d no_user=%d\n", cx.status,
-          cx.mode_cors, cx.dest_empty, cx.site_same, cx.no_user);
+  fprintf(stderr, "  status=%d cors=%d empty=%d same=%d no_user=%d\n",
+          cx.status, cx.mode_cors, cx.dest_empty, cx.site_same, cx.no_user);
   CHECK(cx.got && cx.status == 200);
   CHECK(cx.mode_cors);   // Sec-Fetch-Mode: cors (not navigate)
   CHECK(cx.dest_empty);  // Sec-Fetch-Dest: empty (not document)
@@ -71,8 +73,9 @@ int main(void) {
   CHECK(cx.no_user);     // Sec-Fetch-User suppressed for a fetch
 
   // A Cors fetch that 302s cross-origin (httpbin -> httpbingo, a different
-  // registrable domain) must DOWNGRADE Sec-Fetch-Site to cross-site on the final
-  // hop (recomputed across the redirect). Driven via a session (its own loop).
+  // registrable domain) must DOWNGRADE Sec-Fetch-Site to cross-site on the
+  // final hop (recomputed across the redirect). Driven via a session (its own
+  // loop).
   Session s;
   session_init(&s, 0);
   defer { session_cleanup(&s); };

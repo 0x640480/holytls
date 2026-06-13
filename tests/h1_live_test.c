@@ -1,10 +1,11 @@
 // Live proof of the HTTP/1.1 path end-to-end through the Client. We force the
-// server onto HTTP/1.1 by advertising ONLY "http/1.1" in ALPN (a test-only profile
-// tweak), then GET tls.browserleaks.com/json and assert the request went over h1
-// (alpn == "http/1.1"), returned 200, and the (possibly compressed) body decoded to
-// the fingerprint JSON. This exercises the client's h1 branch + serializer +
-// picohttpparser response parsing + transparent decode against a real server.
-// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// server onto HTTP/1.1 by advertising ONLY "http/1.1" in ALPN (a test-only
+// profile tweak), then GET tls.browserleaks.com/json and assert the request
+// went over h1 (alpn == "http/1.1"), returned 200, and the (possibly
+// compressed) body decoded to the fingerprint JSON. This exercises the client's
+// h1 branch + serializer + picohttpparser response parsing + transparent decode
+// against a real server. Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it
+// skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,11 +42,13 @@ internal void on_resp(void *user, const Response *r) {
   }
   cx->got = 1;
   cx->status = r->status;
-  U64 an = r->alpn.size < sizeof cx->alpn - 1 ? r->alpn.size : sizeof cx->alpn - 1;
+  U64 an =
+      r->alpn.size < sizeof cx->alpn - 1 ? r->alpn.size : sizeof cx->alpn - 1;
   MemoryCopy(cx->alpn, r->alpn.str, an);
   cx->alpn[an] = 0;
   cx->body_len = r->body_len;
-  U64 bn = r->body_len < sizeof cx->body - 1 ? r->body_len : sizeof cx->body - 1;
+  U64 bn =
+      r->body_len < sizeof cx->body - 1 ? r->body_len : sizeof cx->body - 1;
   if (r->body && bn) MemoryCopy(cx->body, r->body, bn);
   cx->body[bn] = 0;
 }
@@ -81,13 +84,16 @@ int main(void) {
   CHECK(cx.got);
   fprintf(stderr, "  status=%d alpn=%s body=%llu bytes\n", cx.status, cx.alpn,
           (unsigned long long)cx.body_len);
-  CHECK(strcmp(cx.alpn, "http/1.1") == 0);  // proves it routed over the h1 branch
+  CHECK(strcmp(cx.alpn, "http/1.1") ==
+        0);  // proves it routed over the h1 branch
   CHECK(cx.status == 200);
   CHECK(cx.body_len > 0);
-  // The body decoded to the fingerprint JSON: extract a field to prove it parses.
+  // The body decoded to the fingerprint JSON: extract a field to prove it
+  // parses.
   char ja4[80];
-  CHECK(json_get_str(str8((U8 *)cx.body, cx.body_len), "ja4", ja4, sizeof ja4) &&
-        ja4[0] != 0);
+  CHECK(
+      json_get_str(str8((U8 *)cx.body, cx.body_len), "ja4", ja4, sizeof ja4) &&
+      ja4[0] != 0);
 
   fprintf(stderr, "[h1_live_test] %d checks, %d failures\n", g_checks, g_fails);
   return g_fails ? 1 : 0;

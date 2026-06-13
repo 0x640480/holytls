@@ -1,14 +1,16 @@
-// H3 control-stream golden: build the Chrome-148 HTTP/3 control stream (SETTINGS
-// + GREASE setting + GREASE frame + PRIORITY_UPDATE) from the profile, decode it
-// into the browserleaks "h3_text", and assert the text + its MD5 (h3_hash) are
-// byte-exact against the golden.
+// H3 control-stream golden: build the Chrome-148 HTTP/3 control stream
+// (SETTINGS
+// + GREASE setting + GREASE frame + PRIORITY_UPDATE) from the profile, decode
+// it into the browserleaks "h3_text", and assert the text + its MD5 (h3_hash)
+// are byte-exact against the golden.
+#include "h3/h3_control.h"
+
 #include <openssl/md5.h>
 #include <stdio.h>
 
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/string8.h"
-#include "h3/h3_control.h"
 #include "profile/profile.h"
 
 global int g_checks = 0;

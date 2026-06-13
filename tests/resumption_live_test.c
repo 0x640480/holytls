@@ -1,10 +1,11 @@
-// Live TLS 1.3 session resumption (1-RTT ticket reuse). With resumption enabled,
-// the FIRST request to an origin is a fresh full handshake (the server issues a
-// NewSessionTicket the client caches); the SECOND request to the same origin
-// offers that ticket and completes via an abbreviated handshake -> r->resumed.
-// A control client with resumption OFF must never resume (the opt-in is real, so
-// the default path stays a byte-exact fresh handshake every time).
-// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// Live TLS 1.3 session resumption (1-RTT ticket reuse). With resumption
+// enabled, the FIRST request to an origin is a fresh full handshake (the server
+// issues a NewSessionTicket the client caches); the SECOND request to the same
+// origin offers that ticket and completes via an abbreviated handshake ->
+// r->resumed. A control client with resumption OFF must never resume (the
+// opt-in is real, so the default path stays a byte-exact fresh handshake every
+// time). Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and
+// passes).
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -36,7 +37,8 @@ internal void on_resp(void *user, const Response *r) {
   cx->status = r->status;
   cx->resumed = r->resumed;
   cx->alpn = r->alpn;
-  if (!r->ok) fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
+  if (!r->ok)
+    fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
 }
 
 // Issue one request to `url` on `c` and drive the loop until it finishes.
@@ -57,8 +59,10 @@ int main(void) {
 
   EventLoop loop;
   loop_init(&loop);
-  defer { loop_shutdown(&loop); };  // clients are cleaned explicitly below (one
-                                    // freed before the next is created)
+  defer {
+    loop_shutdown(&loop);
+  };  // clients are cleaned explicitly below (one
+      // freed before the next is created)
 
   //- resumption ENABLED: first fresh, second resumes -------------------------
   Client on;
@@ -68,8 +72,9 @@ int main(void) {
 
   Ctx a = fetch_once(&on, &loop, url);  // fresh handshake; caches the ticket
   Ctx b = fetch_once(&on, &loop, url);  // offers the cached ticket -> resumes
-  fprintf(stderr, "  enabled:  a{got=%d status=%d resumed=%d} "
-                  "b{got=%d status=%d resumed=%d}\n",
+  fprintf(stderr,
+          "  enabled:  a{got=%d status=%d resumed=%d} "
+          "b{got=%d status=%d resumed=%d}\n",
           a.got, a.status, a.resumed, b.got, b.status, b.resumed);
   CHECK(a.got && a.status == 200);
   CHECK(b.got && b.status == 200);

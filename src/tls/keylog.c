@@ -4,9 +4,9 @@
 #include <stdlib.h>
 #include <uv.h>
 
-// Process-global key-log destination. uv_once guarantees the mutex is initialized
-// before g_kl_file is ever set, so any thread that observes a non-NULL g_kl_file
-// can safely take g_kl_mu.
+// Process-global key-log destination. uv_once guarantees the mutex is
+// initialized before g_kl_file is ever set, so any thread that observes a
+// non-NULL g_kl_file can safely take g_kl_mu.
 internal uv_once_t g_kl_once = UV_ONCE_INIT;
 internal uv_mutex_t g_kl_mu;
 internal FILE *g_kl_file;  // guarded by g_kl_mu
@@ -37,7 +37,8 @@ void keylog_callback(const SSL *ssl, const char *line) {
   if (g_kl_file) {
     fputs(line, g_kl_file);
     fputc('\n', g_kl_file);
-    fflush(g_kl_file);  // a complete line per secret, visible to a live Wireshark
+    fflush(
+        g_kl_file);  // a complete line per secret, visible to a live Wireshark
   }
   uv_mutex_unlock(&g_kl_mu);
 }

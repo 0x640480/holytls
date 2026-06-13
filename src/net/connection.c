@@ -79,9 +79,10 @@ typedef enum ProxyPhase {
   ProxyPhase_Socks5Connect,   // CONNECT request sent, awaiting the reply
 } ProxyPhase;
 
-// Connect the (already-created) TCP handle to `addr` — from a fresh resolution or
-// the DNS cache. On failure, fails the connection.
-internal void conn_begin_tcp_connect(Connection *c, const struct sockaddr *addr) {
+// Connect the (already-created) TCP handle to `addr` — from a fresh resolution
+// or the DNS cache. On failure, fails the connection.
+internal void conn_begin_tcp_connect(Connection *c,
+                                     const struct sockaddr *addr) {
   c->connect_req.data = c;
   int rc = uv_tcp_connect(&c->connect_req, &c->tcp, addr, conn_on_connected);
   if (rc) {
@@ -112,19 +113,22 @@ internal void conn_on_resolved(uv_getaddrinfo_t *req, int status,
 internal void conn_on_connected(uv_connect_t *req, int status) {
   Connection *c = (Connection *)req->data;
   if (status < 0) {
-    // A cached address that no longer connects: drop it so a retry resolves fresh.
+    // A cached address that no longer connects: drop it so a retry resolves
+    // fresh.
     if (c->dns_was_cached && c->dns_cache)
       dns_cache_evict(c->dns_cache, c->resolve_host);
     conn_fail(c, uv_strerror(status));
     return;
   }
-  c->t_connected_ns = uv_hrtime();  // TCP connect done (to the proxy when proxied)
+  c->t_connected_ns =
+      uv_hrtime();  // TCP connect done (to the proxy when proxied)
   uv_read_start((uv_stream_t *)&c->tcp, conn_alloc_cb, conn_read_cb);
   if (c->proxy.type == ProxyType_None) {
     c->state = ConnState_Handshaking;
     conn_drive_handshake(c);
   } else {
-    conn_proxy_begin(c);  // negotiate the tunnel; the target TLS then runs over it
+    conn_proxy_begin(
+        c);  // negotiate the tunnel; the target TLS then runs over it
   }
 }
 
@@ -159,7 +163,8 @@ internal void conn_read_cb(uv_stream_t *stream, ssize_t nread,
   U64 n = (U64)nread;
 
   // Proxy negotiation phases consume bytes before the target TLS begins.
-  if (c->state == ConnState_ProxyTls) {  // outer TLS handshake to an HTTPS proxy
+  if (c->state ==
+      ConnState_ProxyTls) {  // outer TLS handshake to an HTTPS proxy
     ssl_pump_feed_ciphertext(&c->outer, data, n);
     conn_proxy_outer_drive(c);
     return;
@@ -169,8 +174,8 @@ internal void conn_read_cb(uv_stream_t *stream, ssize_t nread,
     return;
   }
 
-  // Target TLS / established: feed via the transport (raw, or unwrapped from the
-  // outer proxy TLS for an HTTPS proxy).
+  // Target TLS / established: feed via the transport (raw, or unwrapped from
+  // the outer proxy TLS for an HTTPS proxy).
   conn_transport_feed(c, data, n);
   if (!c->pump.established) {
     conn_drive_handshake(c);
@@ -223,8 +228,8 @@ internal void conn_drive_handshake(Connection *c) {
     // 0-RTT window open: permit early-data writes and let the caller submit its
     // request once (it goes out as early data). The handshake continues; the
     // server's response drives it to HsStatus_Done (accepted) or
-    // HsStatus_EarlyRejected. Stay in EarlyData until then (pump.established==0,
-    // so conn_read_cb keeps re-driving the handshake).
+    // HsStatus_EarlyRejected. Stay in EarlyData until then
+    // (pump.established==0, so conn_read_cb keeps re-driving the handshake).
     c->state = ConnState_EarlyData;
     if (!c->early_fired) {
       c->early_fired = 1;
@@ -265,7 +270,8 @@ internal int conn_submit_write(Connection *c, WriteReq *wr, U64 len, B32 ring) {
 // absent): one malloc, freed there instead. The base for both plaintext proxy
 // negotiation and ciphertext the ring couldn't take in conn_pump_to_socket.
 internal void conn_raw_write(Connection *c, const U8 *data, U64 len) {
-  if (len == 0 || !c->tcp_inited || uv_is_closing((uv_handle_t *)&c->tcp)) return;
+  if (len == 0 || !c->tcp_inited || uv_is_closing((uv_handle_t *)&c->tcp))
+    return;
   if (c->egress) {
     WriteReq *wr = (WriteReq *)ra_reserve(c->egress, sizeof(WriteReq) + len, 0);
     if (wr) {
@@ -335,8 +341,8 @@ internal void conn_proxy_outer_flush(Connection *c) {
 }
 
 internal void conn_flush_output(Connection *c) {
-  // Skip when there is no handle, or it is already closing (a re-entrant failure
-  // path may reach here after conn_close has scheduled uv_close).
+  // Skip when there is no handle, or it is already closing (a re-entrant
+  // failure path may reach here after conn_close has scheduled uv_close).
   if (!c->tcp_inited || uv_is_closing((uv_handle_t *)&c->tcp)) return;
   if (!c->outer_active) {
     // Inner ciphertext straight to the socket, BIO-read into the egress ring.
@@ -388,10 +394,11 @@ internal void conn_pending_append(Connection *c, const U8 *data, U64 len) {
 }
 
 // After the handshake completes, flush any early-data overflow as 1-RTT. The
-// early-data and 1-RTT application byte streams are contiguous, so splitting the
-// request across the boundary is transparent to the server. Returns false if the
-// whole tail could not be written (a hard SSL_write error) — the caller must then
-// fail the connection rather than report a half-sent request as ready.
+// early-data and 1-RTT application byte streams are contiguous, so splitting
+// the request across the boundary is transparent to the server. Returns false
+// if the whole tail could not be written (a hard SSL_write error) — the caller
+// must then fail the connection rather than report a half-sent request as
+// ready.
 internal B32 conn_flush_pending(Connection *c) {
   if (!c->pending_len) return 1;
   U64 off = 0;
@@ -419,15 +426,15 @@ internal void conn_fail(Connection *c, const char *reason) {
 
 //- proxy tunnel negotiation
 //
-// When proxied, conn_connect connected the PROXY (not the target). We negotiate a
-// tunnel here, then hand off to conn_drive_handshake to run the target's TLS over
-// it. For an HTTPS proxy the `outer` pump carries everything to the proxy (its
-// own TLS), and the inner/target pump's records ride inside that — see
+// When proxied, conn_connect connected the PROXY (not the target). We negotiate
+// a tunnel here, then hand off to conn_drive_handshake to run the target's TLS
+// over it. For an HTTPS proxy the `outer` pump carries everything to the proxy
+// (its own TLS), and the inner/target pump's records ride inside that — see
 // conn_transport_feed / conn_flush_output.
 
-// Feed received socket bytes toward the target (inner) pump. With an HTTPS proxy
-// the bytes are outer-TLS ciphertext: decrypt them through the outer pump first;
-// the recovered plaintext is the inner (target) TLS ciphertext.
+// Feed received socket bytes toward the target (inner) pump. With an HTTPS
+// proxy the bytes are outer-TLS ciphertext: decrypt them through the outer pump
+// first; the recovered plaintext is the inner (target) TLS ciphertext.
 internal void conn_transport_feed(Connection *c, const U8 *data, U64 len) {
   if (!c->outer_active) {
     ssl_pump_feed_ciphertext(&c->pump, data, len);
@@ -474,7 +481,8 @@ internal void conn_socks5_send_userpass(Connection *c) {
   conn_raw_write(c, buf, m);
 }
 
-// Run the parser for the current negotiation step against the accumulated reply.
+// Run the parser for the current negotiation step against the accumulated
+// reply.
 internal void conn_proxy_advance(Connection *c) {
   switch (c->proxy_phase) {
     case ProxyPhase_HttpConnect: {
@@ -527,8 +535,8 @@ internal void conn_proxy_advance(Connection *c) {
   }
 }
 
-// Append negotiation bytes and re-run the phase parser. Overflow (a reply larger
-// than nbuf) is only reachable with a hostile/broken proxy -> fail.
+// Append negotiation bytes and re-run the phase parser. Overflow (a reply
+// larger than nbuf) is only reachable with a hostile/broken proxy -> fail.
 internal void conn_proxy_consume(Connection *c, const U8 *data, U64 len) {
   if (c->nlen + len > sizeof c->nbuf) {
     conn_fail(c, "proxy negotiation overflow");
@@ -664,8 +672,9 @@ void conn_connect(Connection *c, const char *host, U16 port,
   c->ready_user = user;
   c->port = port;
   strip_host(c->host, sizeof c->host, host);
-  // When proxied, the socket goes to the PROXY; the target host stays in c->host
-  // for SNI + the CONNECT/SOCKS request. resolve_host is what we DNS + connect.
+  // When proxied, the socket goes to the PROXY; the target host stays in
+  // c->host for SNI + the CONNECT/SOCKS request. resolve_host is what we DNS +
+  // connect.
   B32 proxying = c->proxy.type != ProxyType_None;
   strip_host(c->resolve_host, sizeof c->resolve_host,
              proxying ? c->proxy.host : host);
@@ -690,16 +699,19 @@ void conn_connect(Connection *c, const char *host, U16 port,
     conn_deliver_ready(c, 0, "configure_ssl failed");
     return;
   }
-  // 0-RTT: enable early data only if the offered session is 0-RTT-capable. If it
-  // is not, want_early_data has no effect and the handshake is a plain (1-RTT or
-  // fresh) one — no early-data records, byte-identical to the non-0-RTT path.
+  // 0-RTT: enable early data only if the offered session is 0-RTT-capable. If
+  // it is not, want_early_data has no effect and the handshake is a plain
+  // (1-RTT or fresh) one — no early-data records, byte-identical to the
+  // non-0-RTT path.
   if (c->want_early_data)
     c->want_early_data =
         ssl_pump_enable_early_data(&c->pump, c->resume_session);
 
-  c->t_connect_start_ns = uv_hrtime();  // request/connect start (DNS begins next)
+  c->t_connect_start_ns =
+      uv_hrtime();  // request/connect start (DNS begins next)
 
-  // DNS cache hit -> skip uv_getaddrinfo, connect straight to the cached address.
+  // DNS cache hit -> skip uv_getaddrinfo, connect straight to the cached
+  // address.
   if (c->dns_cache) {
     struct sockaddr_storage ss;
     socklen_t sl = 0;
@@ -746,7 +758,8 @@ B32 conn_send_plaintext(Connection *c, const U8 *data, U64 len) {
   if (c->state != ConnState_Established && c->state != ConnState_EarlyData)
     return 0;
   // If earlier bytes already overflowed into the pending queue, keep ordering:
-  // everything after them also queues, to be flushed as 1-RTT after the handshake.
+  // everything after them also queues, to be flushed as 1-RTT after the
+  // handshake.
   if (c->pending_len) {
     conn_pending_append(c, data, len);
     return 1;

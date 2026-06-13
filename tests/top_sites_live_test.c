@@ -1,8 +1,8 @@
 // Live real-world reachability check: drive the Chrome-148 Client (H2-first,
 // alt-svc -> QUIC) at the current top-10 most-visited websites and confirm a
-// TLS + HTTP exchange completes with each — i.e. the impersonation works against
-// real CDNs / WAFs, not just the fingerprint oracles. Thresholds are lenient
-// (real sites redirect / rate-limit / block, and DNS can flake).
+// TLS + HTTP exchange completes with each — i.e. the impersonation works
+// against real CDNs / WAFs, not just the fingerprint oracles. Thresholds are
+// lenient (real sites redirect / rate-limit / block, and DNS can flake).
 // Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,7 +63,8 @@ internal void on_site(void *user, const Response *r) {
   SiteResult *s = &cx->results[sl->i];
   s->ok = r->ok;
   s->status = r->status;
-  U64 an = r->alpn.size < sizeof s->alpn - 1 ? r->alpn.size : sizeof s->alpn - 1;
+  U64 an =
+      r->alpn.size < sizeof s->alpn - 1 ? r->alpn.size : sizeof s->alpn - 1;
   MemoryCopy(s->alpn, r->alpn.str, an);
   s->alpn[an] = 0;
   s->bytes = r->body_len;
@@ -85,11 +86,16 @@ int main(void) {
   // Top-10 most-visited sites (global). www. forms avoid the apex->www 301
   // since the client does not follow redirects yet.
   const char *sites[] = {
-      "https://www.google.com/",    "https://www.youtube.com/",
-      "https://www.facebook.com/",  "https://www.instagram.com/",
-      "https://x.com/",             "https://www.wikipedia.org/",
-      "https://www.reddit.com/",    "https://www.amazon.com/",
-      "https://chatgpt.com/",       "https://www.tiktok.com/",
+      "https://www.google.com/",
+      "https://www.youtube.com/",
+      "https://www.facebook.com/",
+      "https://www.instagram.com/",
+      "https://x.com/",
+      "https://www.wikipedia.org/",
+      "https://www.reddit.com/",
+      "https://www.amazon.com/",
+      "https://chatgpt.com/",
+      "https://www.tiktok.com/",
   };
   int n = (int)ArrayCount(sites);
 
@@ -127,13 +133,15 @@ int main(void) {
   const char *slowest_url = "-";
   // Timing columns (dns/tcp/tls/total); tcp is 0 over HTTP/3.
   fprintf(stderr, "\n  %-30s %-3s %-6s %-4s %8s %6s %6s %6s %7s  %s\n", "site",
-          "ok", "status", "alpn", "bytes", "dns", "tcp", "tls", "total", "note");
+          "ok", "status", "alpn", "bytes", "dns", "tcp", "tls", "total",
+          "note");
   for (int i = 0; i < n; ++i) {
     SiteResult *s = &cx.results[i];
     char db[12], tb[12], lb[12], tob[12];
-    fprintf(stderr, "  %-30s %-3s %-6d %-4s %8llu %6s %6s %6s %7s  %s\n", s->url,
-            s->ok ? "yes" : "NO", s->status, s->alpn[0] ? s->alpn : "-",
-            (unsigned long long)s->bytes, fmt_ms(db, sizeof db, s->timing.dns_ms),
+    fprintf(stderr, "  %-30s %-3s %-6d %-4s %8llu %6s %6s %6s %7s  %s\n",
+            s->url, s->ok ? "yes" : "NO", s->status, s->alpn[0] ? s->alpn : "-",
+            (unsigned long long)s->bytes,
+            fmt_ms(db, sizeof db, s->timing.dns_ms),
             fmt_ms(tb, sizeof tb, s->timing.tcp_ms),
             fmt_ms(lb, sizeof lb, s->timing.tls_ms),
             fmt_ms(tob, sizeof tob, s->timing.total_ms), s->error);

@@ -27,9 +27,9 @@ void ssl_pump_cleanup(SslPump *pump) {
 B32 ssl_pump_configure(SslPump *pump, const TlsProfile *p, const char *host,
                        const U8 *ech_config_list, U64 ech_config_list_len,
                        SSL_SESSION *resume_session, void *resume_ctx) {
-  return pump->ssl && configure_ssl(pump->ssl, p, host, ech_config_list,
-                                    ech_config_list_len, resume_session,
-                                    resume_ctx);
+  return pump->ssl &&
+         configure_ssl(pump->ssl, p, host, ech_config_list, ech_config_list_len,
+                       resume_session, resume_ctx);
 }
 
 B32 ssl_pump_resumed(SslPump *pump) {
@@ -81,17 +81,18 @@ HsStatus ssl_pump_do_handshake(SslPump *pump) {
     return HsStatus_EarlyRejected;
   }
   if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) {
-    // With early data enabled, SSL_do_handshake returns want-IO after sending the
-    // ClientHello while the 0-RTT window is open — distinguish it so the caller
-    // can write the request as early data before the handshake completes.
+    // With early data enabled, SSL_do_handshake returns want-IO after sending
+    // the ClientHello while the 0-RTT window is open — distinguish it so the
+    // caller can write the request as early data before the handshake
+    // completes.
     if (SSL_in_early_data(pump->ssl)) return HsStatus_EarlyData;
     return HsStatus_WantIo;
   }
   pump->last_err = ERR_peek_last_error();
   // A 0-RTT ClientHello answered with a sub-TLS-1.3 version fails with
   // SSL_R_WRONG_VERSION_ON_EARLY_DATA (SSL_ERROR_SSL, not EARLY_DATA_REJECTED).
-  // RFC 8446 D.3 says to retry on a fresh non-0-RTT connection — route it through
-  // the same early-rejected fallback.
+  // RFC 8446 D.3 says to retry on a fresh non-0-RTT connection — route it
+  // through the same early-rejected fallback.
   if (ERR_GET_LIB(pump->last_err) == ERR_LIB_SSL &&
       ERR_GET_REASON(pump->last_err) == SSL_R_WRONG_VERSION_ON_EARLY_DATA)
     return HsStatus_EarlyRejected;

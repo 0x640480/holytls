@@ -1,12 +1,14 @@
 #include "core/json.h"
 
-// yyjson custom allocator backed by an Arena. yyjson stores no size metadata of its
-// own, so realloc allocates fresh and copies the old payload (the arena can't grow in
-// place); the old block is abandoned in the arena and reclaimed in bulk on release.
+// yyjson custom allocator backed by an Arena. yyjson stores no size metadata of
+// its own, so realloc allocates fresh and copies the old payload (the arena
+// can't grow in place); the old block is abandoned in the arena and reclaimed
+// in bulk on release.
 internal void *json_alc_malloc(void *ctx, size_t size) {
   return arena_push((Arena *)ctx, (U64)size, 16);
 }
-internal void *json_alc_realloc(void *ctx, void *ptr, size_t old_size, size_t size) {
+internal void *json_alc_realloc(void *ctx, void *ptr, size_t old_size,
+                                size_t size) {
   void *n = arena_push((Arena *)ctx, (U64)size, 16);
   if (ptr && old_size) MemoryCopy(n, ptr, old_size < size ? old_size : size);
   return n;
@@ -27,8 +29,8 @@ yyjson_alc json_arena_alc(Arena *arena) {
 
 yyjson_doc *json_parse(Arena *arena, String8 src) {
   yyjson_alc alc = json_arena_alc(arena);
-  // No INSITU flag -> the input buffer is read, not modified (safe for read-only,
-  // non-NUL-terminated HTTP bodies).
+  // No INSITU flag -> the input buffer is read, not modified (safe for
+  // read-only, non-NUL-terminated HTTP bodies).
   return yyjson_read_opts((char *)src.str, (size_t)src.size, 0, &alc, 0);
 }
 
@@ -81,9 +83,10 @@ yyjson_mut_doc *json_mut(Arena *arena) {
   return yyjson_mut_doc_new(&alc);
 }
 
-void json_mut_obj_str8(yyjson_mut_doc *doc, yyjson_mut_val *obj, const char *key,
-                       String8 val) {
-  yyjson_mut_obj_add_strn(doc, obj, key, (const char *)val.str, (size_t)val.size);
+void json_mut_obj_str8(yyjson_mut_doc *doc, yyjson_mut_val *obj,
+                       const char *key, String8 val) {
+  yyjson_mut_obj_add_strn(doc, obj, key, (const char *)val.str,
+                          (size_t)val.size);
 }
 
 String8 json_mut_write(Arena *arena, yyjson_mut_doc *doc, B32 pretty) {

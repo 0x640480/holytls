@@ -1,12 +1,13 @@
 // Offline DNS-cache tests: put/get hit, TTL expiry, unknown-host miss, evict,
 // disabled (ttl=0) behavior, full-table eviction, and the port-reset helper.
 // Addresses are built with uv_ip4_addr (no network).
+#include "net/dns_cache.h"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdio.h>
 
 #include "base/base.h"
-#include "net/dns_cache.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -40,8 +41,9 @@ internal void test_basic(void) {
   CHECK(dns_cache_get(&dc, "a.com", 500, &out, &ol));  // live hit
   CHECK(v4_ip(&out) == a.sin_addr.s_addr);
   CHECK(dns_cache_get(&dc, "A.COM", 500, &out, &ol));   // case-insensitive
-  CHECK(!dns_cache_get(&dc, "b.com", 500, &out, &ol));   // unknown -> miss
-  CHECK(!dns_cache_get(&dc, "a.com", 1000, &out, &ol));  // expired (now>=expiry)
+  CHECK(!dns_cache_get(&dc, "b.com", 500, &out, &ol));  // unknown -> miss
+  CHECK(
+      !dns_cache_get(&dc, "a.com", 1000, &out, &ol));  // expired (now>=expiry)
   CHECK(!dns_cache_get(&dc, "a.com", 1500, &out, &ol));  // and stays gone
 }
 
@@ -80,9 +82,9 @@ internal void test_full_table_eviction(void) {
   // One more put evicts the soonest-expiring (h0, put at t=0).
   struct sockaddr_in b = v4("2.2.2.2", 443);
   dns_cache_put(&dc, "new.com", (struct sockaddr *)&b, sizeof b, 1000);
-  CHECK(dns_cache_get(&dc, "new.com", 1001, &out, &ol));   // newcomer cached
-  CHECK(!dns_cache_get(&dc, "h0.com", 1001, &out, &ol));    // oldest evicted
-  CHECK(dns_cache_get(&dc, "h1.com", 1001, &out, &ol));     // others survive
+  CHECK(dns_cache_get(&dc, "new.com", 1001, &out, &ol));  // newcomer cached
+  CHECK(!dns_cache_get(&dc, "h0.com", 1001, &out, &ol));  // oldest evicted
+  CHECK(dns_cache_get(&dc, "h1.com", 1001, &out, &ol));   // others survive
 }
 
 internal void test_set_port(void) {
@@ -99,6 +101,7 @@ int main(void) {
   test_evict_and_disabled();
   test_full_table_eviction();
   test_set_port();
-  fprintf(stderr, "[dns_cache_test] %d checks, %d failures\n", g_checks, g_fails);
+  fprintf(stderr, "[dns_cache_test] %d checks, %d failures\n", g_checks,
+          g_fails);
   return g_fails ? 1 : 0;
 }

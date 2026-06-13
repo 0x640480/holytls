@@ -2,16 +2,18 @@
 // brand-list GREASE algorithm byte-for-byte. Three layers of evidence:
 //   1. Chromium's own unit-test seeds (84/85/86) -> GREASE brand tokens.
 //   2. Real captured Chrome outputs (148 powhttp, 149 browserleaks).
-//   3. Drift guard: the generated string equals the static sec-ch-ua value baked
+//   3. Drift guard: the generated string equals the static sec-ch-ua value
+//   baked
 //      into each profile's default headers, so a hand-typed profile string can
 //      never silently diverge from the algorithm.
+#include "profile/sec_ch_ua.h"
+
 #include <stdio.h>
 
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/string8.h"
 #include "profile/profile.h"
-#include "profile/sec_ch_ua.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -60,11 +62,13 @@ int main(void) {
 
   // Full-version-list: real brands carry the SUPPLIED build (NOT frozen to
   // .0.0.0 — that's the high-entropy hint's whole point); GREASE keeps the same
-  // token/order/permutation as the short form, with its greased digit + ".0.0.0".
+  // token/order/permutation as the short form, with its greased digit +
+  // ".0.0.0".
   CHECK(eq(sec_ch_ua_full_version_list(a, 149, str8_lit("149.0.7632.67")),
            "\"Google Chrome\";v=\"149.0.7632.67\", "
            "\"Chromium\";v=\"149.0.7632.67\", \"Not)A;Brand\";v=\"24.0.0.0\""));
-  // str8_zero() falls back to the UA-frozen "<major>.0.0.0" for the real brands.
+  // str8_zero() falls back to the UA-frozen "<major>.0.0.0" for the real
+  // brands.
   CHECK(eq(sec_ch_ua_full_version_list(a, 149, str8_zero()),
            "\"Google Chrome\";v=\"149.0.0.0\", \"Chromium\";v=\"149.0.0.0\", "
            "\"Not)A;Brand\";v=\"24.0.0.0\""));
@@ -85,10 +89,10 @@ int main(void) {
   CHECK(eq(profile_accept_language(p149), "en-US,en;q=0.9"));
   CHECK(eq(profile_accept_encoding(p149), "gzip, deflate, br, zstd"));
   // Generic by-name lookup (also the path for a QuicProfile table).
-  CHECK(eq(profile_default_header(p149->default_headers,
-                                  p149->default_header_count,
-                                  str8_lit("priority")),
-           "u=0, i"));
+  CHECK(eq(
+      profile_default_header(p149->default_headers, p149->default_header_count,
+                             str8_lit("priority")),
+      "u=0, i"));
   CHECK(eq(profile_default_header(profile_chrome149_h3()->default_headers,
                                   profile_chrome149_h3()->default_header_count,
                                   str8_lit("user-agent")),

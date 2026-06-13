@@ -1,19 +1,20 @@
 // Akamai HTTP/2 fingerprint golden: drive H2Session into a raw nghttp2 server,
-// reconstruct the akamai text (SETTINGS | WINDOW_UPDATE | PRIORITY | pseudo) and
-// assert it byte-for-byte (it MD5s to the project goldens 52d84… / 6ea73…).
+// reconstruct the akamai text (SETTINGS | WINDOW_UPDATE | PRIORITY | pseudo)
+// and assert it byte-for-byte (it MD5s to the project goldens 52d84… / 6ea73…).
+#include "h2/h2.h"
+
 #include <nghttp2/nghttp2.h>
 
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/string8.h"
-#include "h2/h2.h"
 #include "profile/profile.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
-#define CHECK(c)                                                  \
-  Statement(g_checks += 1; if (!(c)) {                            \
-    g_fails += 1;                                                 \
+#define CHECK(c)                                                   \
+  Statement(g_checks += 1; if (!(c)) {                             \
+    g_fails += 1;                                                  \
     fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
   })
 

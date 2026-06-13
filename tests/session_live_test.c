@@ -38,8 +38,9 @@ internal void on_resp(void *user, const Response *r) {
   // httpbin /cookies echoes {"cookies": {"holytls": "1"}}.
   cx->has_cookie = str8_contains(body, str8_lit("holytls")) &&
                    str8_contains(body, str8_lit("\"1\""));
-  U64 n = r->final_url.size < sizeof cx->final_url - 1 ? r->final_url.size
-                                                       : sizeof cx->final_url - 1;
+  U64 n = r->final_url.size < sizeof cx->final_url - 1
+              ? r->final_url.size
+              : sizeof cx->final_url - 1;
   if (r->final_url.str) MemoryCopy(cx->final_url, r->final_url.str, n);
   cx->final_url[n] = 0;
 }
@@ -63,21 +64,25 @@ int main(void) {
   defer { session_cleanup(&s1); };
   Ctx c1;
   MemoryZeroStruct(&c1);
-  session_get(&s1, &client, str8_lit("https://httpbin.org/cookies/set?holytls=1"),
-              on_resp, &c1);
+  session_get(&s1, &client,
+              str8_lit("https://httpbin.org/cookies/set?holytls=1"), on_resp,
+              &c1);
   loop_run(&loop);
   fprintf(stderr, "  set: status=%d has_cookie=%d final=%s\n", c1.status,
           c1.has_cookie, c1.final_url);
   CHECK(c1.got && c1.status == 200);
-  CHECK(c1.has_cookie);  // absorbed on hop 1, re-sent on the redirect to /cookies
+  CHECK(
+      c1.has_cookie);  // absorbed on hop 1, re-sent on the redirect to /cookies
   CHECK(strstr(c1.final_url, "/cookies") != 0);
 
   // Same session again: the jar persists across requests on the shared client.
   Ctx c2;
   MemoryZeroStruct(&c2);
-  session_get(&s1, &client, str8_lit("https://httpbin.org/cookies"), on_resp, &c2);
+  session_get(&s1, &client, str8_lit("https://httpbin.org/cookies"), on_resp,
+              &c2);
   loop_run(&loop);
-  fprintf(stderr, "  reuse: status=%d has_cookie=%d\n", c2.status, c2.has_cookie);
+  fprintf(stderr, "  reuse: status=%d has_cookie=%d\n", c2.status,
+          c2.has_cookie);
   CHECK(c2.got && c2.status == 200 && c2.has_cookie);
 
   // A second session has an independent jar (no cookie leak).
@@ -86,7 +91,8 @@ int main(void) {
   defer { session_cleanup(&s2); };
   Ctx c3;
   MemoryZeroStruct(&c3);
-  session_get(&s2, &client, str8_lit("https://httpbin.org/cookies"), on_resp, &c3);
+  session_get(&s2, &client, str8_lit("https://httpbin.org/cookies"), on_resp,
+              &c3);
   loop_run(&loop);
   fprintf(stderr, "  other session: status=%d has_cookie=%d\n", c3.status,
           c3.has_cookie);

@@ -1,7 +1,8 @@
-// Live DNS-cache test: two requests to the same host on one Client (pooling off ->
-// two fresh connections that share the Client's DNS cache). The first resolves and
-// caches the address; the second hits the cache, so its timing.dns_ms is 0.
-// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// Live DNS-cache test: two requests to the same host on one Client (pooling off
+// -> two fresh connections that share the Client's DNS cache). The first
+// resolves and caches the address; the second hits the cache, so its
+// timing.dns_ms is 0. Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it
+// skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -32,7 +33,8 @@ internal void on_resp(void *user, const Response *r) {
   cx->ok = r->ok;
   cx->status = r->status;
   cx->dns_ms = r->timing.dns_ms;
-  if (!r->ok) fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
+  if (!r->ok)
+    fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
 }
 
 internal Ctx fetch(Client *c, EventLoop *loop, const char *url) {
@@ -54,8 +56,9 @@ int main(void) {
   loop_init(&loop);
   defer { loop_shutdown(&loop); };  // runs last (LIFO): after client_cleanup
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/1);  // cache on by default
-  defer { client_cleanup(&c); };    // runs first on scope exit
+  client_init(&c, &loop, profile_chrome148(),
+              /*verify=*/1);      // cache on by default
+  defer { client_cleanup(&c); };  // runs first on scope exit
   CHECK(client_ok(&c));
 
   Ctx a = fetch(&c, &loop, url);  // miss: resolves + caches
@@ -68,7 +71,8 @@ int main(void) {
   CHECK(b.ok && b.status == 200);
   CHECK(b.dns_ms == 0);  // the second connection skipped DNS via the cache
 
-  // loop_shutdown + client_cleanup run here via defer (LIFO), as the scope exits.
+  // loop_shutdown + client_cleanup run here via defer (LIFO), as the scope
+  // exits.
   fprintf(stderr, "[dns_cache_live_test] %d checks, %d failures\n", g_checks,
           g_fails);
   return g_fails ? 1 : 0;

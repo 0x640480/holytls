@@ -1,11 +1,13 @@
 // Offline base64 tests: the RFC 4648 §10 test vectors, binary round-trips, and
-// strict rejection of malformed input (bad length, invalid chars, stray padding).
+// strict rejection of malformed input (bad length, invalid chars, stray
+// padding).
+#include "base/base64.h"
+
 #include <stdio.h>
 #include <string.h>
 
 #include "base/arena.h"
 #include "base/base.h"
-#include "base/base64.h"
 #include "base/string8.h"
 
 global int g_checks = 0;
@@ -60,13 +62,17 @@ internal void test_round_trip(Arena *a) {
 }
 
 internal void test_reject(Arena *a) {
-  CHECK(base64_decode(a, str8_lit("Zg=")).size == 0);    // length not a multiple of 4
-  CHECK(base64_decode(a, str8_lit("Zg")).size == 0);     // length not a multiple of 4
-  CHECK(base64_decode(a, str8_lit("Z!==")).size == 0);   // invalid char '!'
-  CHECK(base64_decode(a, str8_lit("Z g=")).size == 0);   // embedded space
-  CHECK(base64_decode(a, str8_lit("Zm9=Zm9v")).size == 0);  // padding mid-stream
-  CHECK(base64_decode(a, str8_lit("Z=g=")).size == 0);   // '=' in a data position
-  CHECK(base64_decode(a, str8_lit("====")).size == 0);   // all padding
+  CHECK(base64_decode(a, str8_lit("Zg=")).size ==
+        0);  // length not a multiple of 4
+  CHECK(base64_decode(a, str8_lit("Zg")).size ==
+        0);  // length not a multiple of 4
+  CHECK(base64_decode(a, str8_lit("Z!==")).size == 0);  // invalid char '!'
+  CHECK(base64_decode(a, str8_lit("Z g=")).size == 0);  // embedded space
+  CHECK(base64_decode(a, str8_lit("Zm9=Zm9v")).size ==
+        0);  // padding mid-stream
+  CHECK(base64_decode(a, str8_lit("Z=g=")).size ==
+        0);  // '=' in a data position
+  CHECK(base64_decode(a, str8_lit("====")).size == 0);  // all padding
 }
 
 int main(void) {

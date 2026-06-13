@@ -7,7 +7,8 @@
 #include "tls/keylog.h"
 
 internal void warn(CtxResult *r, const char *msg) {
-  if (r->warning_count < CTX_MAX_WARNINGS) r->warnings[r->warning_count++] = msg;
+  if (r->warning_count < CTX_MAX_WARNINGS)
+    r->warnings[r->warning_count++] = msg;
 }
 
 // Common Linux system CA bundle locations (BoringSSL ships no default bundle).
@@ -41,16 +42,16 @@ CtxResult build_ctx(const TlsProfile *p, B32 verify) {
   SSL_CTX_set_grease_enabled(c, p->grease ? 1 : 0);
   SSL_CTX_set_permute_extensions(c, p->permute_extensions ? 1 : 0);
   if (p->enable_ocsp_stapling) SSL_CTX_enable_ocsp_stapling(c);
-  if (p->enable_signed_cert_timestamps) SSL_CTX_enable_signed_cert_timestamps(c);
+  if (p->enable_signed_cert_timestamps)
+    SSL_CTX_enable_signed_cert_timestamps(c);
   if (!p->session_tickets) SSL_CTX_set_options(c, SSL_OP_NO_TICKET);
 
   // Certificate compression (advertise zlib/brotli/zstd with real decoders).
   {
     const char *skipped[8];
     int skipped_n = 0;
-    int reg = register_cert_decompressors(c, p->cert_compress_algs,
-                                          p->cert_compress_count, skipped,
-                                          &skipped_n);
+    int reg = register_cert_decompressors(
+        c, p->cert_compress_algs, p->cert_compress_count, skipped, &skipped_n);
     if (reg == 0) warn(&r, "no cert-compression codec available");
     for (int i = 0; i < skipped_n; ++i)
       warn(&r, "cert-compression codec unavailable (not advertised)");
@@ -60,7 +61,8 @@ CtxResult build_ctx(const TlsProfile *p, B32 verify) {
   // Fork-only knobs (lexiforest/boringssl) — emit the two extensions stock
   // can't, plus exact key-share count and extension order. Return conventions
   // vary, so we don't check; ja4_test validates the resulting ClientHello.
-  if (p->record_size_limit) SSL_CTX_set_record_size_limit(c, p->record_size_limit);
+  if (p->record_size_limit)
+    SSL_CTX_set_record_size_limit(c, p->record_size_limit);
   if (p->delegated_credentials)
     SSL_CTX_set_delegated_credentials(c, p->delegated_credentials);
   if (p->key_shares_limit) SSL_CTX_set_key_shares_limit(c, p->key_shares_limit);
@@ -79,14 +81,16 @@ CtxResult build_ctx(const TlsProfile *p, B32 verify) {
         break;
       }
     }
-    if (!loaded && !SSL_CTX_set_default_verify_paths(c)) warn(&r, "no CA roots");
+    if (!loaded && !SSL_CTX_set_default_verify_paths(c))
+      warn(&r, "no CA roots");
     SSL_CTX_set_verify(c, SSL_VERIFY_PEER, 0);
   } else {
     SSL_CTX_set_verify(c, SSL_VERIFY_NONE, 0);
   }
 
   // TLS/QUIC key logging (Wireshark). Observer only — never alters wire bytes.
-  // Auto-enabled from $SSLKEYLOGFILE; client_set_key_log_file can also register it.
+  // Auto-enabled from $SSLKEYLOGFILE; client_set_key_log_file can also register
+  // it.
   keylog_init_from_env();
   if (keylog_enabled()) SSL_CTX_set_keylog_callback(c, keylog_callback);
 
@@ -131,16 +135,17 @@ B32 configure_ssl(SSL *ssl, const TlsProfile *p, const char *host,
 
   // TLS 1.3 ticket resumption (opt-in). Offering a cached session adds the
   // pre_shared_key / psk_key_exchange_modes extensions to the ClientHello (the
-  // resumed-handshake fingerprint, exactly as a real browser on a repeat visit),
-  // so this path is only taken when the client has a cached ticket for the
-  // origin. `resume_ctx` is always set when resumption is enabled so the
+  // resumed-handshake fingerprint, exactly as a real browser on a repeat
+  // visit), so this path is only taken when the client has a cached ticket for
+  // the origin. `resume_ctx` is always set when resumption is enabled so the
   // new-session callback can route freshly issued tickets back to their origin.
   if (resume_ctx) SSL_set_ex_data(ssl, ssl_resume_ex_index(), resume_ctx);
   if (resume_session) SSL_set_session(ssl, resume_session);
 
-  // Certificate pinning (opt-in): if `host` is pinned on this SSL's CTX, override
-  // verification for this connection with a trust-on-pin check. No-op otherwise,
-  // so non-pinned connections keep the default certificate verification.
+  // Certificate pinning (opt-in): if `host` is pinned on this SSL's CTX,
+  // override verification for this connection with a trust-on-pin check. No-op
+  // otherwise, so non-pinned connections keep the default certificate
+  // verification.
   cert_pin_maybe_enable(ssl, host);
   return 1;
 }

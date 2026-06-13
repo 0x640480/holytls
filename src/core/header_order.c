@@ -6,7 +6,7 @@ void build_ordered_headers(Arena *arena, const DefaultHeader *defaults,
   // 1) Defaults in order; a caller header of the same name overrides the value
   //    in place. Order-only placeholders (empty value, none supplied) drop out.
   for (U64 i = 0; i < default_count; ++i) {
-    String8 name = str8_cstring(defaults[i].name);   // static literal (stable)
+    String8 name = str8_cstring(defaults[i].name);    // static literal (stable)
     String8 value = str8_cstring(defaults[i].value);  // static literal (stable)
     B32 overridden = 0;
     for (U64 j = 0; j < caller_count; ++j)
@@ -18,8 +18,8 @@ void build_ordered_headers(Arena *arena, const DefaultHeader *defaults,
     if (value.size)
       // The default name is a process-static view (no copy needed); copy the
       // value only when it came from the caller's transient array.
-      header_list_push(out, name, overridden ? push_str8_copy(arena, value) : value,
-                       0);
+      header_list_push(out, name,
+                       overridden ? push_str8_copy(arena, value) : value, 0);
   }
   // 2) Caller-only headers (not matching any default name), appended in order.
   //    An empty value omits the header (consistent with the default slots).
@@ -44,7 +44,8 @@ void reorder_headers(Arena *arena, HeaderList *list, const String8 *order,
   Header *out = push_array_no_zero(arena, Header, n);
   B32 *used = push_array(arena, B32, n);  // zeroed
   U64 k = 0;
-  // Listed names first, in order; each name claims the first not-yet-placed match.
+  // Listed names first, in order; each name claims the first not-yet-placed
+  // match.
   for (U64 o = 0; o < order_count; ++o)
     for (U64 i = 0; i < n; ++i)
       if (!used[i] && str8_match_ci(list->v[i].name, order[o])) {

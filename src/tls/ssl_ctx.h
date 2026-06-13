@@ -25,17 +25,19 @@ internal inline B32 ctx_ok(const CtxResult *r) { return r->ctx != 0; }
 CtxResult build_ctx(const TlsProfile *p, B32 verify);
 
 // The SSL ex_data index under which a per-connection resumption context is
-// stored (so a single SSL_CTX-level new-session callback can route each captured
-// ticket to its origin). Lazily registered; stable for the process lifetime.
+// stored (so a single SSL_CTX-level new-session callback can route each
+// captured ticket to its origin). Lazily registered; stable for the process
+// lifetime.
 int ssl_resume_ex_index(void);
 
-// Apply per-connection knobs (SNI, ALPN, ALPS, ECH, TLS session resumption) to a
-// fresh SSL. `host` is the SNI/verification hostname (NUL-terminated).
-// `ech_config_list` (may be 0) is a serialized ECHConfigList (from the host's DNS
-// HTTPS RR): when present, real ECH is offered; otherwise ECH-GREASE per the
-// profile. `resume_session` (may be 0) is a cached SSL_SESSION offered for 1-RTT
-// resumption (caller retains ownership). `resume_ctx` (may be 0) is an opaque
-// pointer stashed at `ssl_resume_ex_index()` for the new-session callback.
+// Apply per-connection knobs (SNI, ALPN, ALPS, ECH, TLS session resumption) to
+// a fresh SSL. `host` is the SNI/verification hostname (NUL-terminated).
+// `ech_config_list` (may be 0) is a serialized ECHConfigList (from the host's
+// DNS HTTPS RR): when present, real ECH is offered; otherwise ECH-GREASE per
+// the profile. `resume_session` (may be 0) is a cached SSL_SESSION offered for
+// 1-RTT resumption (caller retains ownership). `resume_ctx` (may be 0) is an
+// opaque pointer stashed at `ssl_resume_ex_index()` for the new-session
+// callback.
 B32 configure_ssl(SSL *ssl, const TlsProfile *p, const char *host,
                   const U8 *ech_config_list, U64 ech_config_list_len,
                   SSL_SESSION *resume_session, void *resume_ctx);

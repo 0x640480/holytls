@@ -5,8 +5,8 @@
 
 #include "h3/h3_control.h"
 
-// Server-initiated uni streams (control + QPACK enc/dec): a tiny fixed set, kept
-// in an inline array with linear scan rather than a tree.
+// Server-initiated uni streams (control + QPACK enc/dec): a tiny fixed set,
+// kept in an inline array with linear scan rather than a tree.
 typedef struct H3Uni H3Uni;
 struct H3Uni {
   S64 id;
@@ -93,7 +93,8 @@ B32 h3_session_request(H3Session *s, String8 method, String8 scheme,
   // Control + QPACK uni streams (Chrome order: control, encoder, decoder).
   S64 ctrl_id = -1, qenc_id = -1, qdec_id = -1;
   if (quic_open_uni_stream(s->conn, &ctrl_id) != 0) return 0;
-  String8 control = build_h3_control_stream(s->arena, s->prof, s->req_stream_id);
+  String8 control =
+      build_h3_control_stream(s->arena, s->prof, s->req_stream_id);
   quic_stream_send(s->conn, ctrl_id, control.str, control.size, 0);
 
   if (quic_open_uni_stream(s->conn, &qenc_id) != 0) return 0;
@@ -224,7 +225,8 @@ internal void h3_on_stream_data(void *user, S64 stream_id, const U8 *data,
   }
   // Server QPACK encoder stream (0x02) -> feed the decoder. control (0x00) +
   // qpack decoder (0x03) streams: ignored.
-  if (u->type == 0x02 && rem) nghttp3_qpack_decoder_read_encoder(s->qdec, p, rem);
+  if (u->type == 0x02 && rem)
+    nghttp3_qpack_decoder_read_encoder(s->qdec, p, rem);
 }
 
 internal void h3_on_stream_close(void *user, S64 stream_id) {
@@ -239,8 +241,8 @@ internal void h3_finish_response(H3Session *s) {
   if (s->delivered) return;
   s->delivered = 1;
 
-  // Parse frames; DATA payloads are compacted to the front of req_in in place so
-  // the body is a single contiguous span with no extra heap buffer. The
+  // Parse frames; DATA payloads are compacted to the front of req_in in place
+  // so the body is a single contiguous span with no extra heap buffer. The
   // compacted region always stays behind the parse cursor, so it never clobbers
   // not-yet-parsed bytes.
   U8 *base = s->req_in.v;
@@ -265,7 +267,8 @@ internal void h3_finish_response(H3Session *s) {
     if (type == 0x01) {  // HEADERS
       h3_decode_headers(s, payload, plen);
     } else if (type == 0x00) {  // DATA
-      if (base + body_len != payload) MemoryMove(base + body_len, payload, plen);
+      if (base + body_len != payload)
+        MemoryMove(base + body_len, payload, plen);
       body_len += plen;
     }
     // other (GREASE/PUSH_PROMISE...): ignored

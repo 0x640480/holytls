@@ -105,13 +105,15 @@ internal void pc_close(PC *pc) {
   }
 }
 
-// Write to the holytls client (encrypting via the outer TLS for an HTTPS proxy).
+// Write to the holytls client (encrypting via the outer TLS for an HTTPS
+// proxy).
 internal void pc_to_client(PC *pc, const U8 *d, U64 n) {
   if (pc->tls) {
     SSL_write(pc->ssl, d, (int)n);
     U8 b[16384];
     int m;
-    while ((m = BIO_read(pc->wb, b, (int)sizeof b)) > 0) lb_raw_write(&pc->client, b, (U64)m);
+    while ((m = BIO_read(pc->wb, b, (int)sizeof b)) > 0)
+      lb_raw_write(&pc->client, b, (U64)m);
   } else {
     lb_raw_write(&pc->client, d, n);
   }
@@ -125,11 +127,13 @@ internal void pc_origin_read_cb(uv_stream_t *s, ssize_t nread,
     pc_close(pc);
     return;
   }
-  if (nread > 0) pc_to_client(pc, (const U8 *)buf->base, (U64)nread);  // origin -> client
+  if (nread > 0)
+    pc_to_client(pc, (const U8 *)buf->base, (U64)nread);  // origin -> client
 }
 
 internal B32 pc_creds_ok(String8 user, String8 pass) {
-  return str8_match(user, str8_lit("user")) && str8_match(pass, str8_lit("pass"));
+  return str8_match(user, str8_lit("user")) &&
+         str8_match(pass, str8_lit("pass"));
 }
 
 internal void pc_start_relay(PC *pc) {
@@ -178,13 +182,17 @@ internal void pc_negotiate(PC *pc) {
       }
     if (!end) return;
     String8 hdr = str8(pc->nbuf, end);
-    if (g_require_auth && !str8_contains(hdr, str8_lit("Proxy-Authorization: Basic dXNlcjpwYXNz"))) {
-      static const char *no = "HTTP/1.1 407 Proxy Authentication Required\r\n\r\n";
+    if (g_require_auth &&
+        !str8_contains(hdr,
+                       str8_lit("Proxy-Authorization: Basic dXNlcjpwYXNz"))) {
+      static const char *no =
+          "HTTP/1.1 407 Proxy Authentication Required\r\n\r\n";
       pc_to_client(pc, (const U8 *)no, strlen(no));
       pc_close(pc);
       return;
     }
-    CHECK(str8_starts_with(hdr, str8_lit("CONNECT ")));  // request-target present
+    CHECK(
+        str8_starts_with(hdr, str8_lit("CONNECT ")));  // request-target present
     pc_connect_origin(pc);
     return;
   }
@@ -280,7 +288,8 @@ internal void pc_client_read_cb(uv_stream_t *s, ssize_t nread,
     int r = SSL_do_handshake(pc->ssl);
     U8 b[16384];
     int m;
-    while ((m = BIO_read(pc->wb, b, (int)sizeof b)) > 0) lb_raw_write(&pc->client, b, (U64)m);
+    while ((m = BIO_read(pc->wb, b, (int)sizeof b)) > 0)
+      lb_raw_write(&pc->client, b, (U64)m);
     if (r != 1) {
       int e = SSL_get_error(pc->ssl, r);
       if (e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE) pc_close(pc);
@@ -290,7 +299,8 @@ internal void pc_client_read_cb(uv_stream_t *s, ssize_t nread,
   }
   U8 b[16384];
   int m;
-  while ((m = SSL_read(pc->ssl, b, (int)sizeof b)) > 0) pc_consume(pc, b, (U64)m);
+  while ((m = SSL_read(pc->ssl, b, (int)sizeof b)) > 0)
+    pc_consume(pc, b, (U64)m);
 }
 
 internal void proxy_on_conn(uv_stream_t *srv, int status) {

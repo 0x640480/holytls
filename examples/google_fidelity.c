@@ -30,15 +30,15 @@
 
 typedef struct App App;
 struct App {
-  Client* client;
-  Session* session;
+  Client *client;
+  Session *session;
   int done;
 };
 
-static void fetch_next(App* app);
+static void fetch_next(App *app);
 
-static void on_response(void* user, const Response* resp) {
-  App* app = (App*)user;
+static void on_response(void *user, const Response *resp) {
+  App *app = (App *)user;
   app->done += 1;
   if (!resp->ok) {
     fprintf(stderr, "request %d FAILED: %s\n", app->done,
@@ -49,9 +49,9 @@ static void on_response(void* user, const Response* resp) {
         "bytes "
         "(%.*s)\n",
         app->done, resp->status, (int)resp->alpn.size,
-        (const char*)resp->alpn.str, resp->resumed, resp->early_data,
+        (const char *)resp->alpn.str, resp->resumed, resp->early_data,
         (unsigned long long)resp->body_len, (int)resp->final_url.size,
-        (const char*)resp->final_url.str);
+        (const char *)resp->final_url.str);
   }
   // Chain the next request from inside the callback (allowed — only
   // client_cleanup is forbidden here). Reusing the same Client carries the
@@ -60,7 +60,7 @@ static void on_response(void* user, const Response* resp) {
   if (app->done < REQUESTS) fetch_next(app);
 }
 
-static void fetch_next(App* app) {
+static void fetch_next(App *app) {
   // session_get sends the profile's full navigation header set — the complete
   // Chrome request shape (no override_default_headers here, on purpose).
   session_get(app->session, app->client, str8_lit(GOOGLE_URL), on_response,

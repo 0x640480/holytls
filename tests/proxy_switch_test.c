@@ -3,8 +3,8 @@
 // single Client we rotate direct -> proxyA -> proxyB -> direct and assert each
 // request routed through the CURRENT proxy. Run with pooling on AND off — the
 // pooling-on pass is the regression guard for pool_evict_all: a switch must NOT
-// reuse a connection established through the old proxy. H2 is required because H1
-// is never pooled.
+// reuse a connection established through the old proxy. H2 is required because
+// H1 is never pooled.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,8 +68,10 @@ internal void px_close(PX *pc) {
   uv_close((uv_handle_t *)&pc->client, px_freed);
   if (pc->origin_inited) uv_close((uv_handle_t *)&pc->origin, px_freed);
 }
-internal void px_client_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf);
-internal void px_origin_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
+internal void px_client_read(uv_stream_t *s, ssize_t nread,
+                             const uv_buf_t *buf);
+internal void px_origin_read(uv_stream_t *s, ssize_t nread,
+                             const uv_buf_t *buf) {
   PX *pc = (PX *)s->data;
   if (pc->closing) return;
   if (nread < 0) {
@@ -91,7 +93,8 @@ internal void px_on_origin_connected(uv_connect_t *req, int status) {
   pc->nlen = 0;
   uv_read_start((uv_stream_t *)&pc->origin, lb_alloc_cb, px_origin_read);
 }
-internal void px_client_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf) {
+internal void px_client_read(uv_stream_t *s, ssize_t nread,
+                             const uv_buf_t *buf) {
   PX *pc = (PX *)s->data;
   if (pc->closing) return;
   if (nread < 0) {
@@ -194,9 +197,9 @@ internal void run_rotation(B32 pooling) {
   CHECK(client_set_proxy(&c, str8_cstring(a), 0));
   CHECK(do_request(&loop, &wd, &c));  // via A
   CHECK(client_set_proxy(&c, str8_cstring(b), 0));
-  CHECK(do_request(&loop, &wd, &c));  // via B
+  CHECK(do_request(&loop, &wd, &c));             // via B
   CHECK(client_set_proxy(&c, str8_lit(""), 0));  // back to direct
-  CHECK(do_request(&loop, &wd, &c));  // direct
+  CHECK(do_request(&loop, &wd, &c));             // direct
 
   // Routing: every request reached the origin; exactly one tunnel through each
   // proxy (the pooling-on case proves the old-proxy conn was NOT reused).

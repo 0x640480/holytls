@@ -1,12 +1,14 @@
-// Offline Sec-Fetch coherence: Sec-Fetch-Site from the referer<->URL relationship
-// (none / same-origin / same-site / cross-site) and the mode/dest/user mapping.
+// Offline Sec-Fetch coherence: Sec-Fetch-Site from the referer<->URL
+// relationship (none / same-origin / same-site / cross-site) and the
+// mode/dest/user mapping.
+#include "core/sec_fetch.h"
+
 #include <stdio.h>
 
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/string8.h"
 #include "core/header.h"
-#include "core/sec_fetch.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -20,7 +22,9 @@ internal String8 hv(HeaderList *l, const char *name) {
   String8 *v = header_list_get_ci(l, str8_cstring(name));
   return v ? *v : str8_zero();
 }
-internal B32 eq(String8 a, const char *b) { return str8_match(a, str8_cstring(b)); }
+internal B32 eq(String8 a, const char *b) {
+  return str8_match(a, str8_cstring(b));
+}
 
 // Build the Sec-Fetch headers for (mode, url, referer) into a fresh list.
 internal void build(Arena *a, HeaderList *out, FetchMode mode, const char *url,
@@ -46,8 +50,9 @@ int main(void) {
   CHECK(eq(hv(&h, "sec-fetch-mode"), "cors"));
   CHECK(eq(hv(&h, "sec-fetch-dest"), "empty"));
   CHECK(hv(&h, "sec-fetch-user").size == 0);  // suppressed for fetches
-  // Fetch/XHR also gets accept: */* and priority: u=1, i, and drops UIR (emitted
-  // as an empty-value override so build_ordered_headers omits the default).
+  // Fetch/XHR also gets accept: */* and priority: u=1, i, and drops UIR
+  // (emitted as an empty-value override so build_ordered_headers omits the
+  // default).
   CHECK(eq(hv(&h, "accept"), "*/*"));
   CHECK(eq(hv(&h, "priority"), "u=1, i"));
   CHECK(header_list_has_ci(&h, str8_lit("upgrade-insecure-requests")));
@@ -77,7 +82,8 @@ int main(void) {
   build(a, &h, FetchMode_Cors, "https://a.com/x", "https://b.com/y");
   CHECK(eq(hv(&h, "sec-fetch-site"), "cross-site"));
   build(a, &h, FetchMode_Cors, "https://a.com:443/x", "https://a.com:8443/y");
-  CHECK(eq(hv(&h, "sec-fetch-site"), "same-site"));  // host matches, port differs
+  CHECK(
+      eq(hv(&h, "sec-fetch-site"), "same-site"));  // host matches, port differs
 
   // sec_fetch_merge keeps the caller's headers (incl. the referer it reads).
   Header caller[2] = {
@@ -89,7 +95,8 @@ int main(void) {
   sec_fetch_merge(&m, FetchMode_Cors, str8_lit("https://a.com/api"), caller, 2);
   CHECK(eq(hv(&m, "x-custom"), "1"));
   CHECK(eq(hv(&m, "referer"), "https://a.com/page"));
-  CHECK(eq(hv(&m, "sec-fetch-site"), "same-origin"));  // from the caller's referer
+  CHECK(eq(hv(&m, "sec-fetch-site"),
+           "same-origin"));  // from the caller's referer
   CHECK(eq(hv(&m, "sec-fetch-mode"), "cors"));
 
   //- redirect recomputation (monotonic; cross-site/none terminal)
@@ -100,7 +107,7 @@ int main(void) {
   CHECK(eq(sec_fetch_site_for_redirect(so, 2, str8_lit("https://b.com/x")),
            "cross-site"));  // same-origin -> cross hop
   CHECK(eq(sec_fetch_site_for_redirect(so, 2, str8_lit("https://sub.a.com/x")),
-           "same-site"));   // same-origin -> same-site hop
+           "same-site"));  // same-origin -> same-site hop
 
   // monotonic: was same-site, a later same-origin hop does NOT upgrade.
   Header ss[2] = {{str8_lit("referer"), str8_lit("https://a.com/"), 0},
@@ -118,13 +125,16 @@ int main(void) {
            "none"));
   // No Sec-Fetch-Site (a plain navigation) or no Referer -> leave as-is.
   Header plain[1] = {{str8_lit("referer"), str8_lit("https://a.com/"), 0}};
-  CHECK(sec_fetch_site_for_redirect(plain, 1, str8_lit("https://a.com/x")).size ==
-        0);
+  CHECK(
+      sec_fetch_site_for_redirect(plain, 1, str8_lit("https://a.com/x")).size ==
+      0);
   Header noref[1] = {{str8_lit("sec-fetch-site"), str8_lit("same-origin"), 0}};
-  CHECK(sec_fetch_site_for_redirect(noref, 1, str8_lit("https://a.com/x")).size ==
-        0);
+  CHECK(
+      sec_fetch_site_for_redirect(noref, 1, str8_lit("https://a.com/x")).size ==
+      0);
 
   arena_release(a);
-  fprintf(stderr, "[sec_fetch_test] %d checks, %d failures\n", g_checks, g_fails);
+  fprintf(stderr, "[sec_fetch_test] %d checks, %d failures\n", g_checks,
+          g_fails);
   return g_fails ? 1 : 0;
 }

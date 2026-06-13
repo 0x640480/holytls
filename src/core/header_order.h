@@ -15,11 +15,12 @@ void build_ordered_headers(Arena *arena, const DefaultHeader *defaults,
                            U64 default_count, const Header *caller,
                            U64 caller_count, HeaderList *out);
 
-// Reorder `list` in place by `order` (case-insensitive name match): headers named
-// in `order` come first, in that sequence; any header not named in `order` follows
-// in its original relative order. No header is dropped or duplicated; an order name
-// with no matching header is skipped. order_count==0 is a no-op. ADVANCED: this
-// deviates from the profile's byte-exact (fingerprinted) header order.
+// Reorder `list` in place by `order` (case-insensitive name match): headers
+// named in `order` come first, in that sequence; any header not named in
+// `order` follows in its original relative order. No header is dropped or
+// duplicated; an order name with no matching header is skipped. order_count==0
+// is a no-op. ADVANCED: this deviates from the profile's byte-exact
+// (fingerprinted) header order.
 void reorder_headers(Arena *arena, HeaderList *list, const String8 *order,
                      U64 order_count);
 

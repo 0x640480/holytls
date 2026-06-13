@@ -1,8 +1,8 @@
 // H3Session — client HTTP/3 over a QuicConnection, Option B: we hand-roll the
 // HTTP/3 framing (control stream via h3_control.c for exact SETTINGS+GREASE+
 // PRIORITY_UPDATE; request HEADERS/DATA frames) and use nghttp3 only as a
-// standalone QPACK codec. This gives byte-exact fingerprint control (matches the
-// offline-proven h3_hash) while leaving QPACK's complexity to nghttp3.
+// standalone QPACK codec. This gives byte-exact fingerprint control (matches
+// the offline-proven h3_hash) while leaving QPACK's complexity to nghttp3.
 #ifndef HOLYTLS_H3_SESSION_H
 #define HOLYTLS_H3_SESSION_H
 

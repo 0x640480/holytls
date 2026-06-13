@@ -4,9 +4,10 @@
 // The HTTP/3 framing/QPACK lives one layer up (H3Session); this owns the
 // transport: handshake, packets, timers, streams.
 //
-// The caller owns the QuicConnection storage; quic_conn_init / quic_conn_cleanup
-// bracket it. `ctx` must already be QUIC-configured (build_ctx +
-// ngtcp2_crypto_boringssl_configure_client_context, done in quic_conn_init).
+// The caller owns the QuicConnection storage; quic_conn_init /
+// quic_conn_cleanup bracket it. `ctx` must already be QUIC-configured
+// (build_ctx + ngtcp2_crypto_boringssl_configure_client_context, done in
+// quic_conn_init).
 #ifndef HOLYTLS_QUIC_CONNECTION_H
 #define HOLYTLS_QUIC_CONNECTION_H
 
@@ -32,11 +33,12 @@ typedef void (*QuicClosedFn)(void *user, const char *err);
 typedef void (*QuicFullyClosedFn)(void *user);
 // Fired after a received packet has been fully processed (read_pkt + egress
 // flush). The safe point to submit new streams from a response callback without
-// re-entering ngtcp2 (see `in_recv`). The pool uses it to flush deferred submits.
+// re-entering ngtcp2 (see `in_recv`). The pool uses it to flush deferred
+// submits.
 typedef void (*QuicRecvDoneFn)(void *user);
-// The 0-RTT window is open (ngtcp2 conn created with restored transport params):
-// the caller may open early streams + submit its request as 0-RTT data. Fires
-// once, before on_ready, only when early data is armed.
+// The 0-RTT window is open (ngtcp2 conn created with restored transport
+// params): the caller may open early streams + submit its request as 0-RTT
+// data. Fires once, before on_ready, only when early data is armed.
 typedef void (*QuicEarlyReadyFn)(void *user);
 
 typedef enum QuicState {
@@ -59,7 +61,8 @@ struct QuicSendBuf {
   U64 off;
   B32 fin;
   B32 fin_sent;
-  B32 blocked;  // flow-control-blocked this egress pass; retried on the next flush
+  B32 blocked;  // flow-control-blocked this egress pass; retried on the next
+                // flush
 };
 
 typedef struct QuicConnection QuicConnection;
@@ -81,7 +84,8 @@ struct QuicConnection {
   B32 udp_inited;
   B32 timer_inited;
   B32 ready_fired;
-  B32 in_recv;  // inside ngtcp2_conn_read_pkt: defer stream submits (no re-entry)
+  B32 in_recv;  // inside ngtcp2_conn_read_pkt: defer stream submits (no
+                // re-entry)
   int handles_closing;
 
   SSL *ssl;
@@ -113,7 +117,8 @@ struct QuicConnection {
   SSL_SESSION *resume_session;  // cached ticket to offer (0 => fresh handshake)
   void *resume_ctx;             // per-conn ctx for the new-session callback
 
-  B32 want_early_data;  // attempt 0-RTT (armed only if session-capable + TP set)
+  B32 want_early_data;  // attempt 0-RTT (armed only if session-capable + TP
+                        // set)
   B32 early_fired;      // on_early_ready has fired (fires once)
   B32 early_rejected;   // the server rejected our 0-RTT (retry on a fresh conn)
   U8 early_tp[256];     // cached ngtcp2 0-RTT transport params to restore
@@ -121,31 +126,35 @@ struct QuicConnection {
   QuicEarlyReadyFn on_early_ready;
   void *early_ready_user;
 
-  // Timing (uv_hrtime ns); read via quic_conn_timing_ms. QUIC has no separate TCP
-  // phase: tls spans resolved->established (UDP setup + the QUIC handshake).
+  // Timing (uv_hrtime ns); read via quic_conn_timing_ms. QUIC has no separate
+  // TCP phase: tls spans resolved->established (UDP setup + the QUIC
+  // handshake).
   U64 t_connect_start_ns, t_resolved_ns, t_established_ns;
 
-  DnsCache *dns_cache;  // borrowed per-Client DNS cache (0 = none); set pre-connect
-  B32 dns_was_cached;   // this connect used a cached address
+  DnsCache
+      *dns_cache;  // borrowed per-Client DNS cache (0 = none); set pre-connect
+  B32 dns_was_cached;  // this connect used a cached address
 
-  // SOCKS5 UDP-ASSOCIATE proxy (proxy.type == ProxyType_None => direct). The TCP
-  // `ctrl` channel negotiates the association and stays open for its lifetime; UDP
-  // datagrams go to `relay_addr` (also c->remote_addr / the ngtcp2 path) wrapped in
-  // `udp_hdr` (a SOCKS5 UDP header for `target_addr`). The QUIC Initial is
-  // unchanged, so QUIC-JA4 is byte-identical.
+  // SOCKS5 UDP-ASSOCIATE proxy (proxy.type == ProxyType_None => direct). The
+  // TCP `ctrl` channel negotiates the association and stays open for its
+  // lifetime; UDP datagrams go to `relay_addr` (also c->remote_addr / the
+  // ngtcp2 path) wrapped in `udp_hdr` (a SOCKS5 UDP header for `target_addr`).
+  // The QUIC Initial is unchanged, so QUIC-JA4 is byte-identical.
   ProxyConfig proxy;
   B32 proxied;
-  uv_tcp_t ctrl;        // SOCKS5 control channel
+  uv_tcp_t ctrl;  // SOCKS5 control channel
   uv_connect_t ctrl_conn;
   B32 ctrl_inited;
-  int proxy_phase;      // ProxyPhase (quic_connection.c): negotiation step
-  U8 nbuf[512];         // negotiation-reply accumulator
+  int proxy_phase;  // ProxyPhase (quic_connection.c): negotiation step
+  U8 nbuf[512];     // negotiation-reply accumulator
   U64 nlen;
-  struct sockaddr_storage proxy_addr;  // resolved proxy (relay base when BND=0.0.0.0)
+  struct sockaddr_storage
+      proxy_addr;  // resolved proxy (relay base when BND=0.0.0.0)
   socklen_t proxy_addrlen;
-  struct sockaddr_storage relay_addr;  // UDP relay endpoint from the ASSOCIATE reply
+  struct sockaddr_storage
+      relay_addr;  // UDP relay endpoint from the ASSOCIATE reply
   socklen_t relay_addrlen;
-  U8 udp_hdr[262];      // prebuilt SOCKS5 UDP request header (target addr/port)
+  U8 udp_hdr[262];  // prebuilt SOCKS5 UDP request header (target addr/port)
   U64 udp_hdr_len;
 };
 
@@ -159,21 +168,24 @@ internal inline void quic_set_proxy(QuicConnection *c, const ProxyConfig *p) {
   }
 }
 
-// Offer real ECH on this QUIC connection (set before quic_conn_connect; 0 => GREASE).
-internal inline void quic_set_ech(QuicConnection *c, const U8 *config, U64 len) {
+// Offer real ECH on this QUIC connection (set before quic_conn_connect; 0 =>
+// GREASE).
+internal inline void quic_set_ech(QuicConnection *c, const U8 *config,
+                                  U64 len) {
   c->ech_config = config;
   c->ech_config_len = len;
 }
 
-// Borrow a DNS cache for this connection (set before quic_conn_connect; 0 = none).
+// Borrow a DNS cache for this connection (set before quic_conn_connect; 0 =
+// none).
 internal inline void quic_set_dns_cache(QuicConnection *c, DnsCache *dc) {
   c->dns_cache = dc;
 }
 
 // Offer 1-RTT TLS resumption on this QUIC connection (set before
 // quic_conn_connect). `session` (may be 0) is a cached SSL_SESSION the caller
-// retains ownership of; `resume_ctx` (may be 0) routes a freshly issued ticket to
-// its origin via the new-session callback. See conn_set_resume.
+// retains ownership of; `resume_ctx` (may be 0) routes a freshly issued ticket
+// to its origin via the new-session callback. See conn_set_resume.
 internal inline void quic_set_resume(QuicConnection *c, SSL_SESSION *session,
                                      void *resume_ctx) {
   // Own a ref: the cache entry this borrows from can be replaced/evicted (LRU)
@@ -185,8 +197,9 @@ internal inline void quic_set_resume(QuicConnection *c, SSL_SESSION *session,
 
 // Attempt QUIC 0-RTT on this connection (set before quic_conn_connect). `tp` is
 // the prior connection's encoded 0-RTT transport params (paired with the resume
-// session); copied. Only takes effect when a resume session is offered and it is
-// 0-RTT-capable. Then on_early_ready fires so the caller opens early streams.
+// session); copied. Only takes effect when a resume session is offered and it
+// is 0-RTT-capable. Then on_early_ready fires so the caller opens early
+// streams.
 internal inline void quic_set_early_data(QuicConnection *c, const U8 *tp,
                                          U64 tp_len) {
   c->want_early_data = 1;
@@ -208,7 +221,8 @@ internal inline B32 quic_conn_resumed(QuicConnection *c) {
 internal inline B32 quic_conn_early_accepted(QuicConnection *c) {
   return c->ssl ? (B32)SSL_early_data_accepted(c->ssl) : 0;
 }
-// True if the server rejected our 0-RTT (retry on a fresh, non-0-RTT connection).
+// True if the server rejected our 0-RTT (retry on a fresh, non-0-RTT
+// connection).
 internal inline B32 quic_conn_early_rejected(QuicConnection *c) {
   return c->early_rejected;
 }
@@ -260,7 +274,8 @@ int quic_open_bidi_stream(QuicConnection *c, S64 *out_id);
 void quic_stream_send(QuicConnection *c, S64 stream_id, const U8 *data, U64 len,
                       B32 fin);
 // Abort a request stream (shut down both directions with H3_REQUEST_CANCELLED).
-// Used to cancel one multiplexed request (e.g. a timeout) without closing the conn.
+// Used to cancel one multiplexed request (e.g. a timeout) without closing the
+// conn.
 void quic_reset_stream(QuicConnection *c, S64 stream_id);
 
 String8 quic_conn_alpn(QuicConnection *c);  // view into the live SSL

@@ -1,12 +1,14 @@
 // Offline Manager tests: id uniqueness, get pins / release unpins, max-sessions
-// cap, lazy idle eviction (oldest idle reclaimed, pinned sessions never), unknown
-// ids. Lightweight sessions need no network/SSL_CTX, so this runs fully offline.
+// cap, lazy idle eviction (oldest idle reclaimed, pinned sessions never),
+// unknown ids. Lightweight sessions need no network/SSL_CTX, so this runs fully
+// offline.
+#include "core/manager.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <uv.h>
 
 #include "base/base.h"
-#include "core/manager.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -53,15 +55,15 @@ int main(void) {
     CHECK(manager_create_session(&m, &cfg, b) == 0);
     CHECK(manager_create_session(&m, &cfg, c) == -1);  // at cap, nothing idle
 
-    uv_sleep(25);                                       // a,b now idle > 10 ms
-    CHECK(manager_create_session(&m, &cfg, c) == 0);    // evicts oldest idle (a)
-    CHECK(manager_get_session(&m, a) == 0);             // a evicted
-    CHECK(manager_get_session(&m, b) != 0);             // b survived (now pinned)
+    uv_sleep(25);                                     // a,b now idle > 10 ms
+    CHECK(manager_create_session(&m, &cfg, c) == 0);  // evicts oldest idle (a)
+    CHECK(manager_get_session(&m, a) == 0);           // a evicted
+    CHECK(manager_get_session(&m, b) != 0);           // b survived (now pinned)
 
-    uv_sleep(25);                                       // c idle; b pinned
-    CHECK(manager_create_session(&m, &cfg, d) == 0);    // must evict c, not b
-    CHECK(manager_get_session(&m, c) == 0);             // c evicted
-    CHECK(manager_get_session(&m, b) != 0);             // pinned b NOT evicted
+    uv_sleep(25);                                     // c idle; b pinned
+    CHECK(manager_create_session(&m, &cfg, d) == 0);  // must evict c, not b
+    CHECK(manager_get_session(&m, c) == 0);           // c evicted
+    CHECK(manager_get_session(&m, b) != 0);           // pinned b NOT evicted
     CHECK(manager_get_session(&m, d) != 0);
     manager_shutdown(&m);
   }

@@ -11,7 +11,8 @@ void dns_cache_init(DnsCache *dc, U64 ttl_ms) {
 }
 
 internal B32 dns_host_eq(const char *a, const char *b) {
-  return str8_match_ci(str8_cstring(a), str8_cstring(b));  // DNS is case-insensitive
+  return str8_match_ci(str8_cstring(a),
+                       str8_cstring(b));  // DNS is case-insensitive
 }
 
 B32 dns_cache_get(DnsCache *dc, const char *host, U64 now_ms,

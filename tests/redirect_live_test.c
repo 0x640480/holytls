@@ -1,8 +1,8 @@
 // Live verification of redirect following. https://google.com/ replies 301 with
-// Location: https://www.google.com/. With following disabled (default) the client
-// surfaces the 301; with client_set_max_redirects() it follows to a 200 and reports
-// final_url == the www host.
-// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// Location: https://www.google.com/. With following disabled (default) the
+// client surfaces the 301; with client_set_max_redirects() it follows to a 200
+// and reports final_url == the www host. Network-gated: set HOLYTLS_LIVE=1 to
+// run (otherwise it skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,8 +32,9 @@ internal void on_response(void *user, const Response *r) {
   Ctx *cx = (Ctx *)user;
   cx->got = 1;
   cx->status = r->status;
-  U64 n = r->final_url.size < sizeof cx->final_url - 1 ? r->final_url.size
-                                                       : sizeof cx->final_url - 1;
+  U64 n = r->final_url.size < sizeof cx->final_url - 1
+              ? r->final_url.size
+              : sizeof cx->final_url - 1;
   if (r->final_url.str && n) MemoryCopy(cx->final_url, r->final_url.str, n);
   cx->final_url[n] = 0;
 }

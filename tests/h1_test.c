@@ -1,15 +1,17 @@
-// Offline gate for the HTTP/1.1 module: (A) the request serializer emits the exact
-// wire bytes (request line, Host first, verbatim wire-cased headers in order, blank
-// line, body, no Connection header); (B) the picohttpparser-driven response parser
-// handles Content-Length, chunked, close-delimited, 204/304, HEAD and redirects,
-// each fed both whole AND one byte at a time (incremental parse + pointer-lifetime).
+// Offline gate for the HTTP/1.1 module: (A) the request serializer emits the
+// exact wire bytes (request line, Host first, verbatim wire-cased headers in
+// order, blank line, body, no Connection header); (B) the picohttpparser-driven
+// response parser handles Content-Length, chunked, close-delimited, 204/304,
+// HEAD and redirects, each fed both whole AND one byte at a time (incremental
+// parse + pointer-lifetime).
+#include "h1/h1.h"
+
 #include <stdio.h>
 #include <string.h>
 
 #include "base/base.h"
 #include "base/string8.h"
 #include "core/header.h"
-#include "h1/h1.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -44,9 +46,9 @@ internal void test_serializer_get(void) {
       {str8_lit("Accept"), str8_lit("*/*"), 0},
       {str8_lit("Accept-Encoding"), str8_lit("gzip, deflate, br, zstd"), 0},
   };
-  h1_session_submit_request(s, str8_lit("GET"), str8_lit("tls.browserleaks.com"),
-                            str8_lit("/json"), hdrs, 4, 0, 0, /*is_head=*/0, 0,
-                            0);
+  h1_session_submit_request(s, str8_lit("GET"),
+                            str8_lit("tls.browserleaks.com"), str8_lit("/json"),
+                            hdrs, 4, 0, 0, /*is_head=*/0, 0, 0);
   String8 want = str8_lit(
       "GET /json HTTP/1.1\r\n"
       "Host: tls.browserleaks.com\r\n"
@@ -81,8 +83,9 @@ internal void test_serializer_post(void) {
   h1_session_release(s);
 }
 
-// A caller-supplied Host / Connection must be dropped (Host is injected; Connection
-// omitted) so neither is duplicated or contradicts the Chrome-faithful defaults.
+// A caller-supplied Host / Connection must be dropped (Host is injected;
+// Connection omitted) so neither is duplicated or contradicts the
+// Chrome-faithful defaults.
 internal void test_serializer_filter(void) {
   Cap cap;
   MemoryZeroStruct(&cap);
@@ -147,10 +150,11 @@ internal void noop_send(void *user, const U8 *data, U64 len) {
   (void)len;
 }
 
-// Drive one response through the parser. chunked=0: whole; 1: one byte at a time.
-// send_eof: signal a clean peer close after the bytes (close-delimited bodies).
-internal Resp run_response(String8 method, B32 is_head, String8 raw, int onebyte,
-                           B32 send_eof) {
+// Drive one response through the parser. chunked=0: whole; 1: one byte at a
+// time. send_eof: signal a clean peer close after the bytes (close-delimited
+// bodies).
+internal Resp run_response(String8 method, B32 is_head, String8 raw,
+                           int onebyte, B32 send_eof) {
   Resp x;
   MemoryZeroStruct(&x);
   H1Session *s = h1_session_alloc(noop_send, 0);
@@ -168,28 +172,32 @@ internal Resp run_response(String8 method, B32 is_head, String8 raw, int onebyte
 internal void test_responses(void) {
   for (int ob = 0; ob <= 1; ++ob) {
     // Content-Length.
-    Resp r = run_response(str8_lit("GET"), 0,
-                          str8_lit("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
-                                   "hello"),
-                          ob, 0);
+    Resp r =
+        run_response(str8_lit("GET"), 0,
+                     str8_lit("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+                              "hello"),
+                     ob, 0);
     CHECK(r.got && r.status == 200 && r.body_len == 5 &&
           memcmp(r.body, "hello", 5) == 0);
 
     // Chunked.
-    r = run_response(str8_lit("GET"), 0,
-                     str8_lit("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
-                              "\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"),
-                     ob, 0);
+    r = run_response(
+        str8_lit("GET"), 0,
+        str8_lit("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                 "\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"),
+        ob, 0);
     CHECK(r.got && r.status == 200 && r.body_len == 11 &&
           memcmp(r.body, "hello world", 11) == 0);
 
-    // Chunked with a MULTI-DIGIT chunk size (0x11 = 17): fed 1 byte at a time this
-    // splits the "11" across recv calls — the decoder must accumulate the partial
-    // hex into its state, not the buffer (refutes the "lost framing bytes" claim).
-    r = run_response(str8_lit("GET"), 0,
-                     str8_lit("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
-                              "\r\n11\r\nABCDEFGHIJKLMNOPQ\r\n0\r\n\r\n"),
-                     ob, 0);
+    // Chunked with a MULTI-DIGIT chunk size (0x11 = 17): fed 1 byte at a time
+    // this splits the "11" across recv calls — the decoder must accumulate the
+    // partial hex into its state, not the buffer (refutes the "lost framing
+    // bytes" claim).
+    r = run_response(
+        str8_lit("GET"), 0,
+        str8_lit("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                 "\r\n11\r\nABCDEFGHIJKLMNOPQ\r\n0\r\n\r\n"),
+        ob, 0);
     CHECK(r.got && r.status == 200 && r.body_len == 17 &&
           memcmp(r.body, "ABCDEFGHIJKLMNOPQ", 17) == 0);
 
@@ -224,25 +232,27 @@ internal void test_responses(void) {
   }
 
   // Header pointer-lifetime stress: 60 headers fed 1 byte at a time forces the
-  // `in` buffer to grow during the incomplete phase; assert a mid header survived
-  // the copy-out (and the count).
+  // `in` buffer to grow during the incomplete phase; assert a mid header
+  // survived the copy-out (and the count).
   char big[8192];
   int off = 0;
   off += snprintf(big + off, sizeof big - off, "HTTP/1.1 200 OK\r\n");
   for (int i = 0; i < 60; ++i)
-    off += snprintf(big + off, sizeof big - off, "X-Header-%d: val%d\r\n", i, i);
+    off +=
+        snprintf(big + off, sizeof big - off, "X-Header-%d: val%d\r\n", i, i);
   off += snprintf(big + off, sizeof big - off, "Content-Length: 0\r\n\r\n");
   Resp r = run_response(str8_lit("GET"), 0, str8((U8 *)big, (U64)off), 1, 0);
   CHECK(r.got && r.status == 200 && r.header_count >= 60 &&
         strcmp(r.probe, "val30") == 0);
 
-  // An overflowing Content-Length must saturate, NOT wrap to a small value (which
-  // would falsely complete with a truncated body). It never completes -> on EOF in
-  // the length state we deliver nothing.
+  // An overflowing Content-Length must saturate, NOT wrap to a small value
+  // (which would falsely complete with a truncated body). It never completes ->
+  // on EOF in the length state we deliver nothing.
   Resp ov = run_response(
       str8_lit("GET"), 0,
-      str8_lit("HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999999999\r\n"
-               "\r\nHello"),
+      str8_lit(
+          "HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999999999\r\n"
+          "\r\nHello"),
       0, /*send_eof=*/1);
   CHECK(!ov.got);
 }

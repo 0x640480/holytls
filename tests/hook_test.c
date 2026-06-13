@@ -1,7 +1,7 @@
-// Offline request-hook tests: hook_request_set_header semantics (append, override
-// in place, case-insensitive match, and refusal of fingerprint-controlled
-// headers) and that the pre/post setters store the fn + user. Actual firing on a
-// real request is covered by hook_live_test.
+// Offline request-hook tests: hook_request_set_header semantics (append,
+// override in place, case-insensitive match, and refusal of
+// fingerprint-controlled headers) and that the pre/post setters store the fn +
+// user. Actual firing on a real request is covered by hook_live_test.
 #include <stdio.h>
 
 #include "base/arena.h"
@@ -46,15 +46,15 @@ internal void test_set_header(Arena *a) {
   CHECK(val_is(&h, "accept-language", "xx"));
 
   // Refuse fingerprint-controlled headers (return 0, no change).
-  CHECK(!hook_request_set_header(&req, str8_lit("User-Agent"),
-                                 str8_lit("evil")));
-  CHECK(val_is(&h, "user-agent", "orig-ua"));      // unchanged
+  CHECK(
+      !hook_request_set_header(&req, str8_lit("User-Agent"), str8_lit("evil")));
+  CHECK(val_is(&h, "user-agent", "orig-ua"));  // unchanged
   CHECK(!hook_request_set_header(&req, str8_lit("accept-encoding"),
                                  str8_lit("identity")));
   CHECK(!hook_request_set_header(&req, str8_lit("sec-fetch-mode"),
                                  str8_lit("x")));
   CHECK(!hook_request_set_header(&req, str8_lit("SEC-FETCH-DEST"),
-                                 str8_lit("x")));   // ci prefix
+                                 str8_lit("x")));  // ci prefix
   CHECK(!hook_request_set_header(&req, str8_lit("sec-ch-ua-platform"),
                                  str8_lit("x")));
   CHECK(!hook_request_set_header(&req, str8_lit("Sec-Ch-Ua"), str8_lit("x")));

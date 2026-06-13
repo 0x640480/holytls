@@ -1,6 +1,7 @@
 // Transparent Content-Encoding decoding (gzip / deflate / br / zstd). Decodes
 // the last token of a possibly comma-listed encoding into an arena-backed
-// String8. Returns false (and leaves *out untouched) on an unknown/failed codec.
+// String8. Returns false (and leaves *out untouched) on an unknown/failed
+// codec.
 #ifndef HOLYTLS_DECOMPRESS_H
 #define HOLYTLS_DECOMPRESS_H
 

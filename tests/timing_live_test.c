@@ -1,6 +1,6 @@
-// Live timing test: make a real request and print + sanity-check the per-request
-// timing breakdown (DNS / TCP / TLS / Total, in ms).
-// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// Live timing test: make a real request and print + sanity-check the
+// per-request timing breakdown (DNS / TCP / TLS / Total, in ms). Network-gated:
+// set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -31,7 +31,8 @@ internal void on_resp(void *user, const Response *r) {
   cx->ok = r->ok;
   cx->status = r->status;
   cx->t = r->timing;
-  if (!r->ok) fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
+  if (!r->ok)
+    fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
 }
 
 int main(void) {
@@ -59,7 +60,8 @@ int main(void) {
 
   CHECK(cx.ok && cx.status == 200);
   CHECK(cx.t.total_ms > 0);  // a live request always takes some milliseconds
-  // Connection setup is a prefix of the request, so the phases fit within total.
+  // Connection setup is a prefix of the request, so the phases fit within
+  // total.
   CHECK(cx.t.dns_ms + cx.t.tcp_ms + cx.t.tls_ms <= cx.t.total_ms);
 
   fprintf(stderr, "[timing_live_test] %d checks, %d failures\n", g_checks,

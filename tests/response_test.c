@@ -40,7 +40,8 @@ internal void test_response_helpers(Arena *a) {
   // header lookup is case-insensitive; absent -> empty.
   CHECK(str8_match(response_get_header(&r, str8_lit("Content-Type")),
                    str8_lit("application/json")));
-  CHECK(str8_match(response_get_header(&r, str8_lit("X-Foo")), str8_lit("bar")));
+  CHECK(
+      str8_match(response_get_header(&r, str8_lit("X-Foo")), str8_lit("bar")));
   CHECK(response_get_header(&r, str8_lit("missing")).size == 0);
 
   // is_success: transport ok AND 2xx.
@@ -97,6 +98,7 @@ int main(void) {
   test_response_helpers(a);
   test_get_proxy(a);
   arena_release(a);
-  fprintf(stderr, "[response_test] %d checks, %d failures\n", g_checks, g_fails);
+  fprintf(stderr, "[response_test] %d checks, %d failures\n", g_checks,
+          g_fails);
   return g_fails ? 1 : 0;
 }

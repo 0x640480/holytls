@@ -1,11 +1,12 @@
 // Offline ECH config extraction: parse a dns.google DoH JSON response for an
 // HTTPS record and decode the `ech` SvcParam into the raw ECHConfigList bytes.
+#include "core/ech.h"
+
 #include <stdio.h>
 
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/string8.h"
-#include "core/ech.h"
 
 global int g_checks = 0;
 global int g_fails = 0;

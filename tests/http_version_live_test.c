@@ -32,10 +32,12 @@ internal void on_resp(void *user, const Response *r) {
   Ctx *cx = (Ctx *)user;
   cx->ok = r->ok;
   cx->status = r->status;
-  U64 n = r->alpn.size < sizeof cx->alpn - 1 ? r->alpn.size : sizeof cx->alpn - 1;
+  U64 n =
+      r->alpn.size < sizeof cx->alpn - 1 ? r->alpn.size : sizeof cx->alpn - 1;
   if (r->alpn.str && n) MemoryCopy(cx->alpn, r->alpn.str, n);
   cx->alpn[n] = 0;
-  if (!r->ok) fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
+  if (!r->ok)
+    fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
 }
 internal Ctx fetch(Client *c, EventLoop *loop, const char *url) {
   Ctx cx;
@@ -62,7 +64,8 @@ int main(void) {
     defer { client_cleanup(&c); };
     client_set_http_version(&c, HttpVersion_H2);
     Ctx r = fetch(&c, &loop, url);
-    fprintf(stderr, "  force h2: ok=%d status=%d alpn=%s\n", r.ok, r.status, r.alpn);
+    fprintf(stderr, "  force h2: ok=%d status=%d alpn=%s\n", r.ok, r.status,
+            r.alpn);
     CHECK(r.ok && r.status == 200);
     CHECK(strcmp(r.alpn, "h2") == 0);
   }
@@ -77,7 +80,8 @@ int main(void) {
     defer { client_cleanup(&c); };
     client_set_http_version(&c, HttpVersion_H1);
     Ctx r = fetch(&c, &loop, url);
-    fprintf(stderr, "  force h1: ok=%d status=%d alpn=%s\n", r.ok, r.status, r.alpn);
+    fprintf(stderr, "  force h1: ok=%d status=%d alpn=%s\n", r.ok, r.status,
+            r.alpn);
     CHECK(r.ok && r.status == 200);
     CHECK(strcmp(r.alpn, "http/1.1") == 0);
   }
@@ -93,7 +97,8 @@ int main(void) {
     defer { client_cleanup(&c); };
     client_set_http_version(&c, HttpVersion_H3);
     Ctx r = fetch(&c, &loop, url);
-    fprintf(stderr, "  force h3: ok=%d status=%d alpn=%s\n", r.ok, r.status, r.alpn);
+    fprintf(stderr, "  force h3: ok=%d status=%d alpn=%s\n", r.ok, r.status,
+            r.alpn);
     CHECK(r.ok && r.status == 200);
     CHECK(strcmp(r.alpn, "h3") == 0);  // QUIC on the very first request
   }
@@ -108,7 +113,8 @@ int main(void) {
                      /*verify=*/1);
     defer { client_cleanup(&c); };
     Ctx r = fetch(&c, &loop, url);
-    fprintf(stderr, "  auto:     ok=%d status=%d alpn=%s\n", r.ok, r.status, r.alpn);
+    fprintf(stderr, "  auto:     ok=%d status=%d alpn=%s\n", r.ok, r.status,
+            r.alpn);
     CHECK(r.ok && r.status == 200);
     CHECK(strcmp(r.alpn, "h2") == 0);  // Chrome-faithful: no cold H3
   }

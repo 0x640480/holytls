@@ -140,9 +140,9 @@ internal void parse_ch_body(Cursor *ch, ClientHelloInfo *info) {
           }
           break;
         }
-        case 0x0010: {              // ALPN
-          cur_u16(&ed);             // protocol list length
-          U8 plen = cur_u8(&ed);    // first protocol length
+        case 0x0010: {            // ALPN
+          cur_u16(&ed);           // protocol list length
+          U8 plen = cur_u8(&ed);  // first protocol length
           for (U8 j = 0; j < plen && ed.ok; ++j) {
             U8 v = cur_u8(&ed);
             if (info->alpn_len < JA4_MAX_ALPN)
@@ -261,12 +261,24 @@ Fingerprints ja4_compute(Arena *arena, const ClientHelloInfo *in) {
   }
   const char *vs = "00";
   switch (ver) {
-    case 0x0304: vs = "13"; break;
-    case 0x0303: vs = "12"; break;
-    case 0x0302: vs = "11"; break;
-    case 0x0301: vs = "10"; break;
-    case 0x0300: vs = "s3"; break;
-    default: vs = "00"; break;
+    case 0x0304:
+      vs = "13";
+      break;
+    case 0x0303:
+      vs = "12";
+      break;
+    case 0x0302:
+      vs = "11";
+      break;
+    case 0x0301:
+      vs = "10";
+      break;
+    case 0x0300:
+      vs = "s3";
+      break;
+    default:
+      vs = "00";
+      break;
   }
 
   char counts[8];
@@ -294,7 +306,8 @@ Fingerprints ja4_compute(Arena *arena, const ClientHelloInfo *in) {
   U16 exts_c[JA4_MAX_EXTS];
   U64 nec = 0;
   for (U64 i = 0; i < ne; ++i)
-    if (exts_all[i] != 0x0000 && exts_all[i] != 0x0010) exts_c[nec++] = exts_all[i];
+    if (exts_all[i] != 0x0000 && exts_all[i] != 0x0010)
+      exts_c[nec++] = exts_all[i];
   qsort(exts_c, nec, sizeof(U16), cmp_u16);
   String8 exts_c_hex = join_hex(sc, exts_c, nec);
   String8 sigs_hex = join_hex(sc, sigs, ns);
@@ -312,10 +325,10 @@ Fingerprints ja4_compute(Arena *arena, const ClientHelloInfo *in) {
   String8 d_exts = join_dec_u16(sc, exts_all, ne);
   String8 d_grp = join_dec_u16(sc, groups, ng);
   String8 d_ecpf = join_dec_u8(sc, in->ec_point_formats, in->ecpf_count);
-  fp.ja3_str = push_str8f(arena, "%u,%.*s,%.*s,%.*s,%.*s", in->legacy_version,
-                          (int)d_ciph.size, d_ciph.str, (int)d_exts.size,
-                          d_exts.str, (int)d_grp.size, d_grp.str,
-                          (int)d_ecpf.size, d_ecpf.str);
+  fp.ja3_str =
+      push_str8f(arena, "%u,%.*s,%.*s,%.*s,%.*s", in->legacy_version,
+                 (int)d_ciph.size, d_ciph.str, (int)d_exts.size, d_exts.str,
+                 (int)d_grp.size, d_grp.str, (int)d_ecpf.size, d_ecpf.str);
   fp.ja3 = md5_hex(arena, fp.ja3_str);
 
   scratch_end(scratch);

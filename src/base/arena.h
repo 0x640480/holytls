@@ -40,11 +40,13 @@ Arena *arena_alloc(void);
 Arena *arena_alloc_sized(U64 block_size);
 void arena_release(Arena *arena);
 
-//- thread-local recycle pool (for hot, short-lived per-request arenas). acquire()
+//- thread-local recycle pool (for hot, short-lived per-request arenas).
+//acquire()
 //  hands back a cleared, ready-to-use arena — popping the free-list, else
 //  arena_alloc'ing; recycle() returns one to the pool (clearing it) instead of
-//  freeing, so the next acquire() skips the malloc. Single loop thread => no lock.
-//  An arena that grew past its first block is released, not pooled (see arena.c).
+//  freeing, so the next acquire() skips the malloc. Single loop thread => no
+//  lock. An arena that grew past its first block is released, not pooled (see
+//  arena.c).
 Arena *arena_acquire(void);
 void arena_recycle(Arena *arena);
 
@@ -70,9 +72,11 @@ void temp_end(Temp temp);
 Temp scratch_begin(Arena **conflicts, U64 conflict_count);
 #define scratch_end(t) temp_end(t)
 
-//- allocation profiling (compiled in only with HOLYTLS_ARENA_STATS; otherwise the
-//  accessors return zeros and the hot path is untouched). Cumulative counters plus
-//  current/peak live tallies. Single-process-wide; not thread-synchronized.
+//- allocation profiling (compiled in only with HOLYTLS_ARENA_STATS; otherwise
+//the
+//  accessors return zeros and the hot path is untouched). Cumulative counters
+//  plus current/peak live tallies. Single-process-wide; not
+//  thread-synchronized.
 typedef struct ArenaStats ArenaStats;
 struct ArenaStats {
   U64 arenas_created, arenas_released, blocks_allocated;
@@ -82,8 +86,8 @@ struct ArenaStats {
   U64 live_bytes, peak_live_bytes;  // reserved bytes currently held
 };
 ArenaStats arena_stats(void);
-// Zero the cumulative counters (keeps the live tallies, and rebases the peaks to
-// the current live values) so a caller can profile one phase in isolation.
+// Zero the cumulative counters (keeps the live tallies, and rebases the peaks
+// to the current live values) so a caller can profile one phase in isolation.
 void arena_stats_reset(void);
 
 #endif  // HOLYTLS_ARENA_H

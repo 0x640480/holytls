@@ -51,12 +51,12 @@ String8 base64_decode(Arena *arena, String8 in) {
   for (U64 i = 0; i < in.size; i += 4) {
     U8 a = b64_rev(in.str[i]), b = b64_rev(in.str[i + 1]);
     U8 c = b64_rev(in.str[i + 2]), d = b64_rev(in.str[i + 3]);
-    if (a >= 64 || b >= 64) return str8_zero();      // data required; no pad here
+    if (a >= 64 || b >= 64) return str8_zero();  // data required; no pad here
     if (c == 0xff || d == 0xff) return str8_zero();  // invalid byte
     B32 c_pad = (c == 0xfe), d_pad = (d == 0xfe);
-    if (c_pad && !d_pad) return str8_zero();          // "xx=y" is malformed
+    if (c_pad && !d_pad) return str8_zero();  // "xx=y" is malformed
     if ((c_pad || d_pad) && i + 4 != in.size)
-      return str8_zero();                             // padding only in last quad
+      return str8_zero();  // padding only in last quad
     U32 n = (U32)a << 18 | (U32)b << 12;
     out[o++] = (U8)((n >> 16) & 0xff);
     if (!c_pad) {

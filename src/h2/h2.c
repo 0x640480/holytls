@@ -33,7 +33,6 @@ struct BodySource {
   U64 off;
 };
 
-
 internal nghttp2_nv make_nv(String8 name, String8 value) {
   nghttp2_nv nv;
   nv.name = (U8 *)name.str;
@@ -74,8 +73,8 @@ internal int on_header_cb(nghttp2_session *session, const nghttp2_frame *frame,
                           size_t valuelen, U8 flags, void *user) {
   (void)flags;
   (void)user;
-  Req *req = (Req *)nghttp2_session_get_stream_user_data(session,
-                                                         frame->hd.stream_id);
+  Req *req =
+      (Req *)nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
   if (!req) return 0;
   String8 n = str8((U8 *)name, namelen);
   String8 v = str8((U8 *)value, valuelen);
@@ -111,8 +110,7 @@ internal int on_data_cb(nghttp2_session *session, U8 flags, S32 stream_id,
 internal int on_stream_close_cb(nghttp2_session *session, S32 stream_id,
                                 U32 error_code, void *user) {
   H2Session *s = (H2Session *)user;
-  Req *req =
-      (Req *)nghttp2_session_get_stream_user_data(session, stream_id);
+  Req *req = (Req *)nghttp2_session_get_stream_user_data(session, stream_id);
   if (!req) return 0;
   if (s->open_streams > 0) s->open_streams -= 1;
 
@@ -129,7 +127,8 @@ internal int on_stream_close_cb(nghttp2_session *session, S32 stream_id,
 }
 
 // Note a received GOAWAY so the connection pool stops opening new streams on a
-// draining connection (already-open streams still complete via on_stream_close).
+// draining connection (already-open streams still complete via
+// on_stream_close).
 internal int on_frame_recv_cb(nghttp2_session *session,
                               const nghttp2_frame *frame, void *user) {
   (void)session;
@@ -174,7 +173,8 @@ H2Session *h2_session_alloc(const Http2Profile *prof, H2SendFn send_fn,
   nghttp2_session_callbacks_set_send_callback2(cbs, send_cb);
   nghttp2_session_callbacks_set_on_header_callback(cbs, on_header_cb);
   nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, on_data_cb);
-  nghttp2_session_callbacks_set_on_stream_close_callback(cbs, on_stream_close_cb);
+  nghttp2_session_callbacks_set_on_stream_close_callback(cbs,
+                                                         on_stream_close_cb);
   nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, on_frame_recv_cb);
   nghttp2_session_client_new2(&s->session, cbs, s, opt);
   nghttp2_session_callbacks_del(cbs);
@@ -193,8 +193,8 @@ void h2_session_release(H2Session *s) {
 B32 h2_session_start(H2Session *s) {
   if (!s->session) return 0;
   Temp scr = scratch_begin(0, 0);
-  nghttp2_settings_entry *iv =
-      push_array_no_zero(scr.arena, nghttp2_settings_entry, s->prof->settings_count);
+  nghttp2_settings_entry *iv = push_array_no_zero(
+      scr.arena, nghttp2_settings_entry, s->prof->settings_count);
   for (U8 i = 0; i < s->prof->settings_count; ++i) {
     iv[i].settings_id = s->prof->settings[i].id;
     iv[i].value = s->prof->settings[i].value;
@@ -246,12 +246,18 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
   U64 n = 0;
   for (U8 i = 0; i < s->prof->pseudo_count; ++i) {
     switch (s->prof->pseudo_order[i]) {
-      case Pseudo_Method: nva[n++] = make_nv(str8_lit(":method"), method); break;
-      case Pseudo_Scheme: nva[n++] = make_nv(str8_lit(":scheme"), scheme); break;
+      case Pseudo_Method:
+        nva[n++] = make_nv(str8_lit(":method"), method);
+        break;
+      case Pseudo_Scheme:
+        nva[n++] = make_nv(str8_lit(":scheme"), scheme);
+        break;
       case Pseudo_Authority:
         nva[n++] = make_nv(str8_lit(":authority"), authority);
         break;
-      case Pseudo_Path: nva[n++] = make_nv(str8_lit(":path"), path); break;
+      case Pseudo_Path:
+        nva[n++] = make_nv(str8_lit(":path"), path);
+        break;
     }
   }
   for (U64 i = 0; i < header_count; ++i) {
@@ -292,8 +298,8 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
     prdp = &prd;
   }
 
-  S32 sid = nghttp2_submit_request2(s->session, s->prof->use_priority ? &pri : 0,
-                                    nva, n, prdp, req);
+  S32 sid = nghttp2_submit_request2(
+      s->session, s->prof->use_priority ? &pri : 0, nva, n, prdp, req);
   scratch_end(scr);
   if (sid < 0) return sid;
   req->stream_id = sid;
@@ -304,9 +310,9 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
 
 void h2_session_cancel_stream(H2Session *s, S32 stream_id) {
   if (!s->session) return;
-  // Null the stream user data first so on_stream_close_cb returns early (it must
-  // not invoke the response callback for an aborted, now-freed request). The close
-  // callback then won't decrement open_streams either, so do it here.
+  // Null the stream user data first so on_stream_close_cb returns early (it
+  // must not invoke the response callback for an aborted, now-freed request).
+  // The close callback then won't decrement open_streams either, so do it here.
   nghttp2_session_set_stream_user_data(s->session, stream_id, 0);
   nghttp2_submit_rst_stream(s->session, NGHTTP2_FLAG_NONE, stream_id,
                             NGHTTP2_CANCEL);
@@ -324,8 +330,9 @@ B32 h2_session_idle(H2Session *s) {
   return s->open_streams == 0 && !h2_session_want_write(s);
 }
 
-// The peer's advertised SETTINGS_MAX_CONCURRENT_STREAMS (nghttp2 returns a large
-// default until the server's SETTINGS arrive). The pool gates new streams on it.
+// The peer's advertised SETTINGS_MAX_CONCURRENT_STREAMS (nghttp2 returns a
+// large default until the server's SETTINGS arrive). The pool gates new streams
+// on it.
 U32 h2_session_max_concurrent_streams(H2Session *s) {
   if (!s->session) return 0;
   return nghttp2_session_get_remote_settings(

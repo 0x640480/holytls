@@ -26,8 +26,8 @@ struct Ctx {
   int status;
 };
 
-internal void on_resp(void* user, const Response* r) {
-  Ctx* cx = (Ctx*)user;
+internal void on_resp(void *user, const Response *r) {
+  Ctx *cx = (Ctx *)user;
   cx->got = r->ok;
   cx->status = r->status;
   if (!r->ok)
@@ -39,7 +39,7 @@ int main(void) {
     printf("[key_log_live_test] SKIP (set HOLYTLS_LIVE=1 to run)\n");
     return 0;
   }
-  const char* path = "/tmp/holytls_keylog_live.key";
+  const char *path = "/tmp/holytls_keylog_live.key";
   remove(path);
   setenv("SSLKEYLOGFILE", path, 1);  // build_ctx auto-enables from the env var
 
@@ -60,12 +60,12 @@ int main(void) {
 
   // The handshake's TLS 1.3 secrets must now be in the key-log file.
   char buf[16384];
-  FILE* f = fopen(path, "rb");
+  FILE *f = fopen(path, "rb");
   CHECK(f != 0);
   U64 n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
   if (f) fclose(f);
   buf[n] = 0;
-  String8 s = str8((U8*)buf, n);
+  String8 s = str8((U8 *)buf, n);
   fprintf(stderr, "  key log: %llu bytes\n", (unsigned long long)n);
   CHECK(n > 0);
   CHECK(

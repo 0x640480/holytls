@@ -35,7 +35,7 @@
 #define HOLYTLS_DEFER_H
 
 #define DEFER_CAT_(a, b) a##b
-#define DEFER_CAT(a, b)  DEFER_CAT_(a, b)
+#define DEFER_CAT(a, b) DEFER_CAT_(a, b)
 
 #if defined(__clang__) && defined(__BLOCKS__)
 
@@ -43,20 +43,20 @@
 typedef void (^defer_block_t)(void);
 static inline void defer_run_(defer_block_t *b) { (*b)(); }
 
-#define defer                                                  \
-    __attribute__((cleanup(defer_run_), unused))               \
-    defer_block_t DEFER_CAT(defer_, __COUNTER__) = ^
+#define defer                                                           \
+  __attribute__((cleanup(defer_run_), unused)) defer_block_t DEFER_CAT( \
+      defer_, __COUNTER__) = ^
 
 #elif defined(__GNUC__)
 
 /* GCC: a nested function registered as the cleanup handler of a dummy
  * variable. The cleanup call is direct (not through a pointer), so no
  * executable-stack trampoline is generated. */
-#define DEFER_IMPL_(n)                                         \
-    auto void DEFER_CAT(defer_fn_, n)(int *);                  \
-    __attribute__((cleanup(DEFER_CAT(defer_fn_, n)), unused))  \
-    int DEFER_CAT(defer_var_, n);                              \
-    void DEFER_CAT(defer_fn_, n)(int *defer_arg_ __attribute__((unused)))
+#define DEFER_IMPL_(n)                                                     \
+  auto void DEFER_CAT(defer_fn_, n)(int *);                                \
+  __attribute__((cleanup(DEFER_CAT(defer_fn_, n)), unused)) int DEFER_CAT( \
+      defer_var_, n);                                                      \
+  void DEFER_CAT(defer_fn_, n)(int *defer_arg_ __attribute__((unused)))
 
 #define defer DEFER_IMPL_(__COUNTER__)
 

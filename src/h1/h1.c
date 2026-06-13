@@ -8,11 +8,11 @@
 #define H1_MAX_HEADER_REGION KB(64)
 
 typedef enum H1State {
-  H1State_Headers,     // accumulating + parsing until \r\n\r\n
-  H1State_BodyLength,  // Content-Length: N
-  H1State_BodyChunked, // Transfer-Encoding: chunked
-  H1State_BodyClose,   // read until EOF
-  H1State_Done,        // response delivered
+  H1State_Headers,      // accumulating + parsing until \r\n\r\n
+  H1State_BodyLength,   // Content-Length: N
+  H1State_BodyChunked,  // Transfer-Encoding: chunked
+  H1State_BodyClose,    // read until EOF
+  H1State_Done,         // response delivered
   H1State_Error,
 } H1State;
 
@@ -26,9 +26,9 @@ struct H1Session {
   B32 is_head;
 
   H1State state;
-  U8Buf in;         // raw received bytes; the header region is parsed from here
-  U64 parsed_off;   // picohttpparser last_len (\r\n\r\n scan optimization)
-  U64 header_end;   // byte offset just past the end-of-headers in `in`
+  U8Buf in;        // raw received bytes; the header region is parsed from here
+  U64 parsed_off;  // picohttpparser last_len (\r\n\r\n scan optimization)
+  U64 header_end;  // byte offset just past the end-of-headers in `in`
 
   int status;
   HeaderList headers;  // arena-owned copies (stable across buffer growth)
@@ -122,17 +122,18 @@ internal void h1_deliver(H1Session *s) {
 
 // Decode chunked body bytes incrementally. The decoder rewrites in place and is
 // stateful; we keep the decoded payload as the prefix of `body` and let it
-// consume the encoded framing of the freshly-appended tail. Returns 0 / -1 error.
+// consume the encoded framing of the freshly-appended tail. Returns 0 / -1
+// error.
 internal S64 h1_feed_chunked(H1Session *s, const U8 *data, U64 n) {
   if (n == 0) return 0;
-  U64 decoded_len = s->body.len;             // payload prefix so far
-  u8buf_append(&s->body, data, n);           // append encoded after the payload
+  U64 decoded_len = s->body.len;    // payload prefix so far
+  u8buf_append(&s->body, data, n);  // append encoded after the payload
   size_t sz = n;
-  ssize_t r = phr_decode_chunked(&s->chunk_dec, (char *)s->body.v + decoded_len,
-                                 &sz);
-  s->body.len = decoded_len + sz;            // truncate to payload (drop framing)
+  ssize_t r =
+      phr_decode_chunked(&s->chunk_dec, (char *)s->body.v + decoded_len, &sz);
+  s->body.len = decoded_len + sz;  // truncate to payload (drop framing)
   if (r == -1) return -1;
-  if (r >= 0) h1_deliver(s);                 // complete (r = trailing bytes, ignore)
+  if (r >= 0) h1_deliver(s);  // complete (r = trailing bytes, ignore)
   return 0;
 }
 
@@ -207,8 +208,8 @@ S64 h1_session_recv(H1Session *s, const U8 *data, U64 len) {
       s->state = H1State_Error;
       return -1;
     }
-    // Headers complete: copy out NOW (hdr[] point into `in`, which may move on a
-    // later append), then never call phr_parse_response again.
+    // Headers complete: copy out NOW (hdr[] point into `in`, which may move on
+    // a later append), then never call phr_parse_response again.
     s->status = status;
     s->header_end = (U64)rc;
     for (size_t i = 0; i < num; ++i) {

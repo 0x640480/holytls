@@ -14,7 +14,7 @@
 #include "vendor/stb_sprintf.h"
 // Route all snprintf/vsnprintf calls through stb_sprintf (faster, no locale
 // overhead, consistent cross-platform behaviour).
-#define snprintf  stbsp_snprintf
+#define snprintf stbsp_snprintf
 #define vsnprintf stbsp_vsnprintf
 
 //- scalar types
@@ -73,26 +73,25 @@ typedef double F64;
 //- intrusive singly-linked list: stack (LIFO) and queue (FIFO)
 #define SLLStackPush_N(f, n, next) ((n)->next = (f), (f) = (n))
 #define SLLStackPop_N(f, next) ((f) = (f)->next)
-#define SLLQueuePush_N(f, l, n, next)                  \
-  (((f) == 0) ? ((f) = (l) = (n), (n)->next = 0)       \
+#define SLLQueuePush_N(f, l, n, next)            \
+  (((f) == 0) ? ((f) = (l) = (n), (n)->next = 0) \
               : ((l)->next = (n), (l) = (n), (n)->next = 0))
 #define SLLStackPush(f, n) SLLStackPush_N(f, n, next)
 #define SLLQueuePush(f, l, n) SLLQueuePush_N(f, l, n, next)
 
 //- abort with a message (the never-null allocation / fatal-error path)
-#define Fatal(msg)                                            \
-  Statement(fprintf(stderr, "holytls fatal: %s\n", (msg));    \
-            abort();)
+#define Fatal(msg) \
+  Statement(fprintf(stderr, "holytls fatal: %s\n", (msg)); abort();)
 
 //- debug assert: contract checks compiled out under NDEBUG (release builds)
 #ifdef NDEBUG
 #define Assert(x) ((void)0)
 #else
-#define Assert(x)                                                       \
-  Statement(if (!(x)) {                                                 \
+#define Assert(x)                                                        \
+  Statement(if (!(x)) {                                                  \
     fprintf(stderr, "holytls assert failed: %s (%s:%d)\n", #x, __FILE__, \
-            __LINE__);                                                  \
-    abort();                                                            \
+            __LINE__);                                                   \
+    abort();                                                             \
   })
 #endif
 

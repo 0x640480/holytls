@@ -47,10 +47,11 @@ struct TlsProfile {
   B32 aes_hw_override_value;
   B32 random_aes_hw_override;
   // Fork-backend knobs (lexiforest/boringssl).
-  U16 record_size_limit;             // ext 0x1c (0 = unset)
-  const char *delegated_credentials; // ext 0x22 (NULL = unset)
+  U16 record_size_limit;              // ext 0x1c (0 = unset)
+  const char *delegated_credentials;  // ext 0x22 (NULL = unset)
   U8 key_shares_limit;
-  const char *extension_order;  // dash-separated decimal ext IDs (NULL = default)
+  const char
+      *extension_order;  // dash-separated decimal ext IDs (NULL = default)
 };
 
 //- HTTP/2 -------------------------------------------------------------------
@@ -98,9 +99,10 @@ struct Http2Profile {
 // order-only placeholder (e.g. "cookie") emitted only when the caller fills it.
 typedef struct DefaultHeader DefaultHeader;
 struct DefaultHeader {
-  const char *name;       // lowercase (HTTP/2 + HTTP/3 wire + lookup)
-  const char *value;      // "" = order-only placeholder
-  const char *wire_name;  // exact HTTP/1.1 wire casing; NULL -> title-case `name`
+  const char *name;   // lowercase (HTTP/2 + HTTP/3 wire + lookup)
+  const char *value;  // "" = order-only placeholder
+  const char
+      *wire_name;  // exact HTTP/1.1 wire casing; NULL -> title-case `name`
 };
 
 //- HTTP/3 -------------------------------------------------------------------
@@ -175,9 +177,9 @@ const QuicProfile *profile_chrome149_h3(void);
 // profile ships in its default_headers table). Each returns a view into the
 // static literal, or str8_zero() if the profile doesn't declare that header.
 
-// Generic by (case-insensitive) name. Works for a Profile or a QuicProfile table
-// (both expose default_headers/default_header_count) and any other DefaultHeader
-// array, e.g. profile_default_header(qp->default_headers,
+// Generic by (case-insensitive) name. Works for a Profile or a QuicProfile
+// table (both expose default_headers/default_header_count) and any other
+// DefaultHeader array, e.g. profile_default_header(qp->default_headers,
 // qp->default_header_count, str8_lit("user-agent")).
 String8 profile_default_header(const DefaultHeader *defaults, U8 count,
                                String8 name);

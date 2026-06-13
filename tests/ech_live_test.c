@@ -1,7 +1,7 @@
 // Live ECH test: with ECH enabled, a GET to Cloudflare's trace endpoint must
-// report sni=encrypted (proving the client fetched the ECHConfigList over DoH and
-// actually encrypted the ClientHello — not just GREASE).
-// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// report sni=encrypted (proving the client fetched the ECHConfigList over DoH
+// and actually encrypted the ClientHello — not just GREASE). Network-gated: set
+// HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -45,17 +45,20 @@ int main(void) {
   client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
   defer { client_cleanup(&c); };
   CHECK(client_ok(&c));
-  client_set_ech_enabled(&c, 1);  // fetch ECHConfigList over DoH + offer real ECH
+  client_set_ech_enabled(&c,
+                         1);  // fetch ECHConfigList over DoH + offer real ECH
 
   Ctx cx;
   MemoryZeroStruct(&cx);
-  client_get(&c, str8_lit("https://crypto.cloudflare.com/cdn-cgi/trace"), on_resp,
-             &cx);
+  client_get(&c, str8_lit("https://crypto.cloudflare.com/cdn-cgi/trace"),
+             on_resp, &cx);
   loop_run(&loop);  // DoH prefetch -> real request, both on this loop
-  fprintf(stderr, "  status=%d sni_encrypted=%d\n", cx.status, cx.sni_encrypted);
+  fprintf(stderr, "  status=%d sni_encrypted=%d\n", cx.status,
+          cx.sni_encrypted);
   CHECK(cx.got && cx.status == 200);
   CHECK(cx.sni_encrypted);  // real ECH succeeded end-to-end
 
-  fprintf(stderr, "[ech_live_test] %d checks, %d failures\n", g_checks, g_fails);
+  fprintf(stderr, "[ech_live_test] %d checks, %d failures\n", g_checks,
+          g_fails);
   return g_fails ? 1 : 0;
 }

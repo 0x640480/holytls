@@ -18,10 +18,10 @@
 
 global int g_checks = 0;
 global int g_fails = 0;
-#define CHECK(c)                                                     \
-  Statement(g_checks += 1; if (!(c)) {                               \
-    g_fails += 1;                                                    \
-    fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);   \
+#define CHECK(c)                                                   \
+  Statement(g_checks += 1; if (!(c)) {                             \
+    g_fails += 1;                                                  \
+    fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
   })
 
 #define HOST "tls.browserleaks.com"

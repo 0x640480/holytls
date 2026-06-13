@@ -36,8 +36,8 @@ struct ClientHelloInfo {
   U64 sv_count;
   U16 sig_algs[JA4_MAX_SIGALGS];  // ext 0x000d (order preserved)
   U64 sig_count;
-  B32 has_sni;                       // ext 0x0000
-  char alpn_first[JA4_MAX_ALPN];     // first protocol in ext 0x0010
+  B32 has_sni;                    // ext 0x0000
+  char alpn_first[JA4_MAX_ALPN];  // first protocol in ext 0x0010
   U64 alpn_len;
 };
 

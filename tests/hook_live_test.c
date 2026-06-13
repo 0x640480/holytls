@@ -1,9 +1,9 @@
-// Live request-hook test: a pre-hook injects a custom header (and is refused when
-// it tries to overwrite the User-Agent), and a post-hook observes the response.
-// We GET https://httpbin.org/headers, which echoes the request headers back as
-// JSON, so we can assert the injected header reached the wire and the fingerprint
-// User-Agent was preserved.
-// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// Live request-hook test: a pre-hook injects a custom header (and is refused
+// when it tries to overwrite the User-Agent), and a post-hook observes the
+// response. We GET https://httpbin.org/headers, which echoes the request
+// headers back as JSON, so we can assert the injected header reached the wire
+// and the fingerprint User-Agent was preserved. Network-gated: set
+// HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,8 +23,8 @@ global int g_fails = 0;
     fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
   })
 
-#define MARKER "holytlshooktest123"   // injected header value (echoed verbatim)
-#define EVIL "EvilBot9000xyz"         // bogus UA the hook tries (must be refused)
+#define MARKER "holytlshooktest123"  // injected header value (echoed verbatim)
+#define EVIL "EvilBot9000xyz"  // bogus UA the hook tries (must be refused)
 
 typedef struct PostCap PostCap;
 struct PostCap {
@@ -45,7 +45,8 @@ struct Ctx {
 // Pre-hook: inject an allowed custom header; attempt to overwrite User-Agent.
 internal int pre_hook(HookRequest *req, void *user) {
   (void)user;
-  CHECK(hook_request_set_header(req, str8_lit("X-Hook-Test"), str8_lit(MARKER)));
+  CHECK(
+      hook_request_set_header(req, str8_lit("X-Hook-Test"), str8_lit(MARKER)));
   CHECK(!hook_request_set_header(req, str8_lit("user-agent"), str8_lit(EVIL)));
   return 0;
 }
@@ -66,7 +67,8 @@ internal void on_resp(void *user, const Response *r) {
   if (r->body && n) MemoryCopy(cx->body, r->body, n);
   cx->body_len = n;
   cx->body[n] = 0;
-  if (!r->ok) fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
+  if (!r->ok)
+    fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
 }
 
 internal B32 body_has(const Ctx *cx, const char *sub) {
@@ -112,6 +114,7 @@ int main(void) {
   CHECK(pc.status == 200);
   CHECK(pc.header_count > 0);
 
-  fprintf(stderr, "[hook_live_test] %d checks, %d failures\n", g_checks, g_fails);
+  fprintf(stderr, "[hook_live_test] %d checks, %d failures\n", g_checks,
+          g_fails);
   return g_fails ? 1 : 0;
 }

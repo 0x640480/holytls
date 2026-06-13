@@ -55,7 +55,8 @@ internal B32 eqi(String8 a, const char *b) {
 #define DECODE_MAX_OUT (256ull << 20)
 
 #ifdef HOLYTLS_HAVE_ZLIB
-internal B32 zlib_inflate(const U8 *data, U64 len, int window_bits, U8Buf *out) {
+internal B32 zlib_inflate(const U8 *data, U64 len, int window_bits,
+                          U8Buf *out) {
   z_stream zs;
   MemoryZeroStruct(&zs);
   if (inflateInit2(&zs, window_bits) != Z_OK) return 0;

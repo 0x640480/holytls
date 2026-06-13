@@ -8,12 +8,11 @@ String8 str8_range(U8 *first, U8 *one_past_last) {
   return str8(first, (U64)(one_past_last - first));
 }
 
-char ascii_lower(char c) {
-  return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
-}
+char ascii_lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 
 B32 str8_match(String8 a, String8 b) {
-  return a.size == b.size && (a.size == 0 || MemoryCompare(a.str, b.str, a.size) == 0);
+  return a.size == b.size &&
+         (a.size == 0 || MemoryCompare(a.str, b.str, a.size) == 0);
 }
 
 B32 str8_match_ci(String8 a, String8 b) {
@@ -29,9 +28,8 @@ B32 str8_starts_with(String8 s, String8 prefix) {
 }
 
 B32 str8_ends_with(String8 s, String8 suffix) {
-  return s.size >= suffix.size &&
-         MemoryCompare(s.str + (s.size - suffix.size), suffix.str,
-                       suffix.size) == 0;
+  return s.size >= suffix.size && MemoryCompare(s.str + (s.size - suffix.size),
+                                                suffix.str, suffix.size) == 0;
 }
 
 //- view operations (tsoding sv.h-style)
@@ -122,8 +120,8 @@ S64 str8_find_ci(String8 hay, String8 needle) {
   if (needle.size > hay.size) return -1;
   for (U64 i = 0; i + needle.size <= hay.size; ++i) {
     U64 j = 0;
-    while (j < needle.size &&
-           ascii_lower((char)hay.str[i + j]) == ascii_lower((char)needle.str[j]))
+    while (j < needle.size && ascii_lower((char)hay.str[i + j]) ==
+                                  ascii_lower((char)needle.str[j]))
       ++j;
     if (j == needle.size) return (S64)i;
   }

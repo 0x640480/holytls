@@ -25,13 +25,13 @@ global int g_checks = 0, g_fails = 0;
 // working proxy visibly changes the result from a direct connection.
 #define TARGET_URL "https://api.ipify.org/"
 
-global EventLoop* g_loop;
+global EventLoop *g_loop;
 global B32 g_ok;
 global int g_status;
 global char g_body[256];
 global char g_alpn[16];
 
-internal void on_resp(void* user, const Response* r) {
+internal void on_resp(void *user, const Response *r) {
   (void)user;
   g_ok = r->ok;
   g_status = r->status;
@@ -43,13 +43,13 @@ internal void on_resp(void* user, const Response* r) {
   g_alpn[an] = 0;
   uv_stop(loop_uv(g_loop));
 }
-internal void wd_cb(uv_timer_t* t) {
+internal void wd_cb(uv_timer_t *t) {
   (void)t;
   uv_stop(loop_uv(g_loop));
 }
 
 // Convert "scheme://host:port:user:pass" -> "scheme://user:pass@host:port".
-internal B32 to_proxy_url(Arena* a, String8 line, String8* out) {
+internal B32 to_proxy_url(Arena *a, String8 line, String8 *out) {
   S64 sep = str8_find(line, str8_lit("://"));
   if (sep < 0) return 0;
   String8 scheme = str8_prefix(line, (U64)sep);
@@ -87,7 +87,7 @@ internal B32 fetch_via(String8 proxy_url) {
   loop_run(&loop);
 
   uv_timer_stop(&wd);
-  uv_close((uv_handle_t*)&wd, 0);
+  uv_close((uv_handle_t *)&wd, 0);
   client_cleanup(&c);
   loop_shutdown(&loop);
   return g_ok && g_status == 200;
@@ -120,15 +120,16 @@ internal B32 fetch_via_h3(String8 proxy_url) {
   loop_run(&loop);
 
   uv_timer_stop(&wd);
-  uv_close((uv_handle_t*)&wd, 0);
+  uv_close((uv_handle_t *)&wd, 0);
   client_cleanup(&c);
   loop_shutdown(&loop);
   return g_ok && g_status == 200 && strcmp(g_alpn, "h3") == 0;
 }
 
 // One GET on an existing client + loop (for the runtime-rotation block, which
-// keeps a single client across switches). Returns 200-ok; leaves the IP in g_body.
-internal B32 live_get(EventLoop* loop, uv_timer_t* wd, Client* c) {
+// keeps a single client across switches). Returns 200-ok; leaves the IP in
+// g_body.
+internal B32 live_get(EventLoop *loop, uv_timer_t *wd, Client *c) {
   g_ok = 0;
   g_status = 0;
   g_body[0] = 0;
@@ -139,10 +140,11 @@ internal B32 live_get(EventLoop* loop, uv_timer_t* wd, Client* c) {
   return g_ok && g_status == 200;
 }
 
-// Runtime proxy switching on ONE client: direct -> each proxy -> back to direct,
-// asserting the egress IP changes under a proxy and returns to the direct IP after
-// set_proxy(""). Proves client_set_proxy is safe to call between requests.
-internal void run_rotation(Arena* a, const String8* proxies, U64 count) {
+// Runtime proxy switching on ONE client: direct -> each proxy -> back to
+// direct, asserting the egress IP changes under a proxy and returns to the
+// direct IP after set_proxy(""). Proves client_set_proxy is safe to call
+// between requests.
+internal void run_rotation(Arena *a, const String8 *proxies, U64 count) {
   EventLoop loop;
   loop_init(&loop);
   g_loop = &loop;
@@ -150,7 +152,7 @@ internal void run_rotation(Arena* a, const String8* proxies, U64 count) {
   client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
   uv_timer_t wd;
   uv_timer_init(loop_uv(&loop), &wd);
-  uv_unref((uv_handle_t*)&wd);
+  uv_unref((uv_handle_t *)&wd);
 
   char direct_ip[sizeof g_body];
   CHECK(live_get(&loop, &wd, &c));  // direct first
@@ -169,17 +171,19 @@ internal void run_rotation(Arena* a, const String8* proxies, U64 count) {
             STR8_Arg(scheme), g_body, strcmp(g_body, direct_ip) != 0);
   }
 
-  CHECK(client_set_proxy(&c, str8_lit(""), /*verify_proxy=*/0));  // back to direct
+  CHECK(client_set_proxy(&c, str8_lit(""),
+                         /*verify_proxy=*/0));  // back to direct
   CHECK(live_get(&loop, &wd, &c));
-  CHECK(strcmp(g_body, direct_ip) == 0);  // same egress IP as the first direct call
+  CHECK(strcmp(g_body, direct_ip) ==
+        0);  // same egress IP as the first direct call
   fprintf(stderr, "  [rotate direct] ip=%s (restored)\n", g_body);
 
-  uv_close((uv_handle_t*)&wd, 0);
+  uv_close((uv_handle_t *)&wd, 0);
   client_cleanup(&c);
   loop_shutdown(&loop);
 }
 
-internal void run_proxy(Arena* a, String8 s) {
+internal void run_proxy(Arena *a, String8 s) {
   if (s.size == 0 || s.str[0] == '#') return;
   String8 purl;
   if (!to_proxy_url(a, s, &purl)) {
@@ -210,7 +214,7 @@ int main(void) {
     return 0;
   }
 
-  const char* env = getenv("HOLYTLS_PROXIES");
+  const char *env = getenv("HOLYTLS_PROXIES");
   if (!env || !env[0]) {
     fprintf(stderr,
             "[proxy_live_test] skipped: set HOLYTLS_PROXIES (';'-separated "
@@ -218,7 +222,7 @@ int main(void) {
     return 0;
   }
 
-  Arena* a = arena_alloc();
+  Arena *a = arena_alloc();
   // Parse the ';'-separated proxy list from the env (no creds in the source).
   String8 proxies[16];
   U64 n = 0;
@@ -230,7 +234,8 @@ int main(void) {
   for (U64 i = 0; i < n; ++i) run_proxy(a, proxies[i]);
   if (n) {
     fprintf(stderr, "  --- runtime rotation (one client) ---\n");
-    run_rotation(a, proxies, n);  // switch proxies mid-session on a single client
+    run_rotation(a, proxies,
+                 n);  // switch proxies mid-session on a single client
   }
   arena_release(a);
   fprintf(stderr, "[proxy_live_test] %d checks, %d failures\n", g_checks,

@@ -1,8 +1,8 @@
-// H2Session — a client HTTP/2 session over nghttp2, configured to emit the exact
-// SETTINGS (values + order), connection WINDOW_UPDATE, request priority and
-// pseudo-header order of a profile (the Akamai-fingerprint surface). It owns no
-// transport: outgoing bytes go to a send callback, incoming plaintext is fed to
-// h2_session_recv.
+// H2Session — a client HTTP/2 session over nghttp2, configured to emit the
+// exact SETTINGS (values + order), connection WINDOW_UPDATE, request priority
+// and pseudo-header order of a profile (the Akamai-fingerprint surface). It
+// owns no transport: outgoing bytes go to a send callback, incoming plaintext
+// is fed to h2_session_recv.
 #ifndef HOLYTLS_H2_H
 #define HOLYTLS_H2_H
 

@@ -1,8 +1,8 @@
-// Live cross-instance session persistence: warm up client A (resumption on) so it
-// caches a NewSessionTicket, save the session snapshot to disk, then load it into a
-// BRAND-NEW client B (as a fresh process would) and assert the next request resumes
-// (Response.resumed == 1). This is the "returning visitor across a restart" path
-// that session_save / session_load enable.
+// Live cross-instance session persistence: warm up client A (resumption on) so
+// it caches a NewSessionTicket, save the session snapshot to disk, then load it
+// into a BRAND-NEW client B (as a fresh process would) and assert the next
+// request resumes (Response.resumed == 1). This is the "returning visitor
+// across a restart" path that session_save / session_load enable.
 // Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +36,8 @@ internal void on_resp(void *user, const Response *r) {
   cx->got = r->ok;
   cx->status = r->status;
   cx->resumed = r->resumed;
-  if (!r->ok) fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
+  if (!r->ok)
+    fprintf(stderr, "  request failed: %s\n", r->error ? r->error : "?");
 }
 
 internal Ctx fetch_once(Client *c, EventLoop *loop, const char *url) {
@@ -57,10 +58,13 @@ int main(void) {
 
   EventLoop loop;
   loop_init(&loop);
-  defer { loop_shutdown(&loop); };  // clients/sessions A and B are cleaned
-                                    // explicitly below (A before B is created)
+  defer {
+    loop_shutdown(&loop);
+  };  // clients/sessions A and B are cleaned
+      // explicitly below (A before B is created)
 
-  //- client A: warm up + cache a ticket, then save -----------------------------
+  //- client A: warm up + cache a ticket, then save
+  //-----------------------------
   Client a;
   client_init(&a, &loop, profile_chrome148(), /*verify=*/1);
   CHECK(client_ok(&a));
@@ -79,7 +83,8 @@ int main(void) {
   session_cleanup(&sa);
   client_cleanup(&a);
 
-  //- client B: brand-new, load the snapshot, then resume -----------------------
+  //- client B: brand-new, load the snapshot, then resume
+  //-----------------------
   Client b;
   client_init(&b, &loop, profile_chrome148(), /*verify=*/1);
   CHECK(client_ok(&b));
@@ -98,7 +103,7 @@ int main(void) {
   client_cleanup(&b);
 
   remove(path);
-  fprintf(stderr, "[session_persist_live_test] %d checks, %d failures\n", g_checks,
-          g_fails);
+  fprintf(stderr, "[session_persist_live_test] %d checks, %d failures\n",
+          g_checks, g_fails);
   return g_fails ? 1 : 0;
 }

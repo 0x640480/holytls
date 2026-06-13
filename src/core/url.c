@@ -95,8 +95,8 @@ String8 url_resolve(Arena *arena, String8 base, String8 ref) {
                       STR8_Arg(ref));
   // Absolute-path: "/path" -> base scheme://authority + ref.
   if (ref.size && ref.str[0] == '/')
-    return push_str8f(arena, STR8_Fmt "://" STR8_Fmt STR8_Fmt, STR8_Arg(b.scheme),
-                      STR8_Arg(b.authority), STR8_Arg(ref));
+    return push_str8f(arena, STR8_Fmt "://" STR8_Fmt STR8_Fmt,
+                      STR8_Arg(b.scheme), STR8_Arg(b.authority), STR8_Arg(ref));
 
   // Relative: base scheme://authority + base-dir + ref, where base-dir is the
   // base path up to (and including) the last '/', with any query stripped.

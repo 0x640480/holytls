@@ -51,9 +51,9 @@ internal void seq_cb(void *user, const Response *r) {
 
 internal void conc_cb(void *user, const Response *r) { tally((Ctx *)user, r); }
 
-// H3 fingerprint through the pool: request #1 (H2) learns alt-svc h3, request #2
-// (fired from its callback) routes over pooled HTTP/3 and reports the h3_hash —
-// which must equal the direct-path golden (fingerprint_h3_test).
+// H3 fingerprint through the pool: request #1 (H2) learns alt-svc h3, request
+// #2 (fired from its callback) routes over pooled HTTP/3 and reports the
+// h3_hash — which must equal the direct-path golden (fingerprint_h3_test).
 #define H3FP_URL "https://quic.browserleaks.com/?minify=1"
 typedef struct H3Fp H3Fp;
 struct H3Fp {
@@ -99,7 +99,8 @@ internal void run_phase(Client *client, EventLoop *loop, const char *url,
   MemoryZeroStruct(&p);
   p.client = client;
   p.url = url;
-  for (int i = 0; i < nconc; ++i) client_get(client, str8_cstring(url), conc_cb, &p);
+  for (int i = 0; i < nconc; ++i)
+    client_get(client, str8_cstring(url), conc_cb, &p);
   loop_run(loop);
 
   *out_h2 = s.n_h2 + p.n_h2;
@@ -127,14 +128,14 @@ int main(void) {
     int h2 = 0, h3 = 0;
     run_phase(&c, &loop, "https://www.google.com/", 3, N, &h2, &h3);
     PoolStats st = client_pool_stats(&c);
-    fprintf(stderr, "  H2: n_h2=%d conns=%" PRIu64 " requests=%" PRIu64
-                    " reuses=%" PRIu64 "\n",
+    fprintf(stderr,
+            "  H2: n_h2=%d conns=%" PRIu64 " requests=%" PRIu64
+            " reuses=%" PRIu64 "\n",
             h2, st.conns_created, st.requests, st.reuses);
     CHECK(h2 == 3 + N);
     CHECK(st.conns_created == 1);
     CHECK(st.requests == (U64)(3 + N));
     CHECK(st.reuses == (U64)(3 + N - 1));
-
   }
 
   //- H3: warm alt-svc over H2, then sequential + concurrent over pooled QUIC.
@@ -155,10 +156,12 @@ int main(void) {
     warm.client = &c;
     warm.url = url;
     warm.seq_total = 1;
-    client_get(&c, str8_cstring(url), seq_cb, &warm);  // H2 -> learns alt-svc h3
+    client_get(&c, str8_cstring(url), seq_cb,
+               &warm);  // H2 -> learns alt-svc h3
     loop_run(&loop);
     B32 h3_cached = client_h3_available(&c, str8_lit("www.cloudflare.com:443"));
-    fprintf(stderr, "  H3 warm: alpn_h2=%d h3_cached=%d\n", warm.n_h2, h3_cached);
+    fprintf(stderr, "  H3 warm: alpn_h2=%d h3_cached=%d\n", warm.n_h2,
+            h3_cached);
     CHECK(warm.n_h2 == 1 && h3_cached);
 
     PoolStats before = client_pool_stats(&c);  // after the H2 warm conn
@@ -167,16 +170,16 @@ int main(void) {
     PoolStats after = client_pool_stats(&c);
     U64 d_conns = after.conns_created - before.conns_created;
     U64 d_reuses = after.reuses - before.reuses;
-    fprintf(stderr, "  H3: n_h3=%d new_conns=%" PRIu64 " new_reuses=%" PRIu64
-                    "\n",
-            h3, d_conns, d_reuses);
-    CHECK(h3 == 3 + N);          // every request rode HTTP/3
-    CHECK(d_conns == 1);         // a single pooled QUIC connection served them
+    fprintf(stderr,
+            "  H3: n_h3=%d new_conns=%" PRIu64 " new_reuses=%" PRIu64 "\n", h3,
+            d_conns, d_reuses);
+    CHECK(h3 == 3 + N);   // every request rode HTTP/3
+    CHECK(d_conns == 1);  // a single pooled QUIC connection served them
     CHECK(d_reuses == (U64)(3 + N - 1));  // all but the first reused it
-
   }
 
-  //- H3 fingerprint through the pool: a pooled GET to quic.browserleaks.com must
+  //- H3 fingerprint through the pool: a pooled GET to quic.browserleaks.com
+  //must
   //  report the same h3_hash the direct path does (proves the per-connection
   //  stream split didn't disturb the control-stream surface).
   {
@@ -194,7 +197,8 @@ int main(void) {
     MemoryZeroStruct(&fp);
     fp.client = &c;
     fp.phase = 1;
-    client_get(&c, str8_lit(H3FP_URL), h3fp_cb, &fp);  // #1 H2 -> learns alt-svc
+    client_get(&c, str8_lit(H3FP_URL), h3fp_cb,
+               &fp);  // #1 H2 -> learns alt-svc
     loop_run(&loop);
 
     fprintf(stderr, "  H3 fp: alpn1=%s alpn2=%s h3_hash=%s\n", fp.alpn1,
@@ -203,9 +207,9 @@ int main(void) {
     CHECK(fp.got2 && str8_match(str8_cstring(fp.alpn2), str8_lit("h3")));
     CHECK(str8_match(str8_cstring(fp.h3hash),
                      str8_lit("ba909fc3dc419ea5c5b26c6323ac1879")));
-
   }
 
-  fprintf(stderr, "[pool_live_test] %d checks, %d failures\n", g_checks, g_fails);
+  fprintf(stderr, "[pool_live_test] %d checks, %d failures\n", g_checks,
+          g_fails);
   return g_fails ? 1 : 0;
 }

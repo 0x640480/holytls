@@ -6,19 +6,20 @@
 // single-thread fill/drain with content verification (the producer==consumer
 // shape connection.c uses), and a cross-thread SPSC stress with deterministic
 // per-sequence sizes and byte patterns verified on the consumer side.
+#include "base/ring_alloc.h"
+
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <uv.h>
 
 #include "base/base.h"
-#include "base/ring_alloc.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
-#define CHECK(c)                                                  \
-  Statement(g_checks += 1; if (!(c)) {                            \
-    g_fails += 1;                                                 \
+#define CHECK(c)                                                   \
+  Statement(g_checks += 1; if (!(c)) {                             \
+    g_fails += 1;                                                  \
     fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
   })
 

@@ -1,7 +1,7 @@
 // Offline gate for the String8 view operations (tsoding sv.h-style): trim, chop
 // (by delim / by substring / left / right), take/skip, take-while, index/find/
-// contains, ends_with, parse (to_u64 / chop_u64), and the STR8_Fmt/STR8_Arg macros.
-// All pure-view (no allocation); exercises empty + boundary inputs.
+// contains, ends_with, parse (to_u64 / chop_u64), and the STR8_Fmt/STR8_Arg
+// macros. All pure-view (no allocation); exercises empty + boundary inputs.
 #include <stdio.h>
 #include <string.h>
 
@@ -47,7 +47,7 @@ internal void test_search(void) {
 
   CHECK(str8_find(str8_lit("hello world"), str8_lit("world")) == 6);
   CHECK(str8_find(str8_lit("hello"), str8_lit("xyz")) == -1);
-  CHECK(str8_find(str8_lit("hello"), str8_lit("")) == 0);       // empty needle
+  CHECK(str8_find(str8_lit("hello"), str8_lit("")) == 0);      // empty needle
   CHECK(str8_find(str8_lit("hi"), str8_lit("longer")) == -1);  // needle longer
   CHECK(str8_contains(str8_lit("gzip, chunked"), str8_lit("chunked")));
   CHECK(!str8_contains(str8_lit("gzip"), str8_lit("br")));
@@ -90,7 +90,8 @@ internal void test_while_parse(void) {
   CHECK(str8_to_u64(str8_lit("42")) == 42);
   CHECK(str8_to_u64(str8_lit("42abc")) == 42);  // stops at non-digit
   CHECK(str8_to_u64(str8_lit("")) == 0);
-  CHECK(str8_to_u64(str8_lit("99999999999999999999999999")) == ~(U64)0);  // saturate
+  CHECK(str8_to_u64(str8_lit("99999999999999999999999999")) ==
+        ~(U64)0);  // saturate
 
   s = str8_lit("2592000; ma=...");
   CHECK(str8_chop_u64(&s) == 2592000 && EQ(s, "; ma=..."));
@@ -123,8 +124,8 @@ internal void test_slice2(void) {
   CHECK(EQ(str8_chop(s, 2), "abcd"));
   CHECK(str8_chop(s, 99).size == 0);  // clamp
   CHECK(EQ(str8_substr(s, 1, 4), "bcd"));
-  CHECK(EQ(str8_substr(s, 4, 2), ""));        // max<min -> empty
-  CHECK(EQ(str8_substr(s, 2, 99), "cdef"));   // clamp max
+  CHECK(EQ(str8_substr(s, 4, 2), ""));       // max<min -> empty
+  CHECK(EQ(str8_substr(s, 2, 99), "cdef"));  // clamp max
 }
 
 internal void test_rsearch(void) {
@@ -144,7 +145,8 @@ internal void test_rsearch(void) {
 internal void test_path(void) {
   CHECK(EQ(str8_skip_last_slash(str8_lit("/a/b/c.json")), "c.json"));
   CHECK(EQ(str8_chop_last_slash(str8_lit("/a/b/c.json")), "/a/b"));
-  CHECK(EQ(str8_skip_last_slash(str8_lit("noslash")), "noslash"));  // whole if none
+  CHECK(EQ(str8_skip_last_slash(str8_lit("noslash")),
+           "noslash"));  // whole if none
   CHECK(EQ(str8_skip_last_dot(str8_lit("file.tar.gz")), "gz"));
   CHECK(EQ(str8_chop_last_dot(str8_lit("file.tar.gz")), "file.tar"));
   CHECK(EQ(str8_skip_last_dot(str8_lit("nodot")), "nodot"));  // whole if none

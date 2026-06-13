@@ -1,7 +1,7 @@
 // Live client verification: GET https://tls.browserleaks.com/json through the
-// full Client API (template profile, H2/TCP) and assert browserleaks reports the
-// fingerprints byte-exact — the same goldens as conn_test, but exercising the
-// whole client stack (URL parse, ordered headers, transparent decode).
+// full Client API (template profile, H2/TCP) and assert browserleaks reports
+// the fingerprints byte-exact — the same goldens as conn_test, but exercising
+// the whole client stack (URL parse, ordered headers, transparent decode).
 // Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
 #include <stdio.h>
 #include <stdlib.h>

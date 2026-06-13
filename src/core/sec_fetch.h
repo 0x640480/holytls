@@ -19,7 +19,8 @@ typedef enum FetchMode {
 // Append the four coherent Sec-Fetch-* headers for a `mode` request to `url`,
 // initiated from `referer` (empty => a direct navigation). An empty Sec-Fetch-
 // User value is emitted for non-navigations so build_ordered_headers suppresses
-// the header. Static literal values (no allocation); `out`'s arena holds the row.
+// the header. Static literal values (no allocation); `out`'s arena holds the
+// row.
 void sec_fetch_append(HeaderList *out, FetchMode mode, String8 url,
                       String8 referer);
 
@@ -31,11 +32,12 @@ void sec_fetch_merge(HeaderList *out, FetchMode mode, String8 url,
 
 // On a redirect, recompute Sec-Fetch-Site for the hop to `next_url` from the
 // headers carried from the previous hop. The running value lives in the carried
-// Sec-Fetch-Site header and the initiator in the carried Referer; this downgrades
-// monotonically (same-origin -> same-site -> cross-site, cross-site/none terminal,
-// per the Fetch Metadata url-list algorithm). Returns the new value, or
-// str8_zero() when there's nothing to recompute (no Sec-Fetch-Site, or no Referer
-// — e.g. a "none" user navigation, which the static default keeps as-is).
+// Sec-Fetch-Site header and the initiator in the carried Referer; this
+// downgrades monotonically (same-origin -> same-site -> cross-site,
+// cross-site/none terminal, per the Fetch Metadata url-list algorithm). Returns
+// the new value, or str8_zero() when there's nothing to recompute (no
+// Sec-Fetch-Site, or no Referer — e.g. a "none" user navigation, which the
+// static default keeps as-is).
 String8 sec_fetch_site_for_redirect(const Header *headers, U64 header_count,
                                     String8 next_url);
 

@@ -1,8 +1,8 @@
 // Offline http-version tests: the setter stores the mode; forcing H1 builds an
-// http/1.1-only ALPN profile (ALPS dropped) while keeping Chrome's TLS knobs; and
-// forcing H3 on a non-dual client fails the request synchronously (the no-QUIC
-// check fires in dispatch before any network I/O). Live negotiation (h1/h2/h3 on
-// the wire) is covered by http_version_live_test.
+// http/1.1-only ALPN profile (ALPS dropped) while keeping Chrome's TLS knobs;
+// and forcing H3 on a non-dual client fails the request synchronously (the
+// no-QUIC check fires in dispatch before any network I/O). Live negotiation
+// (h1/h2/h3 on the wire) is covered by http_version_live_test.
 #include <stdio.h>
 #include <string.h>
 
@@ -63,7 +63,8 @@ internal void test_force_h3_without_quic(void) {
   EventLoop loop;
   loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/1);  // H2-only (no QUIC)
+  client_init(&c, &loop, profile_chrome148(),
+              /*verify=*/1);  // H2-only (no QUIC)
   CHECK(client_ok(&c));
   client_set_http_version(&c, HttpVersion_H3);  // forced, but no QUIC profile
 

@@ -1,7 +1,8 @@
-// libuv event-loop smoke: init a loop, fire a one-shot timer that stops it, run,
-// shut down cleanly.
-#include "base/base.h"
+// libuv event-loop smoke: init a loop, fire a one-shot timer that stops it,
+// run, shut down cleanly.
 #include "net/loop.h"
+
+#include "base/base.h"
 
 global int g_fired = 0;
 

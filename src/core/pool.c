@@ -9,8 +9,9 @@
 // build_request_headers, client_note_alt_svc, and the legacy h2req_start (used
 // for the H1 fallback when a pooled origin negotiates HTTP/1.1).
 
-// H3 per-conn concurrency cap: send_bufs[32] minus the 3 persistent uni streams,
-// kept comfortably under the array bound so quic_open_*_stream never runs dry.
+// H3 per-conn concurrency cap: send_bufs[32] minus the 3 persistent uni
+// streams, kept comfortably under the array bound so quic_open_*_stream never
+// runs dry.
 #define POOL_H3_MAX_CONCURRENT 16
 
 //- forward decls ------------------------------------------------------------
@@ -106,8 +107,8 @@ internal void pool_conn_unref(PoolConn *pc) {
 }
 
 //- error delivery -----------------------------------------------------------
-// Final teardown of a request: disarm its deadline timer (its memory outlives the
-// arena, freed in its own close cb) then free the request's arena.
+// Final teardown of a request: disarm its deadline timer (its memory outlives
+// the arena, freed in its own close cb) then free the request's arena.
 internal void pool_req_done(PoolReq *r) {
   req_timer_disarm(r->timeout);
   r->timeout = 0;
@@ -129,10 +130,10 @@ internal void pool_req_fail(PoolReq *r, const char *err) {
   pool_req_done(r);
 }
 
-// A request whose connection broke before it got a response (stale idle reuse, a
-// GOAWAY-refused stream, a mid-flight close): retry on a fresh connection if the
-// budget allows, else deliver the error. Idempotent-safe because we only retry
-// when no response bytes were delivered (responded==0).
+// A request whose connection broke before it got a response (stale idle reuse,
+// a GOAWAY-refused stream, a mid-flight close): retry on a fresh connection if
+// the budget allows, else deliver the error. Idempotent-safe because we only
+// retry when no response bytes were delivered (responded==0).
 internal void pool_req_retry_or_fail(PoolReq *r, const char *err) {
   if (r->retries_left > 0 && !r->responded) {
     r->retries_left--;
@@ -210,7 +211,8 @@ internal PoolConn *pool_conn_open(ConnPool *p, PoolProto proto, PoolReq *r) {
     quic_on_closed(&pc->h3_conn, pool_h3_on_closed, pc);
     quic_on_recv_done(&pc->h3_conn, pool_h3_recv_done, pc);
     quic_set_dns_cache(&pc->h3_conn, &c->dns_cache);
-    if (c->proxy.type == ProxyType_Socks5)  // pooled H3 also tunnels via SOCKS5 UDP
+    if (c->proxy.type ==
+        ProxyType_Socks5)  // pooled H3 also tunnels via SOCKS5 UDP
       quic_set_proxy(&pc->h3_conn, &c->proxy);
   }
 
@@ -271,8 +273,7 @@ internal void pool_acquire(ConnPool *p, PoolProto proto, PoolReq *r) {
   int origin_count = 0;
   for (int i = 0; i < p->count; ++i) {
     PoolConn *pc = p->conns[i];
-    if (pc->proto != proto || pc->broken ||
-        pc->state == PoolConnState_Closing)
+    if (pc->proto != proto || pc->broken || pc->state == PoolConnState_Closing)
       continue;
     if (!str8_match(r->origin, str8_cstring(pc->origin))) continue;
     origin_count++;
@@ -293,7 +294,8 @@ internal void pool_acquire(ConnPool *p, PoolProto proto, PoolReq *r) {
     pool_waiting_push(handshaking, r);
     return;
   }
-  if (origin_count < (int)c->max_conns_per_origin && p->count < POOL_MAX_CONNS) {
+  if (origin_count < (int)c->max_conns_per_origin &&
+      p->count < POOL_MAX_CONNS) {
     PoolConn *pc = pool_conn_open(p, proto, r);
     if (!pc) {
       pool_req_fail(r, "pool: connection alloc failed");
@@ -400,7 +402,8 @@ internal void pool_after_submit(PoolConn *pc, PoolReq *r) {
 
 internal void pool_h2_submit(PoolConn *pc, PoolReq *r) {
   Client *c = pc->client;
-  // Build the merged request headers (Chrome defaults + caller) once, per submit.
+  // Build the merged request headers (Chrome defaults + caller) once, per
+  // submit.
   r->body = build_request_headers(
       r->arena, c->profile->default_headers, c->profile->default_header_count,
       r->caller_headers, r->caller_header_count, r->caller_body.str,
@@ -419,8 +422,9 @@ internal void pool_h2_submit(PoolConn *pc, PoolReq *r) {
   pool_after_submit(pc, r);
 }
 
-// Submit queued requests while the conn has stream capacity. Called only outside
-// the transport recv (post-drain / post-recv / on-ready), never re-entrantly.
+// Submit queued requests while the conn has stream capacity. Called only
+// outside the transport recv (post-drain / post-recv / on-ready), never
+// re-entrantly.
 internal void pool_flush_waiting(PoolConn *pc) {
   while (pc->waiting_head && pool_conn_has_capacity(pc))
     pool_submit(pc, pool_waiting_pop(pc));
@@ -510,8 +514,9 @@ internal void pool_h2_on_response(void *user, const H2Response *hr) {
   pool_active_remove(pc, r);
   if (pc->inflight > 0) pc->inflight--;
 
-  // A reset/refused stream with no response (e.g. a GOAWAY refusing streams above
-  // last-stream-id): retry on a fresh conn instead of erroring the caller.
+  // A reset/refused stream with no response (e.g. a GOAWAY refusing streams
+  // above last-stream-id): retry on a fresh conn instead of erroring the
+  // caller.
   if (!hr->ok && hr->status == 0 && r->retries_left > 0) {
     pool_req_retry_or_fail(r, "h2 stream reset");
     return;
@@ -532,7 +537,8 @@ internal void pool_h2_on_response(void *user, const H2Response *hr) {
 internal void pool_conn_fail_all(PoolConn *pc, const char *err) {
   if (pc->state == PoolConnState_Closing) return;
   pc->broken = 1;
-  pc->inflight = 0;  // detach all before retrying (retry must not see this conn)
+  pc->inflight =
+      0;  // detach all before retrying (retry must not see this conn)
   PoolReq *active = pc->active_head, *waiting = pc->waiting_head;
   pc->active_head = 0;
   pc->waiting_head = pc->waiting_tail = 0;
@@ -559,8 +565,8 @@ internal void pool_h2_on_closed(void *user, const char *e) {
   pool_conn_fail_all(pc, e ? e : "connection closed");
 }
 
-// inflight==0 -> mark idle + unref (don't hold the loop). broken -> re-route any
-// queued reqs to a healthy conn and close once drained.
+// inflight==0 -> mark idle + unref (don't hold the loop). broken -> re-route
+// any queued reqs to a healthy conn and close once drained.
 internal void pool_update_idle(PoolConn *pc) {
   if (pc->state == PoolConnState_Closing) return;
   if (pc->broken) {
@@ -577,7 +583,8 @@ internal void pool_update_idle(PoolConn *pc) {
     return;
   }
   if (pc->inflight == 0 && pc->state == PoolConnState_Ready && !pc->idle) {
-    pc->idle = 1;  // edge-triggered: set idle_since + unref once per idle period
+    pc->idle =
+        1;  // edge-triggered: set idle_since + unref once per idle period
     pc->idle_since_ms = uv_now(loop_uv(pc->client->loop));
     pool_conn_unref(pc);
   }
@@ -631,10 +638,11 @@ internal void pool_h3_remove_stream(H3Conn *hc, S64 sid) {
     }
 }
 
-// Deadline reached for a pooled request: cancel ONLY this stream (siblings on the
-// shared connection keep running), then free the request. Detach + reset the stream
-// so a late frame can't deref the freed PoolReq. Runs in a timer callback (outside
-// the transport recv), so submitting any freed-up waiters here is safe.
+// Deadline reached for a pooled request: cancel ONLY this stream (siblings on
+// the shared connection keep running), then free the request. Detach + reset
+// the stream so a late frame can't deref the freed PoolReq. Runs in a timer
+// callback (outside the transport recv), so submitting any freed-up waiters
+// here is safe.
 internal void pool_req_timeout(void *user) {
   PoolReq *r = (PoolReq *)user;
   if (r->responded) return;  // already delivered; freed on its own path
@@ -661,7 +669,8 @@ internal void pool_req_timeout(void *user) {
     }
   }
   pool_req_done(r);
-  if (pc && pc->state != PoolConnState_Closing) {  // a slot freed -> progress others
+  if (pc &&
+      pc->state != PoolConnState_Closing) {  // a slot freed -> progress others
     pool_flush_waiting(pc);
     pool_update_idle(pc);
   }
@@ -692,8 +701,8 @@ internal void pool_h3_on_ready(void *user, B32 ok, const char *err) {
   quic_on_stream_close(&pc->h3_conn, pool_h3_on_stream_close, pc);
   pc->state = PoolConnState_Ready;
   // on_ready fires inside ngtcp2 read_pkt (in_recv) -> let pool_h3_recv_done,
-  // which runs right after read_pkt, flush the waiting queue. Only flush here if
-  // somehow outside a recv.
+  // which runs right after read_pkt, flush the waiting queue. Only flush here
+  // if somehow outside a recv.
   if (!pc->h3_conn.in_recv) pool_flush_waiting(pc);
 }
 
@@ -809,9 +818,10 @@ internal void pool_h3_finish(PoolConn *pc, PoolReq *r) {
   pool_active_remove(pc, r);
   if (pc->inflight > 0) pc->inflight--;
 
-  // Parse frames: DATA payloads compacted to the front of h3_in in place (single
-  // contiguous body, no extra buffer); HEADERS decoded via the shared QPACK
-  // decoder + a fresh per-stream context (copy of h3_session.c's finish/decode).
+  // Parse frames: DATA payloads compacted to the front of h3_in in place
+  // (single contiguous body, no extra buffer); HEADERS decoded via the shared
+  // QPACK decoder + a fresh per-stream context (copy of h3_session.c's
+  // finish/decode).
   HeaderList h3_headers;
   header_list_init(&h3_headers, r->arena);
   int status = 0;
@@ -864,7 +874,8 @@ internal void pool_h3_finish(PoolConn *pc, PoolReq *r) {
       }
       nghttp3_qpack_stream_context_del(sctx);
     } else if (type == 0x00) {  // DATA
-      if (base + body_len != payload) MemoryMove(base + body_len, payload, plen);
+      if (base + body_len != payload)
+        MemoryMove(base + body_len, payload, plen);
       body_len += plen;
     }
   }
@@ -895,8 +906,8 @@ internal void pool_h3_on_stream_data(void *user, S64 sid, const U8 *data,
     }
     return;
   }
-  // Server-initiated uni stream: first varint is the type; feed the server QPACK
-  // encoder stream (0x02) into the shared decoder.
+  // Server-initiated uni stream: first varint is the type; feed the server
+  // QPACK encoder stream (0x02) into the shared decoder.
   PoolH3Uni *u = 0;
   for (int i = 0; i < hc->uni_count; ++i)
     if (hc->uni[i].id == sid) {
@@ -936,8 +947,8 @@ internal void pool_h3_on_stream_close(void *user, S64 sid) {
   }
 }
 
-// Post-recv hook (outside ngtcp2 read_pkt): submit requests deferred by response
-// callbacks, then run idle bookkeeping.
+// Post-recv hook (outside ngtcp2 read_pkt): submit requests deferred by
+// response callbacks, then run idle bookkeeping.
 internal void pool_h3_recv_done(void *user) {
   PoolConn *pc = (PoolConn *)user;
   pool_flush_waiting(pc);
@@ -965,8 +976,9 @@ internal void pool_h3_on_fully_closed(void *user) {
 internal void pool_sweep_cb(uv_timer_t *t) {
   ConnPool *p = (ConnPool *)t->data;
   U64 now = uv_now(loop_uv(p->client->loop));
-  U64 idle_to = p->client->pool_idle_timeout_ms ? p->client->pool_idle_timeout_ms
-                                                : POOL_DEFAULT_IDLE_MS;
+  U64 idle_to = p->client->pool_idle_timeout_ms
+                    ? p->client->pool_idle_timeout_ms
+                    : POOL_DEFAULT_IDLE_MS;
   for (int i = 0; i < p->count; ++i) {  // close is async; no removal mid-loop
     PoolConn *pc = p->conns[i];
     if (pc->state == PoolConnState_Closing) continue;
@@ -999,11 +1011,12 @@ void pool_drain(ConnPool *p) {
 
 void pool_free(ConnPool *p) { arena_release(p->arena); }
 
-// Runtime proxy switch: every existing conn was established through the OLD proxy,
-// so stop reusing them. Mark all broken (pool_acquire then skips them, so new
-// requests open fresh conns through the new proxy) in one pass, then close the idle
-// ones; in-flight conns stay broken and close when they drain (the sweep handles
-// broken+idle). The pool + sweep timer stay live, unlike pool_drain.
+// Runtime proxy switch: every existing conn was established through the OLD
+// proxy, so stop reusing them. Mark all broken (pool_acquire then skips them,
+// so new requests open fresh conns through the new proxy) in one pass, then
+// close the idle ones; in-flight conns stay broken and close when they drain
+// (the sweep handles broken+idle). The pool + sweep timer stay live, unlike
+// pool_drain.
 void pool_evict_all(ConnPool *p) {
   for (int i = 0; i < p->count; ++i)
     if (p->conns[i]->state != PoolConnState_Closing) p->conns[i]->broken = 1;

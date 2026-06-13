@@ -75,7 +75,8 @@ U64 quic_varint_get(const U8 *p, U64 len, U64 *consumed) {
 // A single request PRIORITY_UPDATE frame (type + len + varint(stream_id) + the
 // priority field value "u=1, i"). Sent inside the control stream for the first
 // request on a connection and standalone on the open control stream for each
-// later (pooled-reuse) request — so every request carries its own PRIORITY_UPDATE.
+// later (pooled-reuse) request — so every request carries its own
+// PRIORITY_UPDATE.
 String8 build_h3_priority_update(Arena *arena, S64 prioritized_stream_id) {
   U8Buf out;
   u8buf_init(&out, arena, 16);
@@ -171,19 +172,17 @@ String8 h3_text(Arena *arena, String8 control, const Http3Profile *p) {
       str8_list_pushf(scratch.arena, &frames, "%llu", (unsigned long long)type);
     }
   }
-  String8 frames_text =
-      str8_list_join(scratch.arena, &frames, str8_lit("|"));
+  String8 frames_text = str8_list_join(scratch.arena, &frames, str8_lit("|"));
 
   String8List pseudo = {0};
   for (U8 i = 0; i < p->pseudo_count; ++i)
     str8_list_pushf(scratch.arena, &pseudo, "%c",
                     pseudo_char(p->pseudo_order[i]));
-  String8 pseudo_text =
-      str8_list_join(scratch.arena, &pseudo, str8_lit(","));
+  String8 pseudo_text = str8_list_join(scratch.arena, &pseudo, str8_lit(","));
 
-  String8 result = push_str8f(arena, "%.*s|%.*s", (int)frames_text.size,
-                              frames_text.str, (int)pseudo_text.size,
-                              pseudo_text.str);
+  String8 result =
+      push_str8f(arena, "%.*s|%.*s", (int)frames_text.size, frames_text.str,
+                 (int)pseudo_text.size, pseudo_text.str);
   scratch_end(scratch);
   return result;
 }

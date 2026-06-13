@@ -9,8 +9,9 @@
 
 #include "base/base.h"
 
-// Register a decompressor for each advertised alg. Returns the count registered;
-// names of algs whose codec is unavailable are written to skipped[].
+// Register a decompressor for each advertised alg. Returns the count
+// registered; names of algs whose codec is unavailable are written to
+// skipped[].
 int register_cert_decompressors(SSL_CTX *ctx, const U16 *algs, int count,
                                 const char **skipped, int *skipped_n);
 

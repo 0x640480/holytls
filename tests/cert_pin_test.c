@@ -1,14 +1,16 @@
-// Offline certificate-pinning tests: pin add/validation (base64, 32-byte length,
-// table-full), host matching (exact / subdomains / suffix-trick), and the
-// SPKI-SHA256 extraction + match path exercised against a freshly generated
-// self-signed certificate. The live handshake rejection is in cert_pin_live_test.
-#include <stdio.h>
-#include <string.h>
+// Offline certificate-pinning tests: pin add/validation (base64, 32-byte
+// length, table-full), host matching (exact / subdomains / suffix-trick), and
+// the SPKI-SHA256 extraction + match path exercised against a freshly generated
+// self-signed certificate. The live handshake rejection is in
+// cert_pin_live_test.
+#include "tls/cert_pin.h"
 
 #include <openssl/asn1.h>
 #include <openssl/evp.h>
 #include <openssl/nid.h>
 #include <openssl/x509.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "base/arena.h"
 #include "base/base.h"
@@ -17,7 +19,6 @@
 #include "core/client.h"
 #include "net/loop.h"
 #include "profile/profile.h"
-#include "tls/cert_pin.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -70,11 +71,11 @@ internal void test_add_validation(Arena *a) {
   b64_cstr(a, buf32, 32, b32, sizeof b32);
   b64_cstr(a, buf16, 16, b16, sizeof b16);
 
-  CHECK(cert_pin_add(&s, "h.com", b32, 0));               // valid 32-byte pin
-  CHECK(!cert_pin_add(&s, "h.com", b16, 0));              // wrong length (16B)
+  CHECK(cert_pin_add(&s, "h.com", b32, 0));   // valid 32-byte pin
+  CHECK(!cert_pin_add(&s, "h.com", b16, 0));  // wrong length (16B)
   CHECK(!cert_pin_add(&s, "h.com", "not valid base64!", 0));  // bad base64
-  CHECK(!cert_pin_add(&s, 0, b32, 0));                    // null host
-  CHECK(s.count == 1);                                     // only the valid one
+  CHECK(!cert_pin_add(&s, 0, b32, 0));                        // null host
+  CHECK(s.count == 1);  // only the valid one
 
   // Fill to capacity, then reject the overflow.
   CertPinStore full;
@@ -96,15 +97,16 @@ internal void test_host_matching(Arena *a) {
   cert_pin_add(&s, "sub.com", b32, /*subdomains=*/1);
 
   CHECK(cert_pin_host_has(&s, "exact.com"));
-  CHECK(cert_pin_host_has(&s, "EXACT.com"));        // case-insensitive
-  CHECK(!cert_pin_host_has(&s, "a.exact.com"));     // no subdomains for exact.com
+  CHECK(cert_pin_host_has(&s, "EXACT.com"));     // case-insensitive
+  CHECK(!cert_pin_host_has(&s, "a.exact.com"));  // no subdomains for exact.com
   CHECK(!cert_pin_host_has(&s, "other.com"));
 
-  CHECK(cert_pin_host_has(&s, "sub.com"));          // the apex
-  CHECK(cert_pin_host_has(&s, "a.sub.com"));        // a subdomain
-  CHECK(cert_pin_host_has(&s, "b.a.sub.com"));      // a deeper subdomain
-  CHECK(!cert_pin_host_has(&s, "notsub.com"));      // suffix but not a label
-  CHECK(!cert_pin_host_has(&s, "sub.com.evil.com")); // sub.com is not a suffix here
+  CHECK(cert_pin_host_has(&s, "sub.com"));      // the apex
+  CHECK(cert_pin_host_has(&s, "a.sub.com"));    // a subdomain
+  CHECK(cert_pin_host_has(&s, "b.a.sub.com"));  // a deeper subdomain
+  CHECK(!cert_pin_host_has(&s, "notsub.com"));  // suffix but not a label
+  CHECK(!cert_pin_host_has(
+      &s, "sub.com.evil.com"));  // sub.com is not a suffix here
 }
 
 internal void test_spki_extract_and_match(Arena *a) {
@@ -123,13 +125,13 @@ internal void test_spki_extract_and_match(Arena *a) {
   CertPinStore s;
   MemoryZeroStruct(&s);
   CHECK(cert_pin_add(&s, "pinned.com", b64, 0));
-  CHECK(cert_pin_match(&s, "pinned.com", spki));     // the real pin matches
-  CHECK(!cert_pin_match(&s, "other.com", spki));     // wrong host
+  CHECK(cert_pin_match(&s, "pinned.com", spki));  // the real pin matches
+  CHECK(!cert_pin_match(&s, "other.com", spki));  // wrong host
 
   U8 wrong[32];
   MemoryCopy(wrong, spki, 32);
-  wrong[0] ^= 0xff;                                   // one flipped byte
-  CHECK(!cert_pin_match(&s, "pinned.com", wrong));    // mismatch is rejected
+  wrong[0] ^= 0xff;                                 // one flipped byte
+  CHECK(!cert_pin_match(&s, "pinned.com", wrong));  // mismatch is rejected
 
   // A second, different key yields a different SPKI hash.
   X509 *cert2 = gen_self_signed();
@@ -155,7 +157,7 @@ internal void test_client_api(Arena *a) {
   client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
   CHECK(client_ok(&c));
 
-  CHECK(client_pin_certificate(&c, "api.example.com", b32, 0));   // ok
+  CHECK(client_pin_certificate(&c, "api.example.com", b32, 0));      // ok
   CHECK(!client_pin_certificate(&c, "api.example.com", "bad!", 0));  // bad b64
   CHECK(c.pin_store.count == 1);
   CHECK(cert_pin_host_has(&c.pin_store, "api.example.com"));
@@ -171,6 +173,7 @@ int main(void) {
   test_spki_extract_and_match(a);
   test_client_api(a);
   arena_release(a);
-  fprintf(stderr, "[cert_pin_test] %d checks, %d failures\n", g_checks, g_fails);
+  fprintf(stderr, "[cert_pin_test] %d checks, %d failures\n", g_checks,
+          g_fails);
   return g_fails ? 1 : 0;
 }

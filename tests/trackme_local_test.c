@@ -1,7 +1,7 @@
-// Local cross-check against a SELF-HOSTED TrackMe (the open-source backend behind
-// tls.peet.ws). It parses the raw ClientHello + H2 frames with an INDEPENDENT
-// implementation, so matching it corroborates our Chrome-148 + wreq-template
-// fingerprints — not just an echo of browserleaks.
+// Local cross-check against a SELF-HOSTED TrackMe (the open-source backend
+// behind tls.peet.ws). It parses the raw ClientHello + H2 frames with an
+// INDEPENDENT implementation, so matching it corroborates our Chrome-148 +
+// wreq-template fingerprints — not just an echo of browserleaks.
 //
 // Setup: run a patched self-hosted TrackMe server on 127.0.0.1:8443, then
 //   HOLYTLS_TRACKME=1 ./build/trackme_local_test

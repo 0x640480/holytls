@@ -1,1 +1,5 @@
 BasedOnStyle: Google
+# House style is right-aligned pointers (`T *p`), not Google's default `T* p`.
+# DerivePointerAlignment must be off, or Google's preset re-infers it per file.
+PointerAlignment: Right
+DerivePointerAlignment: false

@@ -1,14 +1,15 @@
-// Base-layer test: arena (push / alignment / pos-pop reuse / oversize / scratch)
-// and String8 (copy / cat / match / join / cstr / printf).
-#include "base/arena.h"
+// Base-layer test: arena (push / alignment / pos-pop reuse / oversize /
+// scratch) and String8 (copy / cat / match / join / cstr / printf).
 #include "base/base.h"
+
+#include "base/arena.h"
 #include "base/string8.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
-#define CHECK(c)                                                  \
-  Statement(g_checks += 1; if (!(c)) {                            \
-    g_fails += 1;                                                 \
+#define CHECK(c)                                                   \
+  Statement(g_checks += 1; if (!(c)) {                             \
+    g_fails += 1;                                                  \
     fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
   })
 
@@ -57,7 +58,8 @@ int main(void) {
   CHECK(empty.size == 0 && empty.str != 0);  // non-null zero-length
   CHECK(str8_match_ci(str8_lit("ABC"), str8_lit("abc")));
   CHECK(!str8_match(str8_lit("ABC"), str8_lit("abc")));
-  CHECK(str8_starts_with(str8_lit("application/json"), str8_lit("application/")));
+  CHECK(
+      str8_starts_with(str8_lit("application/json"), str8_lit("application/")));
   char *c = push_str8_cstr(a, str8_lit("h2"));
   CHECK(strcmp(c, "h2") == 0);
 

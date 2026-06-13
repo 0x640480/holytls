@@ -1,8 +1,8 @@
 // Offline session-serialization tests: base64 round-trip, and a full
 // marshal -> unmarshal of the transport caches (Alt-Svc, ECH) + cookie jar into
-// fresh Client/Session objects, asserting field-level fidelity, TTL rebasing, and
-// version gating. TLS-ticket round-trip needs a real handshake and is covered by
-// session_persist_live_test.
+// fresh Client/Session objects, asserting field-level fidelity, TTL rebasing,
+// and version gating. TLS-ticket round-trip needs a real handshake and is
+// covered by session_persist_live_test.
 #include <stdio.h>
 #include <string.h>
 #include <uv.h>
@@ -62,8 +62,8 @@ internal void test_round_trip(Arena *a) {
   session_init(&s, 0);
   cookie_jar_store(&s.jar, U("https://h.com/"),
                    str8_lit("sid=abc; Path=/; Secure"), 1000);
-  cookie_jar_store(&s.jar, U("https://h.com/a/b"), str8_lit("deep=2; Path=/a/b"),
-                   1000);
+  cookie_jar_store(&s.jar, U("https://h.com/a/b"),
+                   str8_lit("deep=2; Path=/a/b"), 1000);
   cookie_jar_store(&s.jar, U("https://h.com/"), str8_lit("dom=x; Domain=h.com"),
                    1000);
 
@@ -100,7 +100,8 @@ internal void test_round_trip(Arena *a) {
   CHECK(found_neg);
 
   // Cookies survived (Secure cookie over https; Domain + Path scoping).
-  String8 hdr = cookie_jar_cookie_header(&s2.jar, a, U("https://h.com/a/b/c"), 1000);
+  String8 hdr =
+      cookie_jar_cookie_header(&s2.jar, a, U("https://h.com/a/b/c"), 1000);
   CHECK(has(hdr, "sid=abc"));
   CHECK(has(hdr, "deep=2"));
   CHECK(has(hdr, "dom=x"));

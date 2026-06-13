@@ -1,14 +1,16 @@
-// Offline gate for the yyjson wrapper (src/core/json): arena-backed parse + String8
-// field access (object key + JSON pointer), the one-shot copy-out helper, edge cases
-// (missing key, non-string field, malformed input, non-NUL-terminated buffer), and a
-// build->serialize->reparse round-trip for the writer side.
+// Offline gate for the yyjson wrapper (src/core/json): arena-backed parse +
+// String8 field access (object key + JSON pointer), the one-shot copy-out
+// helper, edge cases (missing key, non-string field, malformed input,
+// non-NUL-terminated buffer), and a build->serialize->reparse round-trip for
+// the writer side.
+#include "core/json.h"
+
 #include <stdio.h>
 #include <string.h>
 
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/string8.h"
-#include "core/json.h"
 
 global int g_checks = 0;
 global int g_fails = 0;
@@ -22,10 +24,12 @@ internal void test_parse(Arena *a) {
   // A browserleaks-shaped body, deliberately NOT NUL-terminated: embed it in a
   // larger buffer and hand json_parse only the JSON slice.
   char buf[256];
-  const char *json = "{\"ja4\":\"t13d1516h2\",\"n\":5,\"nested\":{\"k\":\"v\"},"
-                     "\"empty\":\"\",\"num_field\":42}TRAILINGGARBAGE";
+  const char *json =
+      "{\"ja4\":\"t13d1516h2\",\"n\":5,\"nested\":{\"k\":\"v\"},"
+      "\"empty\":\"\",\"num_field\":42}TRAILINGGARBAGE";
   U64 jlen = (U64)(strstr(json, "TRAILING") - json);
-  MemoryCopy(buf, json, (U64)strlen(json));  // buf is not NUL-terminated at jlen
+  MemoryCopy(buf, json,
+             (U64)strlen(json));  // buf is not NUL-terminated at jlen
   String8 body = str8((U8 *)buf, jlen);
 
   yyjson_doc *doc = json_parse(a, body);
@@ -34,7 +38,8 @@ internal void test_parse(Arena *a) {
   CHECK(str8_match(json_obj_str(root, "ja4"), str8_lit("t13d1516h2")));
   // Nested via JSON pointer.
   CHECK(str8_match(json_ptr_str(doc, "/nested/k"), str8_lit("v")));
-  // Empty-string field is a string (distinct from missing): str.str != 0, size 0.
+  // Empty-string field is a string (distinct from missing): str.str != 0, size
+  // 0.
   String8 empty = json_obj_str(root, "empty");
   CHECK(empty.str != 0 && empty.size == 0);
   // Missing key / non-string field -> {0,0}.
