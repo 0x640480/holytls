@@ -45,6 +45,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+          cache: false  # no Go modules here — Go only builds BoringSSL
 
       # ccache turns the heavy dep build (BoringSSL, ngtcp2, nghttp2, ...) into a
       # cache hit after the first run. Fresh key per run; restore the most recent.
