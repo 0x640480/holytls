@@ -236,6 +236,6 @@ Chrome 149 fingerprints above. See [`examples/powhttp_proxy.c`](examples/powhttp
 
 ## Code style
 
-If you're extending holytls or building on it, [`CLAUDE.md`](CLAUDE.md) is the house
-style guide — arena allocation, length-carrying `String8`, plain structs + free
-functions, the callback model.
+holytls is plain C — arena allocation, length-carrying `String8`, plain structs +
+free functions, and a callback-driven libuv event loop. When extending it, match the
+structure, naming, and comment density of the surrounding subsystem.

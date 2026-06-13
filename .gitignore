@@ -13,6 +13,7 @@ NOTES.md
 *.key
 .vscode/
 .claude/
+CLAUDE.md
 
 # Local proxy credentials (sensitive — never commit)
 proxies.txt
