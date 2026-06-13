@@ -67,8 +67,19 @@ internal ArenaBlock *arena_block_new(U64 cap, U64 base_pos) {
   b->cap = cap;
   b->used = 0;
   b->base_pos = base_pos;
+  // gcc -Wmaybe-uninitialized false-positives here: it sees a pointer into the
+  // freshly malloc'd (uninitialized) payload handed to
+  // __asan_poison_memory_region, but poisoning only marks shadow — it never
+  // reads the bytes. Silence just this.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
   ArenaPoison((U8 *)(b + 1),
               cap);  // free space starts poisoned; push unpoisons
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 #ifdef HOLYTLS_ARENA_STATS
   arena_stat_block(cap);
 #endif
