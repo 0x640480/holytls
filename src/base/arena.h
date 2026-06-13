@@ -25,7 +25,8 @@ typedef struct Arena Arena;
 struct Arena {
   ArenaBlock *first;
   ArenaBlock *current;
-  U64 block_size;  // default block payload size
+  U64 block_size;       // default block payload size
+  Arena *recycle_next;  // intrusive link for the thread-local recycle free-list
 };
 
 typedef struct Temp Temp;
@@ -38,6 +39,14 @@ struct Temp {
 Arena *arena_alloc(void);
 Arena *arena_alloc_sized(U64 block_size);
 void arena_release(Arena *arena);
+
+//- thread-local recycle pool (for hot, short-lived per-request arenas). acquire()
+//  hands back a cleared, ready-to-use arena — popping the free-list, else
+//  arena_alloc'ing; recycle() returns one to the pool (clearing it) instead of
+//  freeing, so the next acquire() skips the malloc. Single loop thread => no lock.
+//  An arena that grew past its first block is released, not pooled (see arena.c).
+Arena *arena_acquire(void);
+void arena_recycle(Arena *arena);
 
 //- allocation
 void *arena_push(Arena *arena, U64 size, U64 align);

@@ -22,6 +22,7 @@ option(HOLYTLS_ASAN "Build with Address/UB sanitizers" OFF)
 option(HOLYTLS_ARENA_STATS "Compile in arena allocation counters (for benchmarks)" OFF)
 option(HOLYTLS_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(HOLYTLS_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
+option(HOLYTLS_BENCH_WRAP "Link bench_arena with --wrap malloc/free counting shims" OFF)
 
 set(HOLYTLS_WARN -Wall -Wextra -Wpedantic -Wshadow)
 
@@ -309,4 +310,19 @@ target_compile_options(google_fidelity PRIVATE ${HOLYTLS_WARN})
 add_executable(powhttp_proxy examples/powhttp_proxy.c)
 target_link_libraries(powhttp_proxy PRIVATE holytls)
 target_compile_options(powhttp_proxy PRIVATE ${HOLYTLS_WARN})
+
+# Benchmark: per-request arena churn + the throughput it costs, over the shared
+# in-process loopback origin (tests/support). Run manually; NOT a ctest. Build
+# with -DHOLYTLS_ARENA_STATS=ON for the arena deltas; -DHOLYTLS_BENCH_WRAP=ON adds
+# --wrap malloc/free attribution. The tests/ dir is on the include path so the
+# shared "support/loopback_server.h" helper resolves (mirrors holytls_test).
+add_executable(bench_arena examples/bench_arena.c tests/support/loopback_server.c)
+target_link_libraries(bench_arena PRIVATE holytls)
+target_include_directories(bench_arena PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+target_compile_options(bench_arena PRIVATE ${HOLYTLS_WARN})
+if(HOLYTLS_BENCH_WRAP)
+  target_compile_definitions(bench_arena PRIVATE HOLYTLS_BENCH_WRAP)
+  target_link_options(bench_arena PRIVATE
+    -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+endif()
 endif()  # HOLYTLS_BUILD_EXAMPLES

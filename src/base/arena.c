@@ -53,6 +53,7 @@ Arena *arena_alloc_sized(U64 block_size) {
   if (!a) Fatal("arena out of memory");
   a->first = a->current = arena_block_new(block_size, 0);
   a->block_size = block_size;
+  a->recycle_next = 0;
 #ifdef HOLYTLS_ARENA_STATS
   arena_stat_create();
 #endif
@@ -153,4 +154,37 @@ Temp scratch_begin(Arena **conflicts, U64 conflict_count) {
     if (!conflict) return temp_begin(g_scratch[i]);
   }
   return temp_begin(g_scratch[0]);
+}
+
+//- thread-local arena recycle pool
+// Mirrors g_scratch: a thread_local free-list head, never torn down (every pooled
+// arena stays reachable through it, so LSAN sees still-reachable, not leaked).
+#define ARENA_RECYCLE_MAX 64  // cap free-list depth; beyond it, release
+
+global thread_local Arena *g_recycle_head;
+global thread_local U32 g_recycle_count;
+
+Arena *arena_acquire(void) {
+  Arena *a = g_recycle_head;
+  if (a) {
+    g_recycle_head = a->recycle_next;
+    a->recycle_next = 0;
+    g_recycle_count--;
+    return a;  // already cleared at recycle time; first block's used == 0
+  }
+  return arena_alloc();
+}
+
+void arena_recycle(Arena *arena) {
+  if (!arena) return;
+  // arena_clear keeps ALL blocks, so pooling an arena that grew past its first
+  // block would retain that bloat forever — release those instead. Also cap depth.
+  if (arena->first->next != 0 || g_recycle_count >= ARENA_RECYCLE_MAX) {
+    arena_release(arena);
+    return;
+  }
+  arena_clear(arena);
+  arena->recycle_next = g_recycle_head;
+  g_recycle_head = arena;
+  g_recycle_count++;
 }

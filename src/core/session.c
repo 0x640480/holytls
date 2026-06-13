@@ -128,13 +128,13 @@ internal void session_hop_cb(void *user, const Response *r) {
     rc.timing.total_ms = (uv_hrtime() - req->chain_start_ns) / 1000000;
     req->user_cb(req->user, &rc);
   }
-  arena_release(req->arena);
+  arena_recycle(req->arena);  // terminal hop: clear + return to the pool
 }
 
 void session_request(Session *s, Client *client, Method m, String8 url,
                      const Header *headers, U64 header_count, const U8 *body,
                      U64 body_len, ResponseFn cb, void *user) {
-  Arena *a = arena_alloc();
+  Arena *a = arena_acquire();
   SessionReq *req = push_struct(a, SessionReq);
   req->arena = a;
   req->session = s;
@@ -164,11 +164,11 @@ void session_get(Session *s, Client *client, String8 url, ResponseFn cb,
 void session_fetch(Session *s, Client *client, FetchMode mode, Method m,
                    String8 url, const Header *headers, U64 header_count,
                    const U8 *body, U64 body_len, ResponseFn cb, void *user) {
-  Arena *a = arena_alloc();
+  Arena *a = arena_acquire();
   HeaderList merged;
   header_list_init(&merged, a);
   sec_fetch_merge(&merged, mode, url, headers, header_count);
   session_request(s, client, m, url, merged.v, merged.count, body, body_len, cb,
                   user);
-  arena_release(a);  // copied synchronously by session_request (-> SessionReq arena)
+  arena_recycle(a);  // copied synchronously by session_request (-> SessionReq arena)
 }

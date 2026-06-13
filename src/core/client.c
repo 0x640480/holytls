@@ -596,8 +596,8 @@ internal void h2req_on_fully_closed(void *user) {
     h2req_connect(req, /*allow_early=*/0);  // keep the timer armed (same deadline)
     return;
   }
-  req_timer_disarm(req->timeout);  // before the arena holding `req` is freed
-  arena_release(req->arena);       // frees req itself
+  req_timer_disarm(req->timeout);  // before the arena holding `req` is recycled
+  arena_recycle(req->arena);       // clear + return to the pool (was: release)
 }
 
 // Open the connection for this request and (re)wire its callbacks + per-conn TLS
@@ -637,7 +637,7 @@ internal void h2req_connect(H2Request *req, B32 allow_early) {
 internal void h2req_start(Client *c, Method m, String8 url, const Header *headers,
                           U64 header_count, const U8 *body, U64 body_len,
                           ResponseFn cb, void *user, U64 deadline_ns) {
-  Arena *arena = arena_alloc();
+  Arena *arena = arena_acquire();
   H2Request *req = push_array(arena, H2Request, 1);
   req->arena = arena;
   req->client = c;
@@ -658,7 +658,7 @@ internal void h2req_start(Client *c, Method m, String8 url, const Header *header
     client_cb_enter(c);
     if (cb) cb(user, &resp);
     client_cb_exit(c);
-    arena_release(arena);
+    arena_recycle(arena);
     return;
   }
   req->scheme = pu.scheme;
@@ -849,8 +849,8 @@ internal void quicreq_on_fully_closed(void *user) {
     quicreq_connect(req, /*allow_early=*/0);  // keep the timer armed (same deadline)
     return;
   }
-  req_timer_disarm(req->timeout);  // before the arena holding `req` is freed
-  arena_release(req->arena);
+  req_timer_disarm(req->timeout);  // before the arena holding `req` is recycled
+  arena_recycle(req->arena);       // clear + return to the pool (was: release)
 }
 
 // Open the QUIC connection for this request + (re)wire callbacks / TLS options.
@@ -893,7 +893,7 @@ internal void quicreq_start(Client *c, Method m, String8 url,
                             const Header *headers, U64 header_count,
                             const U8 *body, U64 body_len, ResponseFn cb,
                             void *user, U64 deadline_ns) {
-  Arena *arena = arena_alloc();
+  Arena *arena = arena_acquire();
   QuicRequest *req = push_array(arena, QuicRequest, 1);
   req->arena = arena;
   req->client = c;
@@ -914,7 +914,7 @@ internal void quicreq_start(Client *c, Method m, String8 url,
     client_cb_enter(c);
     if (cb) cb(user, &resp);
     client_cb_exit(c);
-    arena_release(arena);
+    arena_recycle(arena);
     return;
   }
   req->authority = pu.authority;

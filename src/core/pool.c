@@ -111,7 +111,7 @@ internal void pool_conn_unref(PoolConn *pc) {
 internal void pool_req_done(PoolReq *r) {
   req_timer_disarm(r->timeout);
   r->timeout = 0;
-  arena_release(r->arena);
+  arena_recycle(r->arena);  // recycle the per-request arena (clear + reuse)
 }
 internal void pool_req_deliver_error(PoolReq *r, const char *err) {
   if (r->responded) return;
@@ -314,7 +314,7 @@ internal void pool_acquire(ConnPool *p, PoolProto proto, PoolReq *r) {
 void pool_dispatch(Client *c, PoolProto proto, Method m, String8 url,
                    const Header *headers, U64 header_count, const U8 *body,
                    U64 body_len, ResponseFn cb, void *user, U64 deadline_ns) {
-  Arena *a = arena_alloc();
+  Arena *a = arena_acquire();
   PoolReq *r = push_struct(a, PoolReq);
   r->arena = a;
   r->client = c;
@@ -336,7 +336,7 @@ void pool_dispatch(Client *c, PoolProto proto, Method m, String8 url,
     client_cb_enter(c);
     if (cb) cb(user, &resp);
     client_cb_exit(c);
-    arena_release(a);
+    arena_recycle(a);
     return;
   }
   r->scheme = pu.scheme;
