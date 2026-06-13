@@ -1,0 +1,1 @@
+{"version":1,"tls_sessions":[{"origin":"https://z.com","ticket":"!!!not_base64!!!"}],"ech":[{"origin":"https://z.com","config":"@@@@","ttl_ms":100}]}

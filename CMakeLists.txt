@@ -332,7 +332,7 @@ endif()  # HOLYTLS_BUILD_EXAMPLES
 #   harnesses compile and don't crash on known inputs (ASan-checked in the
 #   sanitizer build). The repo root is on the include path for "fuzz/fuzz.h".
 # ---------------------------------------------------------------------------
-set(HOLYTLS_FUZZ_TARGETS url alt_svc base64 cookie decompress persist)
+set(HOLYTLS_FUZZ_TARGETS url alt_svc base64 cookie decompress persist persist_client)
 if(HOLYTLS_FUZZ)
   foreach(t ${HOLYTLS_FUZZ_TARGETS})
     add_executable(fuzz_${t} fuzz/fuzz_${t}.c)

@@ -61,7 +61,7 @@ jobs:
         run: |
           secs="${{ github.event.inputs.seconds || 120 }}"
           fail=0
-          for t in url alt_svc base64 cookie decompress persist; do
+          for t in url alt_svc base64 cookie decompress persist persist_client; do
             echo "::group::fuzz_$t (${secs}s)"
             ./build-fuzz/fuzz_$t fuzz/corpus/$t \
               -max_total_time="$secs" -rss_limit_mb=2048 -timeout=15 \

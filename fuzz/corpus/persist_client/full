@@ -1,0 +1,1 @@
+{"version":1,"tls_sessions":[{"origin":"https://example.com","ticket":"BAUGBwgJ","zrtt_tp":"AAECAwQ="}],"alt_svc":[{"origin":"https://example.com","h3":true,"ttl_ms":3600000}],"ech":[{"origin":"https://example.com","config":"AED+DQBA","ttl_ms":3600000}],"cookies":[]}

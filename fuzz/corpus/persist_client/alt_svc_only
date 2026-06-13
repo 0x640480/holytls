@@ -1,0 +1,1 @@
+{"version":1,"alt_svc":[{"origin":"https://a.com","h3":true,"ttl_ms":86400000},{"origin":"https://b.com","h3":false,"ttl_ms":0}]}
