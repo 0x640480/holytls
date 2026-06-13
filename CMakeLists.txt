@@ -22,6 +22,7 @@ option(HOLYTLS_ASAN "Build with Address/UB sanitizers" OFF)
 option(HOLYTLS_ARENA_STATS "Compile in arena allocation counters (for benchmarks)" OFF)
 option(HOLYTLS_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(HOLYTLS_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
+option(HOLYTLS_FUZZ "Build coverage-guided libFuzzer harnesses (clang only)" OFF)
 
 set(HOLYTLS_WARN -Wall -Wextra -Wpedantic -Wshadow)
 
@@ -205,6 +206,18 @@ if(HOLYTLS_ASAN)
   target_link_options(holytls PUBLIC -fsanitize=address,undefined)
 endif()
 
+# Fuzzing: instrument the library for libFuzzer coverage + ASan/UBSan so the
+# harnesses (below) catch the bugs the inputs trigger. Implies sanitizers, so
+# don't combine with -DHOLYTLS_ASAN=ON (would double the flags).
+if(HOLYTLS_FUZZ)
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "HOLYTLS_FUZZ requires Clang for libFuzzer (-fsanitize=fuzzer)")
+  endif()
+  target_compile_options(holytls PUBLIC
+    -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer)
+  target_link_options(holytls PUBLIC -fsanitize=address,undefined)
+endif()
+
 # Arena allocation counters — PUBLIC so targets linking holytls (the benchmark)
 # also see the define for arena_stats(). Off by default = zero hot-path overhead.
 if(HOLYTLS_ARENA_STATS)
@@ -310,3 +323,32 @@ add_executable(powhttp_proxy examples/powhttp_proxy.c)
 target_link_libraries(powhttp_proxy PRIVATE holytls)
 target_compile_options(powhttp_proxy PRIVATE ${HOLYTLS_WARN})
 endif()  # HOLYTLS_BUILD_EXAMPLES
+
+# ---------------------------------------------------------------------------
+# Fuzz harnesses (fuzz/). Each target consumes attacker-controlled bytes:
+#   -DHOLYTLS_FUZZ=ON (clang): real coverage-guided libFuzzer binaries.
+#   else, under HOLYTLS_BUILD_TESTS: standalone replay binaries (any compiler)
+#   that run their seed corpus as a ctest — a cheap per-push check that the
+#   harnesses compile and don't crash on known inputs (ASan-checked in the
+#   sanitizer build). The repo root is on the include path for "fuzz/fuzz.h".
+# ---------------------------------------------------------------------------
+set(HOLYTLS_FUZZ_TARGETS url alt_svc base64 cookie decompress persist)
+if(HOLYTLS_FUZZ)
+  foreach(t ${HOLYTLS_FUZZ_TARGETS})
+    add_executable(fuzz_${t} fuzz/fuzz_${t}.c)
+    target_link_libraries(fuzz_${t} PRIVATE holytls)
+    target_include_directories(fuzz_${t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_options(fuzz_${t} PRIVATE
+      -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer ${HOLYTLS_WARN})
+    target_link_options(fuzz_${t} PRIVATE -fsanitize=fuzzer,address,undefined)
+  endforeach()
+elseif(HOLYTLS_BUILD_TESTS)
+  foreach(t ${HOLYTLS_FUZZ_TARGETS})
+    add_executable(fuzz_${t} fuzz/fuzz_${t}.c fuzz/standalone.c)
+    target_link_libraries(fuzz_${t} PRIVATE holytls)
+    target_include_directories(fuzz_${t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_options(fuzz_${t} PRIVATE ${HOLYTLS_WARN})
+    file(GLOB _seeds ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/${t}/*)
+    add_test(NAME fuzz_${t}_seeds COMMAND fuzz_${t} ${_seeds})
+  endforeach()
+endif()

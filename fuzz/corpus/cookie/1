@@ -1,0 +1,1 @@
+name=value; Domain=example.com; Path=/; Secure; HttpOnly; SameSite=Lax
