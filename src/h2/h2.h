@@ -23,6 +23,10 @@ struct H2Response {
 
 typedef void (*H2SendFn)(void *user, const U8 *data, U64 len);
 typedef void (*H2RespFn)(void *user, const H2Response *resp);
+// Streaming response sink: invoked with DECODED body chunks as DATA frames
+// arrive (Content-Encoding stripped), instead of buffering. When set on a
+// submit, the delivered H2Response carries an empty body.
+typedef void (*H2ChunkFn)(void *user, const U8 *data, U64 len);
 
 typedef struct H2Session H2Session;
 
@@ -40,12 +44,15 @@ B32 h2_session_flush(H2Session *s);
 
 // Submit a request. Pseudo-headers go first in the profile's order, then
 // `headers` in array order. `body` (may be empty) is copied + streamed as DATA.
-// Returns the stream id (>=0) or a negative nghttp2 error.
+// Returns the stream id (>=0) or a negative nghttp2 error. When `on_chunk` is
+// non-null the response body is STREAMED (decoded chunks delivered to
+// `on_chunk(chunk_user, ...)` as they arrive) rather than buffered, and the
+// final H2Response body is empty; pass 0,0 for the normal buffered path.
 S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
                               String8 authority, String8 path,
                               const Header *headers, U64 header_count,
                               const U8 *body, U64 body_len, H2RespFn cb,
-                              void *user);
+                              void *user, H2ChunkFn on_chunk, void *chunk_user);
 
 // Cancel an in-flight request stream (RST_STREAM, CANCEL): the server stops
 // sending and the stream's response callback will NOT fire (its user data is

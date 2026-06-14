@@ -204,7 +204,8 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                                     const Header *headers, U64 header_count,
                                     const U8 *body, U64 body_len, ResponseFn cb,
                                     void *user, U64 deadline_ns,
-                                    const ProxyConfig *proxy);
+                                    const ProxyConfig *proxy,
+                                    BodyChunkFn on_chunk, void *chunk_user);
 
 // Build the ordered request headers (+ default accept-encoding /
 // content-length) for a request into `out` (initialised on `arena`). Returns
@@ -357,6 +358,8 @@ struct H2Request {
   B32 retried_no_early;  // already retried once without 0-RTT (one-shot guard)
   ReqTimer *timeout;     // whole-operation deadline timer (0 = no timeout)
   ProxyConfig proxy;     // resolved proxy for this request (type None = direct)
+  BodyChunkFn on_chunk;  // streaming sink (0 = buffer); set => empty Response body
+  void *chunk_user;
 };
 
 internal void h2req_deliver_error(H2Request *req, const char *err);
@@ -454,6 +457,14 @@ internal void tcp_deliver(H2Request *req, int status, HeaderList *headers,
                  &resp.timing.tcp_ms, &resp.timing.tls_ms);
   resp.timing.total_ms = (uv_hrtime() - req->t_start_ns) / 1000000;
   response_decode_encoding(req->arena, &resp, &req->resp_headers);
+  // Streaming: an H2-streamed body already left via on_chunk (empty here, so
+  // this no-ops); an H1 body is buffered, so hand it over as one chunk. Either
+  // way the final Response carries no body.
+  if (req->on_chunk && resp.body_len > 0) {
+    req->on_chunk(req->chunk_user, resp.body, resp.body_len);
+    resp.body = 0;
+    resp.body_len = 0;
+  }
   client_run_post_hook(req->client, &resp);
   client_cb_enter(req->client);
   if (req->cb) req->cb(req->user, &resp);
@@ -489,7 +500,7 @@ internal B32 h2req_send_request(H2Request *req) {
     S32 sid = h2_session_submit_request(
         req->h2, req->method, req->scheme, req->authority, req->path,
         req->req_headers.v, req->req_headers.count, req->body.str,
-        req->body.size, h2req_on_response, req);
+        req->body.size, h2req_on_response, req, req->on_chunk, req->chunk_user);
     if (sid < 0) {
       h2req_deliver_error(req, "submit failed");
       h2req_finish(req);
@@ -667,7 +678,8 @@ internal void h2req_start(Client *c, Method m, String8 url,
                           const Header *headers, U64 header_count,
                           const U8 *body, U64 body_len, ResponseFn cb,
                           void *user, U64 deadline_ns,
-                          const ProxyConfig *proxy) {
+                          const ProxyConfig *proxy, BodyChunkFn on_chunk,
+                          void *chunk_user) {
   Arena *arena = arena_acquire();
   H2Request *req = push_array(arena, H2Request, 1);
   req->arena = arena;
@@ -675,6 +687,8 @@ internal void h2req_start(Client *c, Method m, String8 url,
   req->cb = cb;
   req->user = user;
   req->proxy = proxy ? *proxy : c->proxy;  // resolved proxy (None = direct)
+  req->on_chunk = on_chunk;  // streaming sink (0 = buffer)
+  req->chunk_user = chunk_user;
   req->t_start_ns = uv_hrtime();
   req->method = method_str(m);
   req->idempotent = (m == Method_GET || m == Method_HEAD);
@@ -741,6 +755,8 @@ struct QuicRequest {
   B32 retried_no_early;  // already retried once without 0-RTT (one-shot guard)
   ReqTimer *timeout;     // whole-operation deadline timer (0 = no timeout)
   ProxyConfig proxy;     // resolved proxy for this request (type None = direct)
+  BodyChunkFn on_chunk;  // streaming sink (0 = buffer); set => empty Response body
+  void *chunk_user;
 };
 
 internal void quicreq_deliver_error(QuicRequest *req, const char *err);
@@ -777,6 +793,13 @@ internal void quicreq_on_response(void *user, const H3Response *r) {
                       &resp.timing.tcp_ms, &resp.timing.tls_ms);
   resp.timing.total_ms = (uv_hrtime() - req->t_start_ns) / 1000000;
   response_decode_encoding(req->arena, &resp, &req->resp_headers);
+  // Streaming fallback for H3 (buffered, not memory-bounded in v1): hand the
+  // decoded body over as a single chunk; the final Response carries no body.
+  if (req->on_chunk && resp.body_len > 0) {
+    req->on_chunk(req->chunk_user, resp.body, resp.body_len);
+    resp.body = 0;
+    resp.body_len = 0;
+  }
   client_run_post_hook(req->client, &resp);
   client_cb_enter(req->client);
   if (req->cb) req->cb(req->user, &resp);
@@ -927,13 +950,16 @@ internal void quicreq_start(Client *c, Method m, String8 url,
                             const Header *headers, U64 header_count,
                             const U8 *body, U64 body_len, ResponseFn cb,
                             void *user, U64 deadline_ns,
-                            const ProxyConfig *proxy) {
+                            const ProxyConfig *proxy, BodyChunkFn on_chunk,
+                            void *chunk_user) {
   Arena *arena = arena_acquire();
   QuicRequest *req = push_array(arena, QuicRequest, 1);
   req->arena = arena;
   req->client = c;
   req->cb = cb;
   req->user = user;
+  req->on_chunk = on_chunk;  // streaming sink (0 = buffer)
+  req->chunk_user = chunk_user;
   req->proxy = proxy ? *proxy : c->proxy;  // resolved proxy (None = direct)
   req->t_start_ns = uv_hrtime();
   req->method = m;
@@ -1074,7 +1100,8 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                                     const Header *headers, U64 header_count,
                                     const U8 *body, U64 body_len, ResponseFn cb,
                                     void *user, U64 deadline_ns,
-                                    const ProxyConfig *proxy) {
+                                    const ProxyConfig *proxy,
+                                    BodyChunkFn on_chunk, void *chunk_user) {
   if (!client_ok(c)) {
     Response r;
     MemoryZeroStruct(&r);
@@ -1089,7 +1116,9 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
   // (`proxy`) if given, else the client's single proxy. Rotation/override forces
   // the per-request transport path (pooling would defeat the rotation).
   const ProxyConfig *px = proxy ? proxy : &c->proxy;
-  B32 use_pool = c->pool && c->max_conns_per_origin && !proxy;
+  // Streaming and rotation/override both take the non-pooled per-request path
+  // (the pool buffers + would defeat both).
+  B32 use_pool = c->pool && c->max_conns_per_origin && !proxy && !on_chunk;
 
   // HTTP/HTTPS CONNECT proxies are TCP-only, so H3 can't tunnel through them. A
   // SOCKS5 proxy carries UDP (UDP ASSOCIATE), so H3 IS allowed through SOCKS5.
@@ -1123,7 +1152,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                     body_len, cb, user, deadline_ns);
     else
       quicreq_start(c, m, url, headers, header_count, body, body_len, cb, user,
-                    deadline_ns, proxy);
+                    deadline_ns, proxy, on_chunk, chunk_user);
     return;
   }
 
@@ -1131,7 +1160,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
   // h2); h2req_connect swaps in c->h1_tls so the server negotiates http/1.1.
   if (hv == HttpVersion_H1) {
     h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-                deadline_ns, proxy);
+                deadline_ns, proxy, on_chunk, chunk_user);
     return;
   }
 
@@ -1152,7 +1181,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                         body_len, cb, user, deadline_ns);
         else
           quicreq_start(c, m, url, headers, header_count, body, body_len, cb,
-                        user, deadline_ns, proxy);
+                        user, deadline_ns, proxy, on_chunk, chunk_user);
         return;
       }
     }
@@ -1163,7 +1192,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
     return;
   }
   h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-              deadline_ns, proxy);
+              deadline_ns, proxy, on_chunk, chunk_user);
 }
 
 //- real ECH: per-origin ECHConfigList cache + DoH prefetch gate -------------
@@ -1224,6 +1253,8 @@ struct EchPrefetch {
   U64 deadline_ns;   // the operation deadline (the DoH round-trip eats into it)
   ProxyConfig proxy; // the request's resolved proxy (carried across the DoH)
   B32 has_proxy;     // 1 => use proxy on replay; 0 => the client's single proxy
+  BodyChunkFn on_chunk;  // streaming sink (carried across the DoH)
+  void *chunk_user;
 };
 
 internal void client_ech_doh_cb(void *user, const Response *r) {
@@ -1237,7 +1268,8 @@ internal void client_ech_doh_cb(void *user, const Response *r) {
   client_dispatch_inner(c, pf->method, pf->url, pf->headers.v,
                         pf->headers.count, pf->body.str, pf->body.size, pf->cb,
                         pf->user, pf->deadline_ns,
-                        pf->has_proxy ? &pf->proxy : 0);
+                        pf->has_proxy ? &pf->proxy : 0, pf->on_chunk,
+                        pf->chunk_user);
   arena_release(pf->arena);
 }
 
@@ -1246,7 +1278,8 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
                                   const Header *headers, U64 header_count,
                                   const U8 *body, U64 body_len, ResponseFn cb,
                                   void *user, ParsedUrl pu, U64 deadline_ns,
-                                  const ProxyConfig *proxy) {
+                                  const ProxyConfig *proxy, BodyChunkFn on_chunk,
+                                  void *chunk_user) {
   Arena *a = arena_alloc();
   EchPrefetch *pf = push_struct(a, EchPrefetch);
   pf->arena = a;
@@ -1257,6 +1290,8 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
     pf->proxy = *proxy;
     pf->has_proxy = 1;
   }
+  pf->on_chunk = on_chunk;
+  pf->chunk_user = chunk_user;
   pf->method = m;
   pf->url = push_str8_copy(a, url);
   header_list_init(&pf->headers, a);
@@ -1270,19 +1305,22 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
   String8 doh = push_str8f(a, "https://dns.google/resolve?name=%.*s&type=HTTPS",
                            (int)pu.host.size, pu.host.str);
   // The DoH lookup itself goes via the client's single proxy (NULL = c->proxy),
-  // independent of the original request's rotation/override choice.
+  // independent of the original request's rotation/override choice, and is never
+  // streamed (0,0).
   client_dispatch_inner(c, Method_GET, doh, 0, 0, 0, 0, client_ech_doh_cb, pf,
-                        deadline_ns, 0);
+                        deadline_ns, 0, 0, 0);
 }
 
 // The dispatch gate: when ECH is on and the target's config isn't cached yet,
 // fetch it first (DoH) and replay; otherwise dispatch normally. `proxy` is the
-// request's resolved proxy (0 = the client's single proxy).
+// request's resolved proxy (0 = the client's single proxy); `on_chunk` streams
+// the body (0 = buffer).
 internal void client_dispatch(Client *c, Method m, String8 url,
                               const Header *headers, U64 header_count,
                               const U8 *body, U64 body_len, ResponseFn cb,
                               void *user, U64 deadline_ns,
-                              const ProxyConfig *proxy) {
+                              const ProxyConfig *proxy, BodyChunkFn on_chunk,
+                              void *chunk_user) {
   if (c->ech_enabled) {
     ParsedUrl pu = url_parse(url);
     if (pu.ok && pu.https) {
@@ -1293,13 +1331,14 @@ internal void client_dispatch(Client *c, Method m, String8 url,
       scratch_end(scr);
       if (prefetch) {
         client_ech_prefetch(c, m, url, headers, header_count, body, body_len,
-                            cb, user, pu, deadline_ns, proxy);
+                            cb, user, pu, deadline_ns, proxy, on_chunk,
+                            chunk_user);
         return;
       }
     }
   }
   client_dispatch_inner(c, m, url, headers, header_count, body, body_len, cb,
-                        user, deadline_ns, proxy);
+                        user, deadline_ns, proxy, on_chunk, chunk_user);
 }
 
 // The absolute deadline (uv_hrtime ns) for a new operation from the client's
@@ -1415,7 +1454,7 @@ internal void client_redirect_cb(void *user, const Response *r) {
     client_dispatch(st->client, st->method, st->cur_url, st->headers.v,
                     st->headers.count, st->body.str, st->body.size,
                     client_redirect_cb, st, st->deadline_ns,
-                    st->has_proxy ? &st->proxy : 0);
+                    st->has_proxy ? &st->proxy : 0, /*on_chunk=*/0, 0);
     return;
   }
   // Final response (or no Location / budget exhausted / error): deliver + free.
@@ -1496,11 +1535,13 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
 
   U64 deadline = p->deadline_ns ? p->deadline_ns : client_deadline(c);
 
-  // Single hop: caller forced it (the former client_send), or following is
-  // disabled on the client.
-  if (p->no_redirects || c->max_redirects == 0) {
+  // Single hop: caller forced it (the former client_send), following is disabled
+  // on the client, or streaming (a streamed body is terminal — we can't follow a
+  // redirect after handing chunks to the sink).
+  if (p->no_redirects || c->max_redirects == 0 || p->on_chunk) {
     client_dispatch(c, p->method, p->url, headers, header_count, p->body.str,
-                    p->body.size, cb, user, deadline, px);
+                    p->body.size, cb, user, deadline, px, p->on_chunk,
+                    p->chunk_user);
     if (fetch_arena) arena_release(fetch_arena);
     return;
   }
@@ -1527,7 +1568,7 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
   st->body = p->body.size ? push_str8_copy(arena, p->body) : str8_zero();
   client_dispatch(c, p->method, st->cur_url, st->headers.v, st->headers.count,
                   st->body.str, st->body.size, client_redirect_cb, st,
-                  st->deadline_ns, px);
+                  st->deadline_ns, px, /*on_chunk=*/0, 0);  // redirects never stream
   if (fetch_arena) arena_release(fetch_arena);
 }
 
