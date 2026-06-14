@@ -1,8 +1,6 @@
 #include "net/dns_cache.h"
 
-#include <arpa/inet.h>   // htons
-#include <netinet/in.h>  // sockaddr_in / sockaddr_in6, AF_INET*
-
+#include "base/platform_net.h"  // htons, sockaddr_in/in6, AF_INET* (winsock on Windows)
 #include "base/string8.h"
 
 void dns_cache_init(DnsCache *dc, U64 ttl_ms) {

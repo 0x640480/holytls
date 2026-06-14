@@ -196,6 +196,24 @@ Chrome 149 fingerprints above.
 - The TLS layer is the **lexiforest/boringssl** curl-impersonate fork, which emits
   the extensions stock BoringSSL can't (so the ClientHello is byte-exact).
 
+### Cross-compiling for Windows (MinGW-w64)
+
+A fully static Windows x86_64 build cross-compiles from Linux. Install the
+toolchain (`apt-get install mingw-w64 ninja-build`), then point CMake at the
+bundled toolchain file:
+
+```sh
+cmake -B build-mingw -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-mingw64.cmake \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DHOLYTLS_BUILD_TESTS=OFF -DHOLYTLS_BUILD_EXAMPLES=ON
+ninja -C build-mingw          # -> build-mingw/*.exe + libholytls.a
+```
+
+zlib/brotli/zstd are built from source for the target (`HOLYTLS_FETCH_CODECS`, on
+by default for Windows), and libstdc++/winpthread are linked statically — so the
+`.exe`s depend only on core Windows DLLs (no MinGW/codec runtime to ship).
+
 ## Examples
 
 - [`examples/quickstart.c`](examples/quickstart.c) — the smallest complete program: an

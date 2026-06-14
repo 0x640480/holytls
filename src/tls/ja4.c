@@ -277,8 +277,11 @@ Fingerprints ja4_compute(Arena *arena, const ClientHelloInfo *in) {
   }
 
   char counts[8];
-  snprintf(counts, sizeof counts, "%02zu%02zu", (size_t)(nc < 99 ? nc : 99),
-           (size_t)(ne < 99 ? ne : 99));
+  // %llu (not %zu) so MinGW's gcc -Wformat is happy too; values are <= 99 so
+  // the 2-digit output (the JA4_a cipher/extension counts) is byte-identical.
+  snprintf(counts, sizeof counts, "%02llu%02llu",
+           (unsigned long long)(nc < 99 ? nc : 99),
+           (unsigned long long)(ne < 99 ? ne : 99));
 
   char alpn2[3] = "00";
   if (in->alpn_len > 0) {

@@ -99,6 +99,26 @@ _Static_assert(sizeof(void *) == 8, "ring_alloc assumes a 64-bit platform");
 #define RA_CACHELINE 64
 #endif
 
+/* Cache-line-aligned allocation for the ring's own backing block (the
+ * connection layer allocates the ra_ring control block + data buffer as one
+ * aligned block). POSIX C11 aligned_alloc has no portable Windows form — MinGW/
+ * Windows use _aligned_malloc, whose memory MUST be released with
+ * _aligned_free, never free(). `align` is a power of two; on POSIX `size` must
+ * be a multiple of `align` (a C11 requirement the caller satisfies: the control
+ * block is padded to RA_CACHELINE and the capacity is a power of two). */
+#ifdef _WIN32
+#include <malloc.h>
+static inline void *ra_aligned_alloc(U64 align, U64 size) {
+  return _aligned_malloc((size_t)size, (size_t)align);
+}
+static inline void ra_aligned_free(void *p) { _aligned_free(p); }
+#else
+static inline void *ra_aligned_alloc(U64 align, U64 size) {
+  return aligned_alloc((size_t)align, (size_t)size);
+}
+static inline void ra_aligned_free(void *p) { free(p); }
+#endif
+
 #define RA_ALIGN 16u           /* block alignment & granularity */
 #define RA_HDR_BYTES 16u       /* inline header size            */
 #define RA_SKIP ((U64)1 << 63) /* header flag: wrap padding     */

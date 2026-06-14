@@ -12,6 +12,7 @@ NOTES.md
 *.pem
 *.key
 .vscode/
+.vs/
 .claude/
 CLAUDE.md
 

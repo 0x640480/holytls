@@ -1,7 +1,5 @@
 #include "net/quic_connection.h"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
 #include <ngtcp2/ngtcp2_crypto_boringssl.h>
 #include <openssl/rand.h>
 #include <stdarg.h>
@@ -9,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "base/platform_net.h"  // htons, sockaddr_in/in6 (winsock on Windows)
 #include "net/dns_cache.h"
 #include "net/proxy.h"
 #include "tls/ssl_ctx.h"

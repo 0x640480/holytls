@@ -29,11 +29,11 @@ _Static_assert((sizeof(ra_ring) % RA_CACHELINE) == 0,
                "control block + buffer share one aligned_alloc");
 
 internal void conn_egress_init(Connection *c) {
-  void *mem = aligned_alloc(RA_CACHELINE, sizeof(ra_ring) + CONN_EGRESS_CAP);
+  void *mem = ra_aligned_alloc(RA_CACHELINE, sizeof(ra_ring) + CONN_EGRESS_CAP);
   if (!mem) return;  // egress stays 0 -> per-write malloc fallback
   c->egress = (ra_ring *)mem;
   if (ra_init(c->egress, (U8 *)mem + sizeof(ra_ring), CONN_EGRESS_CAP) != 0) {
-    free(mem);
+    ra_aligned_free(mem);
     c->egress = 0;
   }
 }
@@ -655,7 +655,7 @@ void conn_cleanup(Connection *c) {
   if (c->egress) {
     // All write callbacks have run by now (uv completes them before the close
     // callback that leads here), so no block is still in flight.
-    free(c->egress);
+    ra_aligned_free(c->egress);
     c->egress = 0;
   }
   if (c->pending) {

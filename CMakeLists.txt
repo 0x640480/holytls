@@ -23,6 +23,10 @@ option(HOLYTLS_ARENA_STATS "Compile in arena allocation counters (for benchmarks
 option(HOLYTLS_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(HOLYTLS_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 option(HOLYTLS_FUZZ "Build coverage-guided libFuzzer harnesses (clang only)" OFF)
+# When cross-compiling (e.g. MinGW-w64) there are no system codecs to find — build
+# zlib/brotli/zstd from source instead. Defaults ON for Windows targets.
+option(HOLYTLS_FETCH_CODECS
+  "Build zlib/brotli/zstd from source instead of finding system libs" ${WIN32})
 
 set(HOLYTLS_WARN -Wall -Wextra -Wpedantic -Wshadow)
 
@@ -97,10 +101,38 @@ else()
     GIT_TAG 0.20251124.0 GIT_SHALLOW TRUE)
 endif()
 
+# Windows (MinGW): skip BoringSSL's NASM-dependent asm for a clean cross-build.
+# asm can be re-enabled later for perf (nasm is available).
+if(WIN32)
+  set(OPENSSL_NO_ASM ON CACHE BOOL "" FORCE)
+endif()
+
+# Compression codecs from source when cross-compiling (no system libs): zlib
+# (required for gzip/deflate + TLS cert compression) + brotli + zstd, static.
+if(HOLYTLS_FETCH_CODECS)
+  set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(zlib
+    GIT_REPOSITORY https://github.com/madler/zlib.git GIT_TAG v1.3.1 GIT_SHALLOW TRUE)
+  set(BROTLI_DISABLE_TESTS ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(brotli
+    GIT_REPOSITORY https://github.com/google/brotli.git GIT_TAG v1.1.0 GIT_SHALLOW TRUE)
+  set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(zstd
+    GIT_REPOSITORY https://github.com/facebook/zstd.git GIT_TAG v1.5.6
+    GIT_SHALLOW TRUE SOURCE_SUBDIR build/cmake)
+endif()
+
 # yyjson ships its own CMake: MakeAvailable creates a static `yyjson` target (built
 # with yyjson's own flags, separate from our strict warnings) + propagates its include.
 FetchContent_MakeAvailable(libuv nghttp2 boringssl ngtcp2 nghttp3 picohttpparser
   yyjson)
+if(HOLYTLS_FETCH_CODECS)
+  FetchContent_MakeAvailable(zlib brotli zstd)
+endif()
 
 # picohttpparser as a separate static lib with relaxed warnings (its SSE/code
 # trips -Wpedantic/-Wshadow); the unity TU keeps full warnings.
@@ -163,34 +195,60 @@ target_link_libraries(holytls_deps INTERFACE ngtcp2_crypto_boringssl)
 target_link_libraries(holytls_deps INTERFACE picohttpparser)
 target_link_libraries(holytls_deps INTERFACE yyjson)
 
-# Certificate-compression codecs (zlib required; brotli/zstd if present).
-function(holytls_find_codec out_var)
-  find_library(${out_var} NAMES ${ARGN})
-  if(NOT ${out_var})
-    foreach(n ${ARGN})
-      file(GLOB _hits /usr/lib/*/lib${n}.so* /usr/lib/lib${n}.so* /lib/*/lib${n}.so*)
-      if(_hits)
-        list(GET _hits 0 _first)
-        set(${out_var} ${_first} CACHE FILEPATH "" FORCE)
-        break()
-      endif()
-    endforeach()
-  endif()
-endfunction()
-holytls_find_codec(HOLYTLS_ZLIB z)
-holytls_find_codec(HOLYTLS_BROTLIDEC brotlidec)
-holytls_find_codec(HOLYTLS_ZSTD zstd)
-if(HOLYTLS_ZLIB)
+# Compression codecs (zlib for gzip/deflate + TLS cert compression; brotli/zstd
+# add `br`/`zstd`). From-source static libs when cross-compiling
+# (HOLYTLS_FETCH_CODECS, the Windows default) or the host's system libs (Linux).
+if(HOLYTLS_FETCH_CODECS)
   target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_ZLIB)
-  target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_ZLIB})
-endif()
-if(HOLYTLS_BROTLIDEC)
+  target_link_libraries(holytls_deps INTERFACE zlibstatic)
+  target_include_directories(holytls_deps INTERFACE
+    ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})  # zlib.h + the generated zconf.h
   target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_BROTLI)
-  target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_BROTLIDEC})
-endif()
-if(HOLYTLS_ZSTD)
+  target_link_libraries(holytls_deps INTERFACE brotlidec brotlicommon)
   target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_ZSTD)
-  target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_ZSTD})
+  target_link_libraries(holytls_deps INTERFACE libzstd_static)
+else()
+  function(holytls_find_codec out_var)
+    find_library(${out_var} NAMES ${ARGN})
+    if(NOT ${out_var})
+      foreach(n ${ARGN})
+        file(GLOB _hits /usr/lib/*/lib${n}.so* /usr/lib/lib${n}.so* /lib/*/lib${n}.so*)
+        if(_hits)
+          list(GET _hits 0 _first)
+          set(${out_var} ${_first} CACHE FILEPATH "" FORCE)
+          break()
+        endif()
+      endforeach()
+    endif()
+  endfunction()
+  holytls_find_codec(HOLYTLS_ZLIB z)
+  holytls_find_codec(HOLYTLS_BROTLIDEC brotlidec)
+  holytls_find_codec(HOLYTLS_ZSTD zstd)
+  if(HOLYTLS_ZLIB)
+    target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_ZLIB)
+    target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_ZLIB})
+  endif()
+  if(HOLYTLS_BROTLIDEC)
+    target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_BROTLI)
+    target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_BROTLIDEC})
+  endif()
+  if(HOLYTLS_ZSTD)
+    target_compile_definitions(holytls_deps INTERFACE HOLYTLS_HAVE_ZSTD)
+    target_link_libraries(holytls_deps INTERFACE ${HOLYTLS_ZSTD})
+  endif()
+endif()
+
+# Windows: keep <windows.h> (pulled by uv.h) from dragging in wincrypt.h / wingdi.h,
+# whose macros (X509_NAME, OCSP_REQUEST, PKCS7_*, ERROR, …) collide with BoringSSL's
+# identifiers in our TU. We use BoringSSL for crypto, so excluding them is safe.
+# (INTERFACE → applies to holytls + the examples, not the dep builds.)
+# Plus the system libs the static link needs: winsock (our inet_pton + libuv),
+# IP helper / userenv / dbghelp (libuv), bcrypt + crypt32 (BoringSSL). Linked last
+# so GNU ld resolves them as leaf libraries.
+if(WIN32)
+  target_compile_definitions(holytls_deps INTERFACE NOCRYPT NOGDI)
+  target_link_libraries(holytls_deps INTERFACE
+    ws2_32 iphlpapi userenv dbghelp bcrypt crypt32 ntdll)
 endif()
 
 # ---------------------------------------------------------------------------
