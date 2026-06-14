@@ -92,7 +92,7 @@ Everything a real Chrome does, turned on at once — dual transport (H2→H3 upg
 cert verification, real ECH, resumption + 0-RTT, a cookie jar, browser-faithful
 redirect following, and Chrome's complete navigation header set
 (`user-agent`, `sec-ch-ua`, `sec-fetch-*`, `accept`, …). See
-[`examples/google_fidelity.c`](examples/google_fidelity.c):
+[`examples/stealth.c`](examples/stealth.c):
 
 ```c
 EventLoop loop; loop_init(&loop);
@@ -160,7 +160,7 @@ client_set_proxy(&c, str8_lit("http://127.0.0.1:8888"), 0);    // route through 
 ```
 
 powhttp then shows holytls's captured ClientHello + H2 frames hashing to exactly the
-Chrome 149 fingerprints above. See [`examples/powhttp_proxy.c`](examples/powhttp_proxy.c).
+Chrome 149 fingerprints above.
 
 ---
 
@@ -177,12 +177,16 @@ Chrome 149 fingerprints above. See [`examples/powhttp_proxy.c`](examples/powhttp
 
 ## Examples
 
-- [`examples/google_fidelity.c`](examples/google_fidelity.c) — maximum-fidelity Chrome
-  (dual transport, ECH, resumption, 0-RTT, cookies).
-- [`examples/peet_compare.c`](examples/peet_compare.c) — caller-controlled headers +
-  explicit order (the bogdanfinn `req.Header` + `HeaderOrderKey` equivalent).
-- [`examples/powhttp_proxy.c`](examples/powhttp_proxy.c) — route through a MITM proxy
-  for wire-truth inspection.
+- [`examples/quickstart.c`](examples/quickstart.c) — the smallest complete program: an
+  async GET + response accessors.
+- [`examples/fingerprint.c`](examples/fingerprint.c) — verify the byte-exact
+  JA3/JA4/Akamai fingerprint the server observes, via `tls.peet.ws`.
+- [`examples/post_json.c`](examples/post_json.c) — POST a JSON body with custom headers
+  (the `RequestParams` options struct) and parse the JSON reply.
+- [`examples/session.c`](examples/session.c) — stateful browsing: cookie jar + redirect
+  following + connection pooling (and an optional proxy via `$PROXY`).
+- [`examples/stealth.c`](examples/stealth.c) — full Chrome fidelity: dual H2→H3, real
+  ECH, TLS 1.3 resumption + 0-RTT.
 
 ---
 

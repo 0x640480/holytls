@@ -306,22 +306,18 @@ holytls_test(json_test)
 endif()  # HOLYTLS_BUILD_TESTS
 
 if(HOLYTLS_BUILD_EXAMPLES)
-# Example: the holytls equivalent of the bogdanfinn/tls-client (Go) GET example.
-add_executable(peet_compare examples/peet_compare.c)
-target_link_libraries(peet_compare PRIVATE holytls)
-target_compile_options(peet_compare PRIVATE ${HOLYTLS_WARN})
-
-# Example: fetch google.com with the highest-fidelity Chrome configuration
-# (dual H2/H3, ECH, resumption, 0-RTT, cookies).
-add_executable(google_fidelity examples/google_fidelity.c)
-target_link_libraries(google_fidelity PRIVATE holytls)
-target_compile_options(google_fidelity PRIVATE ${HOLYTLS_WARN})
-
-# Example: route requests through powhttp (MITM proxy) for wire-truth inspection,
-# trusting its root CA (client_add_ca_file) + client_set_proxy.
-add_executable(powhttp_proxy examples/powhttp_proxy.c)
-target_link_libraries(powhttp_proxy PRIVATE holytls)
-target_compile_options(powhttp_proxy PRIVATE ${HOLYTLS_WARN})
+# Each example is a single self-contained .c under examples/:
+#   quickstart  — minimal async GET + response accessors
+#   fingerprint — verify the byte-exact JA3/JA4/Akamai fingerprint via tls.peet.ws
+#   post_json   — POST a JSON body + custom headers (RequestParams), parse the reply
+#   session     — cookie jar + redirect following + pooling (+ optional PROXY)
+#   stealth     — dual H2/H3, real ECH, resumption + 0-RTT (full Chrome fidelity)
+set(HOLYTLS_EXAMPLES quickstart fingerprint post_json session stealth)
+foreach(ex ${HOLYTLS_EXAMPLES})
+  add_executable(${ex} examples/${ex}.c)
+  target_link_libraries(${ex} PRIVATE holytls)
+  target_compile_options(${ex} PRIVATE ${HOLYTLS_WARN})
+endforeach()
 endif()  # HOLYTLS_BUILD_EXAMPLES
 
 # ---------------------------------------------------------------------------
