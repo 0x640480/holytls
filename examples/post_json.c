@@ -65,14 +65,16 @@ int main(void) {
       header_lit("x-request-id", "holytls-demo-1"),
   };
 
+  RequestParams req = {
+      .method = Method_POST,
+      .url = str8_lit("https://httpbin.org/post"),
+      .headers = headers,
+      .header_count = ArrayCount(headers),
+      .body = body,
+  };
+
   Ctx cx = {0};
-  client_request(&client,
-                 &(RequestParams){.method = Method_POST,
-                                  .url = str8_lit("https://httpbin.org/post"),
-                                  .headers = headers,
-                                  .header_count = ArrayCount(headers),
-                                  .body = body},
-                 on_response, &cx);
+  client_request(&client, &req, on_response, &cx);
   loop_run(&loop);
 
   client_cleanup(&client);

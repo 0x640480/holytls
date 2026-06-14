@@ -84,6 +84,26 @@ int main(void) {
 }
 ```
 
+Beyond a GET: `client_post` is a one-line convenience, and `client_request`
+takes a designated-initializer `RequestParams` for full control — method,
+headers, and body, plus optional `.fetch_mode` (coherent Sec-Fetch-*),
+`.no_redirects`, and a per-request `.deadline_ns`:
+
+```c
+client_post(&c, str8_lit("https://httpbin.org/post"), str8_lit("{\"k\":1}"),
+            handle_response, 0);
+
+Header headers[] = { header_lit("content-type", "application/json") };
+RequestParams req = {
+    .method       = Method_POST,
+    .url          = str8_lit("https://httpbin.org/post"),
+    .headers      = headers,
+    .header_count = 1,
+    .body         = str8_lit("{\"k\":1}"),
+};
+client_request(&c, &req, handle_response, 0);
+```
+
 ---
 
 ## Maximum-fidelity example
@@ -136,6 +156,7 @@ surface lives in [`src/core/client.h`](src/core/client.h).
 
 | Area | What you get | Key calls |
 |------|--------------|-----------|
+| **Requests** | Async GET / POST, or full control via a `RequestParams` options struct (method, headers, body, Sec-Fetch, redirects, deadline) | `client_get`, `client_post`, `client_request` |
 | **Transports** | HTTP/1.1, HTTP/2, HTTP/3 — pin one, or run H2 with automatic H2→H3 upgrade | `client_init`, `client_init_dual`, `client_set_http_version` |
 | **TLS behaviors** | Real ECH (encrypted SNI), TLS 1.3 resumption, 0-RTT early data | `client_set_ech_enabled`, `client_set_resumption_enabled`, `client_set_early_data_enabled` |
 | **Sessions** | Lightweight per-task identity — cookie jar + redirect budget over one shared transport | `session_init`, `session_get` |

@@ -95,8 +95,8 @@ typedef void (*ResponseFn)(void *user, const Response *resp);
 // zero value is a redirect-following GET with the profile's default headers.
 // Only `url` is required. This single struct replaces the former
 // client_request / client_send / client_fetch / client_send_deadline quartet:
-//   client_request(c, &(RequestParams){ .method = Method_POST, .url = url,
-//                                       .body = body }, cb, user);
+//   RequestParams req = { .method = Method_POST, .url = url, .body = body };
+//   client_request(c, &req, cb, user);
 typedef struct RequestParams RequestParams;
 struct RequestParams {
   Method method;          // default Method_GET (the zero value)

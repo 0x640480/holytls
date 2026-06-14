@@ -60,14 +60,12 @@ int main(void) {
       {str8_lit("referer"), str8_lit("https://httpbin.org/"), 0}};
   Ctx cx;
   MemoryZeroStruct(&cx);
-  client_request(
-      &c,
-      &(RequestParams){.method = Method_GET,
-                       .url = str8_lit("https://httpbin.org/headers"),
-                       .headers = headers,
-                       .header_count = 1,
-                       .fetch_mode = FetchMode_Cors},
-      on_resp, &cx);
+  RequestParams params = {.method = Method_GET,
+                          .url = str8_lit("https://httpbin.org/headers"),
+                          .headers = headers,
+                          .header_count = 1,
+                          .fetch_mode = FetchMode_Cors};
+  client_request(&c, &params, on_resp, &cx);
   loop_run(&loop);
   fprintf(stderr, "  status=%d cors=%d empty=%d same=%d no_user=%d\n",
           cx.status, cx.mode_cors, cx.dest_empty, cx.site_same, cx.no_user);
@@ -87,16 +85,14 @@ int main(void) {
   Header rh[1] = {{str8_lit("referer"), str8_lit("https://httpbin.org/"), 0}};
   Ctx cx2;
   MemoryZeroStruct(&cx2);
-  session_request(
-      &s, &c,
-      &(RequestParams){
-          .method = Method_GET,
-          .url = str8_lit("https://httpbin.org/redirect-to?url=https%3A%2F%2F"
-                          "httpbingo.org%2Fheaders&status_code=302"),
-          .headers = rh,
-          .header_count = 1,
-          .fetch_mode = FetchMode_Cors},
-      on_resp, &cx2);
+  RequestParams redirect_params = {
+      .method = Method_GET,
+      .url = str8_lit("https://httpbin.org/redirect-to?url=https%3A%2F%2F"
+                      "httpbingo.org%2Fheaders&status_code=302"),
+      .headers = rh,
+      .header_count = 1,
+      .fetch_mode = FetchMode_Cors};
+  session_request(&s, &c, &redirect_params, on_resp, &cx2);
   loop_run(&loop);
   fprintf(stderr, "  redirect: status=%d site_cross=%d\n", cx2.status,
           cx2.site_cross);

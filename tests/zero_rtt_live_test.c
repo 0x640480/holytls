@@ -115,12 +115,11 @@ int main(void) {
     Header hdr[1] = {{str8_lit("x-holytls-big"), str8((U8 *)big_val, n), 0}};
     Ctx e;
     MemoryZeroStruct(&e);
-    client_request(&big,
-                   &(RequestParams){.method = Method_GET,
-                                    .url = str8_lit("https://cloudflare.com/"),
-                                    .headers = hdr,
-                                    .header_count = 1},
-                   on_resp, &e);
+    RequestParams params = {.method = Method_GET,
+                            .url = str8_lit("https://cloudflare.com/"),
+                            .headers = hdr,
+                            .header_count = 1};
+    client_request(&big, &params, on_resp, &e);
     loop_run(&loop);
     uv_close((uv_handle_t *)&watchdog, 0);
     loop_run(&loop);  // let the watchdog handle finish closing

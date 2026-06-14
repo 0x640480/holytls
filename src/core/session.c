@@ -87,15 +87,14 @@ internal void session_dispatch_hop(SessionReq *req) {
 
   // no_redirects = single hop (no client-side redirects); we own the redirect
   // loop, and the one chain-wide deadline spans all hops.
-  client_request(req->client,
-                 &(RequestParams){.method = req->method,
-                                  .url = req->cur_url,
-                                  .headers = hop.v,
-                                  .header_count = hop.count,
-                                  .body = req->body,
-                                  .no_redirects = 1,
-                                  .deadline_ns = req->deadline_ns},
-                 session_hop_cb, req);
+  RequestParams params = {.method = req->method,
+                          .url = req->cur_url,
+                          .headers = hop.v,
+                          .header_count = hop.count,
+                          .body = req->body,
+                          .no_redirects = 1,
+                          .deadline_ns = req->deadline_ns};
+  client_request(req->client, &params, session_hop_cb, req);
 }
 
 internal void session_hop_cb(void *user, const Response *r) {
