@@ -297,6 +297,8 @@ class Client:
         header_order: Optional[Union[str, Sequence[str]]] = None,
         override_default_headers: bool = False,
         local_address: Optional[str] = None,
+        cert: Optional[Union[str, Tuple[str, str]]] = None,
+        cert_password: Optional[str] = None,
         ca_file: Optional[str] = None,
         key_log_file: Optional[str] = None,
     ):
@@ -341,6 +343,11 @@ class Client:
         if local_address is not None:
             if not self.set_local_address(local_address):
                 raise HolyTLSError(f"invalid local address: {local_address!r}")
+        if cert is not None:
+            if isinstance(cert, (tuple, list)):
+                self.set_client_cert(cert[0], cert[1], password=cert_password)
+            else:
+                self.set_client_cert(cert, password=cert_password)
         if ca_file:
             if not lib.holytls_client_add_ca_file(self._c, ca_file.encode("utf-8")):
                 raise HolyTLSError(f"could not load CA file: {ca_file!r}")
@@ -373,6 +380,23 @@ class Client:
         egress-address selection; "" clears it. Returns False on a bad literal."""
         self._check()
         return bool(lib.holytls_client_set_local_address(self._c, ip.encode("utf-8")))
+
+    def set_client_cert(self, cert: str, key: Optional[str] = None, *,
+                        password: Optional[str] = None) -> bool:
+        """Present a client certificate for mutual TLS. ``cert`` is a PEM cert
+        chain path; ``key`` its private key path (defaults to ``cert`` for a
+        combined PEM); ``password`` decrypts an encrypted key. Fingerprint-
+        neutral. Raises :class:`HolyTLSError` if the files can't be loaded or the
+        key doesn't match the cert. (Also settable via ``Client(cert=...)``,
+        requests-style: a path or a ``(cert, key)`` tuple, + ``cert_password=``.)"""
+        self._check()
+        key_path = key if key is not None else cert
+        pw = password.encode("utf-8") if password else ffi.NULL
+        if not lib.holytls_client_set_client_cert(
+            self._c, str(cert).encode("utf-8"), str(key_path).encode("utf-8"), pw
+        ):
+            raise HolyTLSError(f"could not load client certificate: {cert!r}")
+        return True
 
     def set_header_order(self, order: Union[str, Sequence[str]]) -> bool:
         self._check()

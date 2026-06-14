@@ -279,6 +279,18 @@ B32 client_pin_certificate(Client *c, const char *hostname,
 // off. Pair with client_set_proxy; call after client_init / client_init_dual.
 B32 client_add_ca_file(Client *c, const char *path);
 
+// Present a client certificate for mutual TLS (mTLS): when a server sends a
+// CertificateRequest, this PEM cert chain (`cert_path`) + private key
+// (`key_path`; may be the same combined-PEM file) is sent and the handshake's
+// CertificateVerify is signed with the key. `passphrase` (str8_zero if none)
+// decrypts an encrypted key. Applies to both the H2/TCP and QUIC/H3 target
+// contexts (not the proxy's outer TLS). Returns 1 on success, 0 if a file can't
+// be read/parsed or the key doesn't match the cert. FINGERPRINT-NEUTRAL: the
+// cert is sent only after the ServerHello, so the ClientHello is unchanged. Call
+// after client_init / client_init_dual.
+B32 client_set_client_cert(Client *c, String8 cert_path, String8 key_path,
+                           String8 passphrase);
+
 // Write this client's TLS (and QUIC) session secrets to `path` in NSS Key Log
 // Format so its traffic can be decrypted in Wireshark. One file decrypts both
 // HTTPS and QUIC (QUIC keys derive from the same TLS 1.3 secrets). Equivalent

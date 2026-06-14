@@ -175,6 +175,13 @@ int holytls_client_add_proxy(holytls_client *c, const char *proxy_url,
 int holytls_client_set_local_address(holytls_client *c, const char *ip);
 // Trust an extra PEM CA file (for a MITM debug proxy). Returns 1 on success.
 int holytls_client_add_ca_file(holytls_client *c, const char *path);
+// Present a client certificate for mutual TLS. `cert_path` is a PEM cert chain,
+// `key_path` its private key (may equal cert_path for a combined PEM),
+// `passphrase` decrypts an encrypted key (NULL/"" if none). Fingerprint-neutral.
+// Returns 1 on success, 0 if a file can't be read or the key doesn't match.
+int holytls_client_set_client_cert(holytls_client *c, const char *cert_path,
+                                   const char *key_path,
+                                   const char *passphrase);
 // Pin a leaf SPKI SHA-256 (base64) for `hostname`. Returns 1 if the pin took.
 int holytls_client_pin_certificate(holytls_client *c, const char *hostname,
                                    const char *sha256_b64,

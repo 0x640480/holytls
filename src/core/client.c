@@ -1646,6 +1646,46 @@ B32 client_add_ca_file(Client *c, const char *path) {
   return any;
 }
 
+// PEM passphrase callback: copy the stashed (NUL-terminated) password into buf.
+// userdata is set only for the duration of a single key load, then cleared.
+internal int client_pem_passwd_cb(char *buf, int size, int rwflag,
+                                  void *userdata) {
+  (void)rwflag;
+  if (!userdata) return 0;
+  const char *pw = (const char *)userdata;
+  int n = (int)strlen(pw);
+  if (n > size) n = size;
+  MemoryCopy(buf, pw, (U64)n);
+  return n;
+}
+
+B32 client_set_client_cert(Client *c, String8 cert_path, String8 key_path,
+                           String8 passphrase) {
+  Temp scr = scratch_begin(0, 0);
+  const char *cp = push_str8_cstr(scr.arena, cert_path);
+  const char *kp = push_str8_cstr(scr.arena, key_path);
+  const char *pw =
+      passphrase.size ? push_str8_cstr(scr.arena, passphrase) : 0;
+  // Present the cert on BOTH target contexts (H2/TCP + QUIC/H3); the proxy ctx
+  // (outer TLS to a proxy) is left alone — a client cert is for the target.
+  // SSL_new() inherits the cert/key, so every connection presents it.
+  SSL_CTX *ctxs[2] = {c->ctx.ctx, c->h3_ctx.ctx};
+  B32 any = 0, ok = 1;
+  for (int i = 0; i < 2; ++i) {
+    if (!ctxs[i]) continue;
+    SSL_CTX_set_default_passwd_cb(ctxs[i], client_pem_passwd_cb);
+    SSL_CTX_set_default_passwd_cb_userdata(ctxs[i], (void *)pw);
+    if (SSL_CTX_use_certificate_chain_file(ctxs[i], cp) != 1 ||
+        SSL_CTX_use_PrivateKey_file(ctxs[i], kp, SSL_FILETYPE_PEM) != 1 ||
+        SSL_CTX_check_private_key(ctxs[i]) != 1)
+      ok = 0;
+    SSL_CTX_set_default_passwd_cb_userdata(ctxs[i], 0);  // drop the scratch ptr
+    any = 1;
+  }
+  scratch_end(scr);
+  return (any && ok) ? 1 : 0;
+}
+
 void client_set_dns_cache_ttl_ms(Client *c, U64 ms) {
   c->dns_cache.ttl_ms = ms;
 }
