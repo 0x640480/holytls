@@ -8,6 +8,7 @@
 #include "base/base64.h"
 #include "base/u8buf.h"
 #include "core/url.h"
+#include "h2/h2.h"
 #include "net/connection.h"
 #include "net/loop.h"
 #include "profile/profile.h"
@@ -35,6 +36,15 @@ struct WsConn {
   B32 conn_inited;
   WsTransport transport;
   WsParser parser;
+
+  // HTTP/2 (RFC 8441) transport: the WS rides a CONNECT stream on an H2Session
+  // layered over the same Connection. (Unused for the H1 path.)
+  H2Session *h2;
+  S32 h2_stream;
+  B32 h2_submitted;  // the CONNECT request has been sent
+  B32 in_h2_recv;    // inside ws_h2_drain's recv loop: defer outbound flushes
+                     // (nghttp2 forbids a reentrant session_send; the recv's
+                     // own trailing flush ships queued auto-pongs)
 
   String8 authority, path, origin;
   U16 port;
@@ -205,6 +215,85 @@ internal void ws_h1_drain(void *user) {
   }
 }
 
+// --- HTTP/2 Extended CONNECT (RFC 8441) -------------------------------------
+
+// H2Session send sink: hand outgoing H2 plaintext to the connection (encrypted
+// + written by the TLS layer).
+internal void ws_h2_send(void *user, const U8 *data, U64 len) {
+  WsConn *w = (WsConn *)user;
+  conn_send_plaintext(&w->conn, data, len);
+}
+
+// The CONNECT response HEADERS arrived: 200 => established, else fail.
+internal void ws_h2_on_connect(void *user, int status) {
+  WsConn *w = (WsConn *)user;
+  if (status == 200) {
+    w->established = 1;
+  } else {
+    w->fail = 1;
+    w->err = "h2 websocket rejected (status != 200)";
+  }
+  ws_wake(w);
+}
+
+// Inbound CONNECT-stream DATA = WS frame bytes (or a (0,0) EOF on stream close).
+internal void ws_h2_on_data(void *user, const U8 *data, U64 len) {
+  WsConn *w = (WsConn *)user;
+  if (!data || len == 0) {  // the CONNECT stream closed
+    w->closed = 1;
+    ws_wake(w);
+    return;
+  }
+  if (ws_parser_feed(&w->parser, data, len, ws_on_event, w) < 0) {
+    w->fail = 1;
+    w->err = "ws protocol error";
+    ws_wake(w);
+  }
+}
+
+// Submit the Extended CONNECT once the peer's ENABLE_CONNECT_PROTOCOL is known.
+// WS-over-H2 carries NO Sec-WebSocket-Key (the H2 stream replaces the accept
+// handshake); Sec-WebSocket-Version + UA + caller extras ride as regular fields.
+internal void ws_h2_submit(WsConn *w) {
+  w->h2_submitted = 1;
+  const Profile *p = w->client->profile;
+  U64 nh = 2 + w->hs_extra_count;
+  Header *hs = push_array(w->arena, Header, nh);
+  U64 k = 0;
+  hs[k++] = (Header){str8_lit("sec-websocket-version"), str8_lit("13"), 0};
+  hs[k++] = (Header){str8_lit("user-agent"), profile_user_agent(p), 0};
+  for (U64 i = 0; i < w->hs_extra_count; ++i) hs[k++] = w->hs_extra[i];
+  w->h2_stream = h2_session_ws_connect(
+      w->h2, str8_lit("https"), w->authority, w->path, str8_lit("websocket"), hs,
+      nh, ws_h2_on_connect, w, ws_h2_on_data, w);
+  if (w->h2_stream < 0) {
+    w->fail = 1;
+    w->err = "h2 websocket CONNECT submit failed";
+    ws_wake(w);
+  }
+}
+
+// Connection readable (H2): feed plaintext into nghttp2; once the server's
+// SETTINGS enable Extended CONNECT, submit the CONNECT.
+internal void ws_h2_drain(void *user) {
+  WsConn *w = (WsConn *)user;
+  w->in_h2_recv = 1;
+  U8 buf[16384];
+  int n;
+  while ((n = conn_read_plaintext(&w->conn, buf, sizeof buf)) > 0) {
+    if (h2_session_recv(w->h2, buf, (U64)n) < 0) {
+      w->fail = 1;
+      w->err = "h2 protocol error";
+      break;
+    }
+  }
+  w->in_h2_recv = 0;
+  if (!w->fail && !w->h2_submitted &&
+      h2_session_connect_protocol_enabled(w->h2))
+    ws_h2_submit(w);
+  if (w->fail) ws_wake(w);
+}
+
 // --- connection lifecycle ---------------------------------------------------
 
 internal void ws_on_ready(void *user, B32 ok, const char *err) {
@@ -217,11 +306,24 @@ internal void ws_on_ready(void *user, B32 ok, const char *err) {
   }
   String8 alpn = conn_alpn(&w->conn);
   if (str8_match(alpn, str8_lit("h2"))) {
+    // HTTP/2 Extended CONNECT (RFC 8441): run an H2 session over this
+    // connection and open a CONNECT stream once the server permits it. The
+    // CONNECT is submitted later, from ws_h2_drain, after the server's SETTINGS
+    // advertise ENABLE_CONNECT_PROTOCOL.
     w->transport = WsTransport_H2;
-    // HTTP/2 Extended CONNECT (RFC 8441) is implemented in the next stage.
-    w->fail = 1;
-    w->err = "h2 websocket not yet implemented (server negotiated h2)";
-    ws_wake(w);
+    w->h2 = h2_session_alloc(&w->client->profile->h2, ws_h2_send, w);
+    if (!w->h2) {
+      w->fail = 1;
+      w->err = "h2 session init failed";
+      ws_wake(w);
+      return;
+    }
+    conn_on_readable(&w->conn, ws_h2_drain, w);
+    if (!h2_session_start(w->h2)) {  // emit our preface (SETTINGS + WINDOW_UPDATE)
+      w->fail = 1;
+      w->err = "h2 session start failed";
+      ws_wake(w);
+    }
     return;
   }
   w->transport = WsTransport_H1;
@@ -336,7 +438,16 @@ B32 ws_conn_send(WsConn *w, WsOpcode op, const U8 *data, U64 len) {
   U8Buf f;
   u8buf_init(&f, w->arena, len + 16);
   ws_frame_build(&f, op, 1, data, len, mask);
-  B32 ok = conn_send_plaintext(&w->conn, f.v, f.len);
+  B32 ok;
+  if (w->transport == WsTransport_H2) {
+    // Queue the frame as CONNECT-stream DATA. Skip the flush when inside the
+    // recv loop (an auto-pong) — that flush would reenter nghttp2_session_send;
+    // ws_h2_drain's h2_session_recv flushes it instead.
+    ok = h2_session_ws_send(w->h2, w->h2_stream, f.v, f.len);
+    if (ok && !w->in_h2_recv) h2_session_flush(w->h2);
+  } else {
+    ok = conn_send_plaintext(&w->conn, f.v, f.len);
+  }
   temp_end(t);
   return ok;
 }
@@ -390,6 +501,11 @@ void ws_conn_close(WsConn *w, U16 code, String8 reason) {
     while (!w->got_peer_close && !w->closed && !w->fail && !w->close_timed_out)
       loop_run(w->loop);
     req_timer_disarm(t);
+    // H2: half-close the CONNECT stream (END_STREAM) now that the WS Close is done.
+    if (w->transport == WsTransport_H2 && w->h2) {
+      h2_session_ws_finish(w->h2, w->h2_stream);
+      h2_session_flush(w->h2);
+    }
   }
   if (w->conn_inited) conn_close(&w->conn);
   w->closed = 1;
@@ -405,6 +521,7 @@ void ws_conn_free(WsConn *w) {
       loop_run(w->loop);
     conn_cleanup(&w->conn);
   }
+  if (w->h2) h2_session_release(w->h2);
   for (WsMsg *m = w->in_head; m;) {
     WsMsg *n = m->next;
     free(m);

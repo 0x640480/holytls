@@ -395,6 +395,7 @@ holytls_test(ws_frame_test)
 # Offline tests sharing the in-process loopback origin (tests/support).
 holytls_test(request_test       tests/support/loopback_server.c)
 holytls_test(stream_test        tests/support/loopback_server.c)
+holytls_test(ws_h2_test         tests/support/loopback_server.c)
 holytls_test(timeout_test       tests/support/loopback_server.c)
 holytls_test(proxy_loopback_test tests/support/loopback_server.c)
 holytls_test(proxy_switch_test  tests/support/loopback_server.c)

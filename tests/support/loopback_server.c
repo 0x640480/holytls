@@ -117,6 +117,15 @@ typedef struct LbStream {
   U64 resp_len, resp_off;
   B32 stall;  // send the body but never EOF (hold the stream open) — for
               // exercising a client that aborts mid-stream
+  // RFC 8441 Extended CONNECT (WS echo mode):
+  char protocol[32];   // ":protocol" (e.g. "websocket")
+  U64 protocol_len;
+  B32 is_ws;           // a CONNECT + :protocol stream
+  B32 ws_responded;    // 200 sent, deferred echo provider installed
+  U8 *win;             // inbound client (masked) frame accumulator
+  U64 win_len, win_cap;
+  U8 *wout;            // re-framed server (unmasked) bytes; the provider drains
+  U64 wout_len, wout_off, wout_cap;
   struct LbStream *next;  // per-connection list (freed on close incl. withheld)
 } LbStream;
 
@@ -143,6 +152,7 @@ struct LbServer {
   LbAlpn alpn;
   LbHandler handler;
   void *user;
+  B32 ws_echo;  // RFC 8441 Extended CONNECT echo origin (lb_ws_echo_start)
   LbConn *conns;
 };
 
@@ -155,6 +165,8 @@ static void lb_conn_on_closed(uv_handle_t *h) {
     c->streams = st->next;
     free(st->body);
     free(st->resp_body);
+    free(st->win);
+    free(st->wout);
     free(st);
   }
   if (c->h2) nghttp2_session_del(c->h2);
@@ -225,8 +237,98 @@ static int lb_h2_header(nghttp2_session *s, const nghttp2_frame *frame,
   } else if (str8_match(n, str8_lit(":authority"))) {
     lb_copy(st->authority, sizeof st->authority, value, valuelen);
     st->authority_len = strlen(st->authority);
+  } else if (str8_match(n, str8_lit(":protocol"))) {
+    lb_copy(st->protocol, sizeof st->protocol, value, valuelen);
+    st->protocol_len = strlen(st->protocol);
   }
   return 0;
+}
+// Deferred provider for a WS CONNECT stream: emit re-framed (unmasked) server
+// frames from wout; no EOF so the stream stays open; defer when empty (resumed
+// by lb_h2_data on the next DATA frame).
+static nghttp2_ssize lb_ws_echo_read(nghttp2_session *s, S32 sid, U8 *buf,
+                                     size_t length, U32 *data_flags,
+                                     nghttp2_data_source *source, void *user) {
+  (void)s;
+  (void)sid;
+  (void)data_flags;
+  (void)user;
+  LbStream *st = (LbStream *)source->ptr;
+  U64 remain = st->wout_len - st->wout_off;
+  if (remain == 0) return NGHTTP2_ERR_DEFERRED;  // nothing to echo yet
+  U64 n = remain < length ? remain : length;
+  MemoryCopy(buf, st->wout + st->wout_off, n);
+  st->wout_off += n;
+  if (st->wout_off == st->wout_len) st->wout_len = st->wout_off = 0;  // drained
+  return (nghttp2_ssize)n;  // no EOF: the WS stream stays open
+}
+static void lb_wout_append(LbStream *st, const U8 *d, U64 n) {
+  if (st->wout_off) {  // compact the already-sent prefix
+    MemoryMove(st->wout, st->wout + st->wout_off, st->wout_len - st->wout_off);
+    st->wout_len -= st->wout_off;
+    st->wout_off = 0;
+  }
+  if (st->wout_len + n > st->wout_cap) {
+    U64 ncap = st->wout_cap ? st->wout_cap : 65536;
+    while (ncap < st->wout_len + n) ncap *= 2;
+    st->wout = (U8 *)realloc(st->wout, ncap);
+    st->wout_cap = ncap;
+  }
+  MemoryCopy(st->wout + st->wout_len, d, n);
+  st->wout_len += n;
+}
+// Parse complete client (masked) frames out of win and re-emit each as an
+// UNMASKED server frame into wout (a client MUST mask, a server MUST NOT — so a
+// byte echo would bounce back masked frames the client rejects). A leftover
+// partial frame stays buffered in win. The echoed frame keeps the opcode + FIN.
+static void lb_ws_reframe(LbStream *st) {
+  U64 i = 0;
+  for (;;) {
+    if (st->win_len - i < 2) break;
+    U8 b0 = st->win[i], b1 = st->win[i + 1];
+    B32 masked = (b1 & 0x80) != 0;
+    U64 plen = b1 & 0x7f;
+    U64 hdr = 2;
+    if (plen == 126) {
+      if (st->win_len - i < 4) break;
+      plen = ((U64)st->win[i + 2] << 8) | st->win[i + 3];
+      hdr = 4;
+    } else if (plen == 127) {
+      if (st->win_len - i < 10) break;
+      plen = 0;
+      for (int k = 0; k < 8; ++k) plen = (plen << 8) | st->win[i + 2 + k];
+      hdr = 10;
+    }
+    U64 mklen = masked ? 4 : 0;
+    if (st->win_len - i < hdr + mklen + plen) break;  // incomplete frame
+    const U8 *mk = st->win + i + hdr;
+    const U8 *pl = st->win + i + hdr + mklen;
+    // Server frame header: same b0 (FIN+opcode), no MASK bit.
+    U8 sh[10];
+    U64 shl = 0;
+    sh[shl++] = b0;
+    if (plen < 126)
+      sh[shl++] = (U8)plen;
+    else if (plen <= 0xffff) {
+      sh[shl++] = 126;
+      sh[shl++] = (U8)(plen >> 8);
+      sh[shl++] = (U8)plen;
+    } else {
+      sh[shl++] = 127;
+      for (int k = 7; k >= 0; --k) sh[shl++] = (U8)(plen >> (k * 8));
+    }
+    lb_wout_append(st, sh, shl);
+    // Unmask the payload into wout.
+    for (U64 j = 0; j < plen; ++j) {
+      U8 byte = masked ? (U8)(pl[j] ^ mk[j & 3]) : pl[j];
+      lb_wout_append(st, &byte, 1);
+    }
+    i += hdr + mklen + plen;
+  }
+  if (i) {  // drop consumed bytes, keep the partial tail
+    MemoryMove(st->win, st->win + i, st->win_len - i);
+    st->win_len -= i;
+  }
 }
 static int lb_h2_data(nghttp2_session *s, U8 flags, S32 sid, const U8 *data,
                       size_t len, void *user) {
@@ -234,6 +336,19 @@ static int lb_h2_data(nghttp2_session *s, U8 flags, S32 sid, const U8 *data,
   (void)user;
   LbStream *st = (LbStream *)nghttp2_session_get_stream_user_data(s, sid);
   if (!st || !len) return 0;
+  if (st->is_ws) {  // accumulate client frames, re-frame them back unmasked
+    if (st->win_len + len > st->win_cap) {
+      U64 ncap = st->win_cap ? st->win_cap : 65536;
+      while (ncap < st->win_len + len) ncap *= 2;
+      st->win = (U8 *)realloc(st->win, ncap);
+      st->win_cap = ncap;
+    }
+    MemoryCopy(st->win + st->win_len, data, len);
+    st->win_len += len;
+    lb_ws_reframe(st);
+    nghttp2_session_resume_data(s, sid);  // un-defer the echo provider
+    return 0;
+  }
   if (st->body_len + len > st->body_cap) {
     U64 ncap = st->body_cap ? st->body_cap : 65536;
     while (ncap < st->body_len + len) ncap *= 2;
@@ -265,10 +380,29 @@ static nghttp2_ssize lb_h2_body_read(nghttp2_session *s, S32 sid, U8 *buf,
 static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
                             void *user) {
   LbConn *c = (LbConn *)user;
-  if (!(frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) return 0;
   LbStream *st =
       (LbStream *)nghttp2_session_get_stream_user_data(s, frame->hd.stream_id);
+
+  // RFC 8441 Extended CONNECT: a `:method=CONNECT` + `:protocol` HEADERS opens a
+  // bidirectional stream (no END_STREAM on the request). Reply 200 and install a
+  // deferred echo provider; the stream then stays open for DATA both ways.
+  if (c->server->ws_echo && st && !st->ws_responded &&
+      frame->hd.type == NGHTTP2_HEADERS && st->protocol_len > 0 &&
+      str8_match(str8((U8 *)st->method, st->method_len), str8_lit("CONNECT"))) {
+    st->is_ws = 1;
+    st->ws_responded = 1;
+    nghttp2_nv nv[1] = {
+        {(U8 *)":status", (U8 *)"200", 7, 3, NGHTTP2_NV_FLAG_NONE}};
+    nghttp2_data_provider2 prd;
+    prd.source.ptr = st;
+    prd.read_callback = lb_ws_echo_read;
+    nghttp2_submit_response2(c->h2, st->stream_id, nv, 1, &prd);
+    return 0;
+  }
+
+  if (!(frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) return 0;
   if (!st) return 0;
+  if (!c->server->handler) return 0;  // WS-echo origin: no plain-request handler
 
   LbRequest req;
   MemoryZeroStruct(&req);
@@ -324,6 +458,8 @@ static int lb_h2_stream_close(nghttp2_session *s, S32 sid, U32 ec, void *user) {
       }
     free(st->body);
     free(st->resp_body);
+    free(st->win);
+    free(st->wout);
     free(st);
     nghttp2_session_set_stream_user_data(s, sid, 0);
   }
@@ -342,9 +478,13 @@ static void lb_h2_init(LbConn *c) {
                                                          lb_h2_stream_close);
   nghttp2_session_server_new(&c->h2, cbs, c);
   nghttp2_session_callbacks_del(cbs);
-  nghttp2_settings_entry iv[] = {
+  nghttp2_settings_entry iv[2] = {
       {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
-  nghttp2_submit_settings(c->h2, NGHTTP2_FLAG_NONE, iv, 1);
+  size_t niv = 1;
+  if (c->server->ws_echo)  // RFC 8441: allow Extended CONNECT (:protocol)
+    iv[niv++] = (nghttp2_settings_entry){
+        NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1};
+  nghttp2_submit_settings(c->h2, NGHTTP2_FLAG_NONE, iv, niv);
 }
 
 //- HTTP/1.1 server ----------------------------------------------------------
@@ -493,6 +633,15 @@ LbServer *lb_server_start(EventLoop *loop, LbAlpn alpn, LbHandler handler,
   s->alpn = alpn;
   s->handler = handler;
   s->user = user;
+  U16 port = lb_listen(loop, &s->listener, lb_on_conn, s);
+  if (out_port) *out_port = port;
+  return s;
+}
+LbServer *lb_ws_echo_start(EventLoop *loop, U16 *out_port) {
+  LbServer *s = (LbServer *)calloc(1, sizeof(LbServer));
+  s->ctx = lb_server_ctx(LB_ALPN_H2);
+  s->alpn = LB_ALPN_H2;
+  s->ws_echo = 1;  // handler stays 0: this origin only serves WS Extended CONNECT
   U16 port = lb_listen(loop, &s->listener, lb_on_conn, s);
   if (out_port) *out_port = port;
   return s;

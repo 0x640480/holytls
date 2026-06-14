@@ -67,4 +67,11 @@ LbServer *lb_server_start(EventLoop *loop, LbAlpn alpn, LbHandler handler,
 // loop_shutdown; the loop must still be able to run the close callbacks.
 void lb_server_stop(LbServer *s);
 
+// Start an H2-only origin that speaks RFC 8441 Extended CONNECT: it advertises
+// SETTINGS_ENABLE_CONNECT_PROTOCOL, and for a `:method=CONNECT` + `:protocol`
+// stream it replies `:status 200` (leaving the stream open) and echoes every
+// DATA frame back on the same stream — an H2 WebSocket echo origin. Normal
+// (non-CONNECT) requests are ignored. Stop/free with lb_server_stop.
+LbServer *lb_ws_echo_start(EventLoop *loop, U16 *out_port);
+
 #endif  // HOLYTLS_TEST_LOOPBACK_SERVER_H
