@@ -402,6 +402,7 @@ holytls_test(proxy_live_test)
 holytls_test_defer(defer_test)
 holytls_test(h1_test)
 holytls_test_defer(h1_live_test)
+holytls_test_defer(ws_live_test)
 holytls_test(json_test)
 endif()  # HOLYTLS_BUILD_TESTS
 
