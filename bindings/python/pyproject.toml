@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61", "cffi>=1.15"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "holytls"
+version = "0.1.0"
+description = "Python bindings for holytls — a Chrome-fingerprinted TLS-impersonation HTTP client"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+dependencies = ["cffi>=1.15"]
+keywords = ["tls", "http", "fingerprint", "impersonation", "ja3", "ja4", "http2", "http3", "quic", "scraping"]
+
+[project.urls]
+Homepage = "https://github.com/0x640480/holy-tls"
+
+[tool.setuptools]
+packages = ["holytls"]
+
+[tool.setuptools.package-data]
+# The native shared library is staged into holytls/ by holytls_build.py and
+# bundled so the extension's $ORIGIN rpath resolves it.
+holytls = ["py.typed", "libholytls_capi.so*", "libholytls_capi.dylib", "holytls_capi.dll"]
