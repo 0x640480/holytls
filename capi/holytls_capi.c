@@ -29,6 +29,7 @@
 #include "base/string8.h"
 #include "core/client.h"
 #include "core/session.h"
+#include "ws/ws.h"
 #include "net/loop.h"
 #include "profile/profile.h"
 
@@ -436,6 +437,80 @@ holytls_response *holytls_session_perform(holytls_session *hs,
   loop_run(&hc->loop);
   arena_recycle(a);
   return resp ? resp : make_error_response("no response");
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket. A thin wrapper over WsConn, which is itself blocking (it drives the
+// client's loop until each event) — so unlike holytls_perform there is no
+// per-call CallCtx/loop_run here; WsConn owns that. The connection persists
+// across calls (it is NOT closed between them).
+// ---------------------------------------------------------------------------
+
+struct holytls_ws {
+  WsConn *conn;  // bound to the client's loop + transport
+};
+
+holytls_ws *holytls_ws_connect(holytls_client *hc, const char *url,
+                               const holytls_header *headers,
+                               size_t header_count) {
+  if (!hc || !url) return 0;
+  holytls_ws *ws = (holytls_ws *)calloc(1, sizeof *ws);
+  ws->conn = ws_conn_alloc(&hc->client);
+  // The handshake headers only need to live across the connect call (WsConn
+  // copies them into its own arena) — the per-call scratch arena suffices.
+  Arena *a = arena_acquire();
+  Header *hs = 0;
+  if (header_count && headers) {
+    hs = push_array(a, Header, header_count);
+    for (size_t i = 0; i < header_count; ++i) {
+      hs[i].name = str8_cstring(headers[i].name);
+      hs[i].value = str8_cstring(headers[i].value);
+      hs[i].flags = 0;
+    }
+  }
+  ws_conn_connect(ws->conn, str8_cstring(url), hs, header_count);
+  arena_recycle(a);
+  return ws;  // a failed handshake is reported via holytls_ws_error()
+}
+
+int holytls_ws_send_text(holytls_ws *ws, const char *text, size_t len) {
+  if (!ws || (!text && len)) return 0;
+  return ws_conn_send(ws->conn, WsOp_Text, (const U8 *)text, len) ? 1 : 0;
+}
+int holytls_ws_send_binary(holytls_ws *ws, const uint8_t *data, size_t len) {
+  if (!ws || (!data && len)) return 0;
+  return ws_conn_send(ws->conn, WsOp_Binary, data, len) ? 1 : 0;
+}
+
+int holytls_ws_recv(holytls_ws *ws, holytls_ws_message *out,
+                    uint64_t timeout_ms) {
+  if (!ws || !out) return -1;
+  WsEvent ev;
+  int rc = ws_conn_recv(ws->conn, &ev, timeout_ms);
+  MemoryZeroStruct(out);
+  if (rc < 0) return rc;  // -1 error, -2 timeout
+  out->is_text = (ev.op == WsOp_Text) ? 1 : 0;
+  out->data = ev.data;  // WsConn-owned; valid until the next holytls_ws_* call
+  out->len = ev.len;
+  out->close_code = ev.close_code;
+  return rc;  // 1 = message, 0 = peer Close
+}
+
+void holytls_ws_close(holytls_ws *ws, uint16_t code, const char *reason) {
+  if (!ws) return;
+  ws_conn_close(ws->conn, code, reason ? str8_cstring(reason) : str8_zero());
+}
+void holytls_ws_free(holytls_ws *ws) {
+  if (!ws) return;
+  ws_conn_free(ws->conn);
+  free(ws);
+}
+
+int holytls_ws_transport(holytls_ws *ws) {
+  return ws ? (int)ws_conn_transport(ws->conn) : 0;
+}
+const char *holytls_ws_error(holytls_ws *ws) {
+  return ws ? ws_conn_error(ws->conn) : 0;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlencode
 
 from holytls._models import (
+    ConnectionClosed,
     FetchMode,
     Headers,
     HeaderInput,
@@ -27,6 +28,7 @@ from holytls._models import (
     Profile,
     Response,
     Timing,
+    WebSocketError,
 )
 from holytls._native import ffi, lib
 
@@ -471,6 +473,15 @@ class Client:
     def options(self, url: str, **kwargs) -> Response:
         return self.request(Method.OPTIONS, url, **kwargs)
 
+    # -- websocket -----------------------------------------------------------
+
+    def websocket(self, url: str, *, headers: HeaderInput = None) -> "WebSocket":
+        """Open a WebSocket over this client (its TLS fingerprint). `url` is a
+        ``wss://`` (or ``ws://`` / ``https://``) URL. Returns a connected
+        :class:`WebSocket`; raises :class:`WebSocketError` on a failed handshake."""
+        self._check()
+        return WebSocket(self, url, headers)
+
     # -- concurrent batch (one loop, many in-flight requests) ----------------
 
     def request_many(self, requests: Sequence[dict]) -> List[Response]:
@@ -640,6 +651,124 @@ class Session:
             self._s = ffi.NULL
 
     def __enter__(self) -> "Session":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class WebSocket:
+    """A RFC 6455 WebSocket over a Client's fingerprinted TLS connection.
+
+    Blocking + single-threaded, like the rest of the binding: ``recv`` runs the
+    client's loop until the next message. Over an h2 server it uses RFC 8441
+    Extended CONNECT; otherwise the HTTP/1.1 Upgrade (see ``transport``). Open it
+    with :meth:`Client.websocket`; drive one socket from one thread and not
+    concurrently with that client's other calls.
+
+        with client.websocket("wss://echo.websocket.org") as ws:
+            ws.send("hello")
+            print(ws.recv())          # -> "hello"
+    """
+
+    def __init__(self, client: "Client", url: str, headers: HeaderInput = None):
+        client._check()
+        self._client = client
+        self._closed = False
+        keep: list = []
+        hdrs = _normalize_headers(headers)
+        c_hdrs = ffi.NULL
+        if hdrs:
+            arr = ffi.new("holytls_header[]", len(hdrs))
+            keep.append(arr)
+            for i, (name, value) in enumerate(hdrs):
+                nb = ffi.new("char[]", str(name).encode("utf-8"))
+                vb = ffi.new("char[]", str(value).encode("utf-8"))
+                keep.append(nb)
+                keep.append(vb)
+                arr[i].name = nb
+                arr[i].value = vb
+            c_hdrs = arr
+        self._ws = lib.holytls_ws_connect(
+            client._c, url.encode("utf-8"), c_hdrs, len(hdrs)
+        )
+        if self._ws == ffi.NULL:
+            raise WebSocketError("failed to create native websocket (out of memory)")
+        err = lib.holytls_ws_error(self._ws)
+        if err != ffi.NULL:
+            msg = ffi.string(err).decode("utf-8", "replace")
+            lib.holytls_ws_free(self._ws)
+            self._ws = ffi.NULL
+            raise WebSocketError(f"websocket connect failed: {msg}")
+
+    @property
+    def transport(self) -> str:
+        """``"h1"`` (HTTP/1.1 Upgrade) or ``"h2"`` (Extended CONNECT)."""
+        t = lib.holytls_ws_transport(self._ws) if self._ws != ffi.NULL else 0
+        return {1: "h1", 2: "h2"}.get(t, "")
+
+    def send(self, data: Union[str, bytes]) -> None:
+        """Send one message: a ``str`` as a text frame, ``bytes`` as binary."""
+        if isinstance(data, str):
+            self.send_text(data)
+        elif isinstance(data, (bytes, bytearray, memoryview)):
+            self.send_binary(bytes(data))
+        else:
+            raise TypeError("WebSocket.send expects str or bytes")
+
+    def send_text(self, text: str) -> None:
+        self._check()
+        raw = text.encode("utf-8")
+        if not lib.holytls_ws_send_text(self._ws, raw, len(raw)):
+            raise WebSocketError("websocket send failed (connection closed?)")
+
+    def send_binary(self, data: bytes) -> None:
+        self._check()
+        if not lib.holytls_ws_send_binary(self._ws, data, len(data)):
+            raise WebSocketError("websocket send failed (connection closed?)")
+
+    def recv(self, timeout: Optional[float] = None) -> Union[str, bytes]:
+        """Receive the next message (pings are auto-answered). Returns ``str``
+        for a text frame, ``bytes`` for binary. Raises :class:`ConnectionClosed`
+        when the peer closes, :class:`WebSocketError` on a transport error, and
+        ``TimeoutError`` if ``timeout`` (seconds) elapses with no message (the
+        connection stays usable). ``timeout=None`` blocks indefinitely."""
+        self._check()
+        msg = ffi.new("holytls_ws_message *")
+        timeout_ms = int(timeout * 1000) if timeout and timeout > 0 else 0
+        rc = lib.holytls_ws_recv(self._ws, msg, timeout_ms)
+        if rc == -2:
+            raise TimeoutError(f"websocket recv timed out after {timeout}s")
+        if rc < 0:
+            err = lib.holytls_ws_error(self._ws)
+            detail = ffi.string(err).decode("utf-8", "replace") if err != ffi.NULL else "error"
+            raise WebSocketError(f"websocket recv failed: {detail}")
+        # Copy out before the next call invalidates msg.data.
+        payload = bytes(ffi.buffer(msg.data, msg.len)) if msg.len else b""
+        if rc == 0:  # the peer's Close
+            reason = payload.decode("utf-8", "replace")
+            raise ConnectionClosed(int(msg.close_code), reason)
+        return payload.decode("utf-8", "replace") if msg.is_text else payload
+
+    def close(self, code: int = 1000, reason: str = "") -> None:
+        if not self._closed and self._ws != ffi.NULL:
+            r = reason.encode("utf-8") if reason else ffi.NULL
+            lib.holytls_ws_close(self._ws, int(code) & 0xFFFF, r)
+            lib.holytls_ws_free(self._ws)
+            self._closed = True
+            self._ws = ffi.NULL
+
+    def _check(self) -> None:
+        if self._closed or self._ws == ffi.NULL:
+            raise WebSocketError("websocket is closed")
+
+    def __enter__(self) -> "WebSocket":
         return self
 
     def __exit__(self, *exc) -> None:

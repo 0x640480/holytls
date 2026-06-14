@@ -240,6 +240,55 @@ holytls_response *holytls_session_perform(holytls_session *s, holytls_client *c,
                                           const holytls_request *req);
 
 // ---------------------------------------------------------------------------
+// WebSocket (RFC 6455 over the client's fingerprinted TLS). Blocking, like the
+// rest of this ABI: each call drives the client's loop until its event. A
+// holytls_ws is a single long-lived bidirectional connection — drive it from
+// one thread, and not concurrently with that client's other calls. Over h2 the
+// connection uses RFC 8441 Extended CONNECT; otherwise the HTTP/1.1 Upgrade.
+// ---------------------------------------------------------------------------
+
+typedef struct holytls_ws holytls_ws;
+
+// One received WebSocket message (or the peer's Close). `data` is owned by the
+// holytls_ws and valid only until the next holytls_ws_* call — copy it out.
+typedef struct holytls_ws_message {
+  int is_text;          // 1 = text frame, 0 = binary
+  const uint8_t *data;  // payload bytes (binary-safe; may hold NULs)
+  size_t len;
+  uint16_t close_code;  // set when holytls_ws_recv returns 0 (the peer Close)
+} holytls_ws_message;
+
+// Open a WebSocket to `url` (wss://… ; ws://… and https://… accepted) with
+// optional extra handshake headers. Returns NULL only on a NULL client/url; on
+// a failed handshake it returns a handle whose holytls_ws_error() is set (free
+// it normally).
+holytls_ws *holytls_ws_connect(holytls_client *c, const char *url,
+                               const holytls_header *headers,
+                               size_t header_count);
+
+// Send a text / binary message (one frame). Returns 1 on success, 0 if the
+// connection is closed or failed.
+int holytls_ws_send_text(holytls_ws *ws, const char *text, size_t len);
+int holytls_ws_send_binary(holytls_ws *ws, const uint8_t *data, size_t len);
+
+// Receive the next message (auto-answers pings). Returns 1 and fills *out with a
+// message; 0 and fills *out with the peer's Close (close_code); -1 on error / a
+// dead connection; -2 if `timeout_ms` elapsed with no message (the connection
+// stays usable; 0 = block indefinitely). *out->data is valid until the next
+// holytls_ws_* call.
+int holytls_ws_recv(holytls_ws *ws, holytls_ws_message *out,
+                    uint64_t timeout_ms);
+
+// Send a Close (code + optional reason, NULL = none) and complete teardown.
+void holytls_ws_close(holytls_ws *ws, uint16_t code, const char *reason);
+void holytls_ws_free(holytls_ws *ws);
+
+// Negotiated transport: 1 = HTTP/1.1 Upgrade, 2 = HTTP/2 Extended CONNECT, 0 =
+// none (failed). And the last error message, or NULL when there is none.
+int holytls_ws_transport(holytls_ws *ws);
+const char *holytls_ws_error(holytls_ws *ws);
+
+// ---------------------------------------------------------------------------
 // Misc.
 // ---------------------------------------------------------------------------
 

@@ -26,6 +26,19 @@ struct Req {
                   // so h2_session_release can free any still-live decoder
                   // (nghttp2_session_del frees open streams WITHOUT firing
                   // on_stream_close, which would otherwise leak the decoder)
+  // WebSocket over H2 (RFC 8441): is_ws marks a bidirectional CONNECT stream.
+  // Inbound DATA goes to on_data (opaque, not decoded); outbound bytes queue in
+  // wq (arena-backed, reused across sends — drained by ws_data_read_cb right
+  // after each send, so its high-water mark is one frame, not the whole stream).
+  B32 is_ws;
+  H2ConnectFn on_connect;
+  void *on_connect_user;
+  H2DataFn on_data;
+  void *on_data_user;
+  B32 ws_connected;  // on_connect fired (response HEADERS seen)
+  U8 *wq;
+  U64 wq_len, wq_off, wq_cap;
+  B32 ws_eof;  // h2_session_ws_finish requested: EOF once the queue drains
 };
 
 struct H2Session {
@@ -107,7 +120,11 @@ internal int on_data_cb(nghttp2_session *session, U8 flags, S32 stream_id,
   (void)flags;
   H2Session *s = (H2Session *)user;
   Req *req = (Req *)nghttp2_session_get_stream_user_data(session, stream_id);
-  if (req && req->on_chunk) {
+  if (req && req->is_ws) {
+    // WebSocket CONNECT stream: hand the raw DATA (WS frame bytes) to on_data
+    // verbatim — no body buffering, no Content-Encoding decode.
+    if (req->on_data) req->on_data(req->on_data_user, data, len);
+  } else if (req && req->on_chunk) {
     // Streaming: lazily build the decoder from the (now-complete) response
     // headers, then push DATA through it -> decoded chunks to on_chunk. A
     // decode/bomb failure marks the stream so close delivers ok=0.
@@ -146,6 +163,11 @@ internal int on_stream_close_cb(nghttp2_session *session, S32 stream_id,
   if (!req) return 0;
   if (s->open_streams > 0) s->open_streams -= 1;
 
+  if (req->is_ws) {  // CONNECT stream closed: signal EOF (data==0,len==0)
+    if (req->on_data) req->on_data(req->on_data_user, 0, 0);
+    return 0;  // wq is arena-backed; nothing to free here
+  }
+
   if (req->dec) {  // streaming: tear down the decoder (also covers RST/cancel)
     stream_decoder_free(req->dec);
     req->dec = 0;
@@ -169,9 +191,22 @@ internal int on_stream_close_cb(nghttp2_session *session, S32 stream_id,
 // on_stream_close).
 internal int on_frame_recv_cb(nghttp2_session *session,
                               const nghttp2_frame *frame, void *user) {
-  (void)session;
   H2Session *s = (H2Session *)user;
   if (frame->hd.type == NGHTTP2_GOAWAY) s->goaway_received = 1;
+  // A WebSocket CONNECT stream is established when its response HEADERS arrive
+  // (:status, typically 200). The stream stays open for bidirectional DATA.
+  if (frame->hd.type == NGHTTP2_HEADERS) {
+    Req *req =
+        (Req *)nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+    if (req && req->is_ws && !req->ws_connected) {
+      req->ws_connected = 1;
+      String8 *ext =
+          header_list_get_ci(&req->headers, str8_lit("sec-websocket-extensions"));
+      if (req->on_connect)
+        req->on_connect(req->on_connect_user, req->status,
+                        ext ? *ext : str8_zero());
+    }
+  }
   return 0;
 }
 
@@ -368,6 +403,134 @@ void h2_session_cancel_stream(H2Session *s, S32 stream_id) {
                             NGHTTP2_CANCEL);
   if (s->open_streams > 0) s->open_streams -= 1;
   h2_session_flush(s);  // push the RST_STREAM out
+}
+
+//- WebSocket over H2 (RFC 8441 Extended CONNECT) ----------------------------
+
+// Deferred data provider for the CONNECT stream: emit whatever ws_send queued in
+// wq (no EOF -> the DATA frame keeps the stream open), defer when empty (resumed
+// by ws_send), and EOF after the queue drains once ws_finish set ws_eof.
+internal nghttp2_ssize ws_data_read_cb(nghttp2_session *session, S32 stream_id,
+                                       U8 *buf, size_t length, U32 *data_flags,
+                                       nghttp2_data_source *source, void *user) {
+  (void)session;
+  (void)stream_id;
+  (void)user;
+  Req *req = (Req *)source->ptr;
+  U64 remain = req->wq_len - req->wq_off;
+  if (remain == 0) {
+    if (req->ws_eof) {
+      *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+      return 0;
+    }
+    return NGHTTP2_ERR_DEFERRED;
+  }
+  U64 n = remain < length ? remain : length;
+  MemoryCopy(buf, req->wq + req->wq_off, n);
+  req->wq_off += n;
+  if (req->wq_off == req->wq_len) {  // drained: reset (arena buffer reused)
+    req->wq_len = req->wq_off = 0;
+    if (req->ws_eof) *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+  }
+  return (nghttp2_ssize)n;
+}
+
+B32 h2_session_connect_protocol_enabled(H2Session *s) {
+  if (!s->session) return 0;
+  return nghttp2_session_get_remote_settings(
+             s->session, NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL) == 1;
+}
+
+S32 h2_session_ws_connect(H2Session *s, String8 scheme, String8 authority,
+                          String8 path, String8 protocol, const Header *headers,
+                          U64 header_count, H2ConnectFn on_connect,
+                          void *connect_user, H2DataFn on_data, void *data_user) {
+  if (!s->session) return -1;
+  Temp scr = scratch_begin(0, 0);
+  // pseudo-headers (profile order) with :protocol right after :method, then the
+  // caller's headers verbatim. +1 nv for :protocol.
+  nghttp2_nv *nva = push_array_no_zero(
+      scr.arena, nghttp2_nv, s->prof->pseudo_count + 1 + header_count);
+  U64 n = 0;
+  for (U8 i = 0; i < s->prof->pseudo_count; ++i) {
+    switch (s->prof->pseudo_order[i]) {
+      case Pseudo_Method:
+        nva[n++] = make_nv(str8_lit(":method"), str8_lit("CONNECT"));
+        nva[n++] = make_nv(str8_lit(":protocol"), protocol);
+        break;
+      case Pseudo_Scheme:
+        nva[n++] = make_nv(str8_lit(":scheme"), scheme);
+        break;
+      case Pseudo_Authority:
+        nva[n++] = make_nv(str8_lit(":authority"), authority);
+        break;
+      case Pseudo_Path:
+        nva[n++] = make_nv(str8_lit(":path"), path);
+        break;
+    }
+  }
+  for (U64 i = 0; i < header_count; ++i)
+    nva[n++] = make_nv(headers[i].name, headers[i].value);
+
+  Req *req = push_struct(s->arena, Req);
+  req->sess = s;
+  header_list_init(&req->headers, s->arena);
+  req->is_ws = 1;
+  req->on_connect = on_connect;
+  req->on_connect_user = connect_user;
+  req->on_data = on_data;
+  req->on_data_user = data_user;
+
+  nghttp2_data_provider2 prd;
+  prd.source.ptr = req;
+  prd.read_callback = ws_data_read_cb;
+
+  nghttp2_priority_spec pri;
+  if (s->prof->use_priority)
+    nghttp2_priority_spec_init(&pri, (S32)s->prof->priority_dep_stream,
+                               s->prof->priority_weight,
+                               s->prof->priority_exclusive ? 1 : 0);
+  S32 sid = nghttp2_submit_request2(
+      s->session, s->prof->use_priority ? &pri : 0, nva, n, &prd, req);
+  scratch_end(scr);
+  if (sid < 0) return sid;
+  req->stream_id = sid;
+  s->open_streams += 1;
+  h2_session_flush(s);
+  return sid;
+}
+
+B32 h2_session_ws_send(H2Session *s, S32 stream_id, const U8 *data, U64 len) {
+  if (!s->session) return 0;
+  Req *req =
+      (Req *)nghttp2_session_get_stream_user_data(s->session, stream_id);
+  if (!req || !req->is_ws) return 0;
+  if (req->wq_off) {  // compact the already-sent prefix before appending
+    MemoryMove(req->wq, req->wq + req->wq_off, req->wq_len - req->wq_off);
+    req->wq_len -= req->wq_off;
+    req->wq_off = 0;
+  }
+  if (req->wq_len + len > req->wq_cap) {
+    U64 newcap = req->wq_cap ? req->wq_cap * 2 : KB(4);
+    while (newcap < req->wq_len + len) newcap *= 2;
+    U8 *nb = push_array_no_zero(s->arena, U8, newcap);
+    if (req->wq_len) MemoryCopy(nb, req->wq, req->wq_len);
+    req->wq = nb;
+    req->wq_cap = newcap;
+  }
+  MemoryCopy(req->wq + req->wq_len, data, len);
+  req->wq_len += len;
+  nghttp2_session_resume_data(s->session, stream_id);  // caller flushes
+  return 1;
+}
+
+void h2_session_ws_finish(H2Session *s, S32 stream_id) {
+  if (!s->session) return;
+  Req *req =
+      (Req *)nghttp2_session_get_stream_user_data(s->session, stream_id);
+  if (!req || !req->is_ws) return;
+  req->ws_eof = 1;
+  nghttp2_session_resume_data(s->session, stream_id);  // caller flushes
 }
 
 B32 h2_session_want_write(H2Session *s) {
