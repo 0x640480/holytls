@@ -111,6 +111,21 @@ class StatusError(HolyTLSError):
         self.response = response
 
 
+class WebSocketError(HolyTLSError):
+    """A WebSocket handshake or protocol failure."""
+
+
+class ConnectionClosed(WebSocketError):
+    """Raised by WebSocket.recv() when the peer closed the connection. Carries
+    the RFC 6455 close `code` (0 if none) and the optional `reason` text."""
+
+    def __init__(self, code: int = 0, reason: str = ""):
+        super().__init__(f"websocket closed (code={code})"
+                         + (f": {reason}" if reason else ""))
+        self.code = code
+        self.reason = reason
+
+
 class Headers:
     """An ordered, case-insensitive view of response headers. Preserves wire
     order and duplicates (a server may send several ``set-cookie`` lines);

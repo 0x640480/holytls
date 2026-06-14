@@ -15,6 +15,9 @@
 
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+// ALPN wire (RFC 7301) advertising only http/1.1 — the default WS offer.
+global const U8 g_ws_alpn_h11[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+
 // One received application message (or the peer Close), copied off the parser's
 // transient buffer so it survives until the caller's recv pops it. Flexible
 // array tail holds `len` payload bytes; malloc'd, freed when popped/dropped.
@@ -53,6 +56,7 @@ struct WsConn {
   U8Buf hs_in;              // handshake-response accumulation (pre-established)
   const Header *hs_extra;   // caller's extra handshake headers (arena copies)
   U64 hs_extra_count;
+  TlsProfile ws_h1_tls;     // profile TLS with http/1.1-only ALPN (default WS)
   B32 established;
 
   // Inbound message queue (FIFO). The parser callback enqueues; recv dequeues.
@@ -62,6 +66,7 @@ struct WsConn {
   ReqTimer *connect_timer;
   B32 got_peer_close;    // the peer sent a Close (its half of the handshake)
   B32 close_timed_out;   // close-handshake wait expired (silent peer)
+  B32 recv_timed_out;    // ws_conn_recv's deadline elapsed (connection stays up)
   B32 closed, fully_closed, fail;
   const char *err;
 };
@@ -359,6 +364,12 @@ internal void ws_on_close_timeout(void *user) {
   ws_wake(w);
 }
 
+internal void ws_on_recv_timeout(void *user) {
+  WsConn *w = (WsConn *)user;
+  w->recv_timed_out = 1;
+  ws_wake(w);
+}
+
 // --- public API -------------------------------------------------------------
 
 WsConn *ws_conn_alloc(Client *client) {
@@ -405,11 +416,21 @@ B32 ws_conn_connect(WsConn *w, String8 url, const Header *headers,
   w->hs_extra = hs;
   w->hs_extra_count = header_count;
 
-  // Honor a forced http/1.1 (h1_tls = http/1.1-only ALPN); else the normal
-  // h2,http/1.1 ALPN lets the server pick the transport (mirrors client.c).
-  const TlsProfile *tls = w->client->http_version == HttpVersion_H1
-                              ? &w->client->h1_tls
-                              : &w->client->profile->tls;
+  // Transport / ALPN selection. WebSocket over h2 (RFC 8441 Extended CONNECT) is
+  // rare — most servers (even h2-capable ones) only do the HTTP/1.1 Upgrade — so
+  // the DEFAULT offers http/1.1 only, like a fresh browser WebSocket, and the H2
+  // path is opt-in via http_version=H2. (Stage: the exact WS ClientHello ALPN is
+  // reconciled with a Chrome capture in the fingerprint pass.)
+  const TlsProfile *tls;
+  if (w->client->http_version == HttpVersion_H2) {
+    tls = &w->client->profile->tls;  // normal h2,http/1.1 ALPN -> server picks h2
+  } else {
+    w->ws_h1_tls = w->client->profile->tls;
+    w->ws_h1_tls.alpn_wire = g_ws_alpn_h11;
+    w->ws_h1_tls.alpn_wire_len = (U16)sizeof g_ws_alpn_h11;
+    w->ws_h1_tls.alps_count = 0;  // ALPS is h2-only
+    tls = &w->ws_h1_tls;
+  }
   conn_init(&w->conn, w->client->loop, w->client->ctx.ctx, tls);
   w->conn_inited = 1;
   conn_on_closed(&w->conn, ws_on_closed, w);
@@ -424,6 +445,7 @@ B32 ws_conn_connect(WsConn *w, String8 url, const Header *headers,
   while (!w->established && !w->fail && !w->closed) loop_run(w->loop);
   req_timer_disarm(w->connect_timer);
   w->connect_timer = 0;
+  if (!w->established && !w->err) w->err = "websocket connect failed";
   return w->established ? 1 : 0;
 }
 
@@ -452,11 +474,17 @@ B32 ws_conn_send(WsConn *w, WsOpcode op, const U8 *data, U64 len) {
   return ok;
 }
 
-int ws_conn_recv(WsConn *w, WsEvent *out) {
+int ws_conn_recv(WsConn *w, WsEvent *out, U64 timeout_ms) {
   if (w->cur_msg) {  // free the message handed out by the previous recv
     free(w->cur_msg);
     w->cur_msg = 0;
   }
+  w->recv_timed_out = 0;
+  ReqTimer *t = timeout_ms ? req_timer_arm(w->loop,
+                                           uv_hrtime() + timeout_ms * 1000000ull,
+                                           ws_on_recv_timeout, w)
+                           : 0;
+  int rc;
   for (;;) {
     if (w->in_head) {
       WsMsg *m = w->in_head;
@@ -470,14 +498,25 @@ int ws_conn_recv(WsConn *w, WsEvent *out) {
       if (m->is_close) {
         out->kind = WsEvent_Close;
         out->close_code = m->close_code;
-        return 0;
+        rc = 0;
+      } else {
+        out->kind = WsEvent_Message;
+        rc = 1;
       }
-      out->kind = WsEvent_Message;
-      return 1;
+      break;
     }
-    if (w->fail || w->closed) return -1;
-    loop_run(w->loop);  // blocks until an event / close wakes us
+    if (w->fail || w->closed) {
+      rc = -1;
+      break;
+    }
+    if (w->recv_timed_out) {
+      rc = -2;  // deadline elapsed; the connection is still usable
+      break;
+    }
+    loop_run(w->loop);  // blocks until an event / close / the deadline wakes us
   }
+  req_timer_disarm(t);
+  return rc;
 }
 
 void ws_conn_close(WsConn *w, U16 code, String8 reason) {

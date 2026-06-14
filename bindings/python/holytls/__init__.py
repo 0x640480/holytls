@@ -23,6 +23,7 @@ Cookies + redirects (a browser-like identity):
 """
 
 from holytls._models import (
+    ConnectionClosed,
     FetchMode,
     Headers,
     HolyTLSError,
@@ -33,15 +34,17 @@ from holytls._models import (
     StatusError,
     Timing,
     TransportError,
+    WebSocketError,
 )
 
 # Importing the client pulls in the native extension; keep it last so the pure
 # value types above are importable even when diagnosing a missing build.
-from holytls._client import Client, Session, version
+from holytls._client import Client, Session, WebSocket, version
 
 __all__ = [
     "Client",
     "Session",
+    "WebSocket",
     "Response",
     "Headers",
     "Timing",
@@ -52,6 +55,8 @@ __all__ = [
     "HolyTLSError",
     "TransportError",
     "StatusError",
+    "WebSocketError",
+    "ConnectionClosed",
     "version",
 ]
 

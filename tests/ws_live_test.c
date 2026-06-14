@@ -34,8 +34,8 @@ internal B32 send_and_expect_echo(WsConn *ws, WsOpcode op, const U8 *payload,
   if (!ws_conn_send(ws, op, payload, len)) return 0;
   for (int i = 0; i < budget; ++i) {
     WsEvent ev;
-    int rc = ws_conn_recv(ws, &ev);
-    if (rc != 1) return 0;  // close or error before the echo
+    int rc = ws_conn_recv(ws, &ev, 10000);  // 10s deadline: don't hang the test
+    if (rc != 1) return 0;  // close / error / timeout before the echo
     if (ev.op == op && ev.len == len && memcmp(ev.data, payload, len) == 0)
       return 1;
     // else: the greeting banner (or another message) — keep looking.

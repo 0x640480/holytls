@@ -36,8 +36,10 @@ B32 ws_conn_send(WsConn *w, WsOpcode op, const U8 *data, U64 len);
 
 // Blocking: receive the next application message (auto-answers pings). Returns 1
 // and fills *out with a Message (out->data valid until the next ws_conn_* call);
-// 0 and fills *out with the peer's Close; -1 on error / a dead transport.
-int ws_conn_recv(WsConn *w, WsEvent *out);
+// 0 and fills *out with the peer's Close; -1 on error / a dead transport; -2 if
+// `timeout_ms` elapsed with no message (the connection stays usable). 0 timeout
+// blocks indefinitely.
+int ws_conn_recv(WsConn *w, WsEvent *out, U64 timeout_ms);
 
 // Send a Close frame (code + optional reason) and begin teardown.
 void ws_conn_close(WsConn *w, U16 code, String8 reason);
