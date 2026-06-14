@@ -391,6 +391,7 @@ holytls_test_defer(http_version_live_test)
 holytls_test(proxy_test)
 holytls_test(response_test)
 holytls_test(stream_decode_test)
+holytls_test(ws_frame_test)
 # Offline tests sharing the in-process loopback origin (tests/support).
 holytls_test(request_test       tests/support/loopback_server.c)
 holytls_test(stream_test        tests/support/loopback_server.c)
