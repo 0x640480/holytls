@@ -65,7 +65,9 @@ void h2_session_cancel_stream(H2Session *s, S32 stream_id);
 // on_connect(:status), inbound DATA streams to on_data, outbound bytes queue via
 // h2_session_ws_send. DATA is opaque (no Content-Encoding handling): WS frames
 // ride the stream body directly.
-typedef void (*H2ConnectFn)(void *user, int status);  // response :status arrived
+// response :status arrived; `extensions` is the Sec-WebSocket-Extensions
+// response header value (str8_zero if absent) for permessage-deflate negotiation.
+typedef void (*H2ConnectFn)(void *user, int status, String8 extensions);
 // Inbound CONNECT-stream DATA. A final call with (data==0, len==0) signals the
 // stream closed (EOF) — real DATA chunks are always non-empty.
 typedef void (*H2DataFn)(void *user, const U8 *data, U64 len);

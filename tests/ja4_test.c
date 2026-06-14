@@ -104,6 +104,23 @@ int main(void) {
   // same JA4 — which is exactly the JA4 captured from real Chrome 149
   // (powhttp).
   test_profile(a, profile_chrome149(), "t13d1516h2_8daaf6152771_d8a2da3f94cd");
+
+  // WebSocket ClientHello: a fresh browser WebSocket connection offers an
+  // http/1.1-only ALPN and DROPS the ALPS (application_settings, 0x4469)
+  // extension — 15 extensions instead of 16, same ciphers/sig-algs. This is the
+  // transformation src/ws/ws.c applies (ws_h1_tls). Must hash to the JA4
+  // captured from real Chrome 149 opening wss://echo.websocket.org (powhttp):
+  // t13d1515h1_8daaf6152771_0a20fe35d3a5 (note the h1 + 1515 vs the h2 + 1516
+  // above; the cipher hash 8daaf6152771 is unchanged).
+  {
+    static const U8 ws_alpn[] = {8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+    Profile ws = *profile_chrome149();
+    ws.name = "chrome149-ws";
+    ws.tls.alpn_wire = ws_alpn;
+    ws.tls.alpn_wire_len = (U16)sizeof ws_alpn;
+    ws.tls.alps_count = 0;
+    test_profile(a, &ws, "t13d1515h1_8daaf6152771_0a20fe35d3a5");
+  }
   arena_release(a);
   fprintf(stderr, "[ja4_test] %d checks, %d failures\n", g_checks, g_fails);
   return g_fails ? 1 : 0;

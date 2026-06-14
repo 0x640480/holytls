@@ -200,7 +200,11 @@ internal int on_frame_recv_cb(nghttp2_session *session,
         (Req *)nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
     if (req && req->is_ws && !req->ws_connected) {
       req->ws_connected = 1;
-      if (req->on_connect) req->on_connect(req->on_connect_user, req->status);
+      String8 *ext =
+          header_list_get_ci(&req->headers, str8_lit("sec-websocket-extensions"));
+      if (req->on_connect)
+        req->on_connect(req->on_connect_user, req->status,
+                        ext ? *ext : str8_zero());
     }
   }
   return 0;

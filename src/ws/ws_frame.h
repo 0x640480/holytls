@@ -22,9 +22,11 @@ typedef enum WsOpcode {
 // Build one CLIENT frame into `out` (arena-backed). Per RFC 6455 a client MUST
 // mask every frame: `mask_key` is 4 random bytes (the caller supplies them, e.g.
 // from RAND_bytes) XORed over the payload. `fin` ends a message; for a single
-// (unfragmented) message pass fin=1 with the text/binary opcode.
-void ws_frame_build(U8Buf *out, WsOpcode op, B32 fin, const U8 *payload, U64 len,
-                    const U8 mask_key[4]);
+// (unfragmented) message pass fin=1 with the text/binary opcode. `rsv1` sets the
+// RSV1 bit (RFC 7692 permessage-deflate: a compressed message's FIRST frame);
+// pass 0 otherwise.
+void ws_frame_build(U8Buf *out, WsOpcode op, B32 fin, B32 rsv1, const U8 *payload,
+                    U64 len, const U8 mask_key[4]);
 
 // --- incremental receive parser --------------------------------------------
 
@@ -42,6 +44,7 @@ struct WsEvent {
   const U8 *data;  // message / control payload — valid only during the callback
   U64 len;
   U16 close_code;  // for WsEvent_Close (0 if the peer sent no code)
+  B32 compressed;  // RFC 7692: the message's RSV1 was set (payload still deflated)
 };
 
 typedef void (*WsEventFn)(void *user, const WsEvent *ev);
@@ -60,6 +63,13 @@ struct WsParser {
   WsOpcode cur_op;
   B32 cur_control;  // current frame is a control frame (buffer to ctrl)
   U64 payload_remaining;
+
+  // RFC 7692 permessage-deflate. allow_rsv1 is enabled once the handshake
+  // negotiates the extension; then a data message's FIRST frame may set RSV1 to
+  // mark the (whole, reassembled) message compressed — surfaced as
+  // WsEvent.compressed. RSV1 on a control/continuation frame stays illegal.
+  B32 allow_rsv1;
+  B32 msg_rsv1;  // the in-progress message's first frame had RSV1 set
 
   // Reassembled application message (reused across messages — malloc'd, grows;
   // len reset to 0 after each complete message, capacity kept).
@@ -80,6 +90,12 @@ struct WsParser {
 // default). Pair with ws_parser_free.
 void ws_parser_init(WsParser *p, U64 max_message);
 void ws_parser_free(WsParser *p);
+
+// Permit RSV1 (RFC 7692 permessage-deflate). Call after the handshake negotiates
+// the extension; until then RSV1 is a protocol error like RSV2/RSV3.
+internal inline void ws_parser_allow_compression(WsParser *p) {
+  p->allow_rsv1 = 1;
+}
 
 // Feed received bytes; each complete event is delivered to `cb(user, ...)` (one
 // feed may yield several). Returns bytes consumed (== len) or <0 on a protocol

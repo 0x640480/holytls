@@ -1,6 +1,9 @@
 #include "support/loopback_server.h"
 
 #include <nghttp2/nghttp2.h>
+#ifdef HOLYTLS_HAVE_ZLIB
+#include <zlib.h>
+#endif
 #include <openssl/asn1.h>
 #include <openssl/evp.h>
 #include <openssl/nid.h>
@@ -122,10 +125,17 @@ typedef struct LbStream {
   U64 protocol_len;
   B32 is_ws;           // a CONNECT + :protocol stream
   B32 ws_responded;    // 200 sent, deferred echo provider installed
+  B32 ws_pmd;          // permessage-deflate negotiated (client offered it)
+  char req_ext[64];    // the client's Sec-WebSocket-Extensions request value
+  U64 req_ext_len;
   U8 *win;             // inbound client (masked) frame accumulator
   U64 win_len, win_cap;
   U8 *wout;            // re-framed server (unmasked) bytes; the provider drains
   U64 wout_len, wout_off, wout_cap;
+#ifdef HOLYTLS_HAVE_ZLIB
+  z_stream sin, sout;  // server inflate (client->server) + deflate (echo) streams
+  B32 sin_init, sout_init;
+#endif
   struct LbStream *next;  // per-connection list (freed on close incl. withheld)
 } LbStream;
 
@@ -152,7 +162,9 @@ struct LbServer {
   LbAlpn alpn;
   LbHandler handler;
   void *user;
-  B32 ws_echo;  // RFC 8441 Extended CONNECT echo origin (lb_ws_echo_start)
+  B32 ws_echo;       // RFC 8441 Extended CONNECT echo origin (lb_ws_echo_start)
+  B32 ws_pmd;        // also negotiate permessage-deflate (lb_ws_echo_start_pmd)
+  B32 ws_pmd_ncto;   // negotiate client_no_context_takeover too (deflateReset path)
   LbConn *conns;
 };
 
@@ -167,6 +179,10 @@ static void lb_conn_on_closed(uv_handle_t *h) {
     free(st->resp_body);
     free(st->win);
     free(st->wout);
+#ifdef HOLYTLS_HAVE_ZLIB
+    if (st->sin_init) inflateEnd(&st->sin);
+    if (st->sout_init) deflateEnd(&st->sout);
+#endif
     free(st);
   }
   if (c->h2) nghttp2_session_del(c->h2);
@@ -240,6 +256,9 @@ static int lb_h2_header(nghttp2_session *s, const nghttp2_frame *frame,
   } else if (str8_match(n, str8_lit(":protocol"))) {
     lb_copy(st->protocol, sizeof st->protocol, value, valuelen);
     st->protocol_len = strlen(st->protocol);
+  } else if (str8_match_ci(n, str8_lit("sec-websocket-extensions"))) {
+    lb_copy(st->req_ext, sizeof st->req_ext, value, valuelen);
+    st->req_ext_len = strlen(st->req_ext);
   }
   return 0;
 }
@@ -271,21 +290,111 @@ static void lb_wout_append(LbStream *st, const U8 *d, U64 n) {
   if (st->wout_len + n > st->wout_cap) {
     U64 ncap = st->wout_cap ? st->wout_cap : 65536;
     while (ncap < st->wout_len + n) ncap *= 2;
-    st->wout = (U8 *)realloc(st->wout, ncap);
+    U8 *nb = (U8 *)realloc(st->wout, ncap);
+    if (!nb) return;  // OOM (test helper): drop the append
+    st->wout = nb;
     st->wout_cap = ncap;
   }
   MemoryCopy(st->wout + st->wout_len, d, n);
   st->wout_len += n;
 }
+#ifdef HOLYTLS_HAVE_ZLIB
+// Server-side permessage-deflate (RFC 7692). Persistent streams == context
+// takeover. inflate: append the 00 00 ff ff marker, raw-inflate. deflate: raw
+// deflate + Z_SYNC_FLUSH, strip the 4-byte trailer. *out is malloc'd.
+static B32 lb_pmd_inflate(LbStream *st, const U8 *in, U64 len, U8 **out,
+                          U64 *outlen) {
+  if (!st->sin_init) {
+    MemoryZeroStruct(&st->sin);
+    if (inflateInit2(&st->sin, -15) != Z_OK) return 0;
+    st->sin_init = 1;
+  }
+  static const U8 tail[4] = {0x00, 0x00, 0xff, 0xff};
+  const U8 *ch[2] = {in, tail};
+  U64 cl[2] = {len, 4};
+  U64 cap = len ? len * 4 + 64 : 256, n = 0;
+  U8 *buf = (U8 *)malloc(cap);
+  for (int c = 0; c < 2; ++c) {
+    st->sin.next_in = (Bytef *)ch[c];
+    st->sin.avail_in = (uInt)cl[c];
+    int rv;
+    do {
+      if (n + 16384 > cap) {
+        U8 *nb = (U8 *)realloc(buf, (cap = cap * 2 + 16384));
+        if (!nb) {
+          free(buf);
+          return 0;
+        }
+        buf = nb;
+      }
+      st->sin.next_out = buf + n;
+      st->sin.avail_out = (uInt)(cap - n);
+      rv = inflate(&st->sin, Z_NO_FLUSH);
+      if (rv != Z_OK && rv != Z_STREAM_END && rv != Z_BUF_ERROR) {
+        free(buf);
+        return 0;
+      }
+      n = cap - st->sin.avail_out;
+      if (rv == Z_BUF_ERROR) break;
+    } while (st->sin.avail_in > 0 || st->sin.avail_out == 0);
+  }
+  *out = buf;
+  *outlen = n;
+  return 1;
+}
+static B32 lb_pmd_deflate(LbStream *st, const U8 *in, U64 len, U8 **out,
+                          U64 *outlen) {
+  if (!st->sout_init) {
+    MemoryZeroStruct(&st->sout);
+    if (deflateInit2(&st->sout, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8,
+                     Z_DEFAULT_STRATEGY) != Z_OK)
+      return 0;
+    st->sout_init = 1;
+  }
+  st->sout.next_in = (Bytef *)in;
+  st->sout.avail_in = (uInt)len;
+  U64 cap = len + 64, n = 0;
+  U8 *buf = (U8 *)malloc(cap);
+  do {
+    if (n + 16384 > cap) {
+      U8 *nb = (U8 *)realloc(buf, (cap = cap * 2 + 16384));
+      if (!nb) {
+        free(buf);
+        return 0;
+      }
+      buf = nb;
+    }
+    st->sout.next_out = buf + n;
+    st->sout.avail_out = (uInt)(cap - n);
+    int rv = deflate(&st->sout, Z_SYNC_FLUSH);
+    if (rv != Z_OK && rv != Z_BUF_ERROR) {
+      free(buf);
+      return 0;
+    }
+    n = cap - st->sout.avail_out;
+  } while (st->sout.avail_out == 0);
+  if (n >= 4) n -= 4;  // strip the 00 00 ff ff sync marker
+  if (n == 0) buf[n++] = 0x00;  // RFC 7692 7.2.3.6: empty -> a single 0x00 octet
+  *out = buf;
+  *outlen = n;
+  return 1;
+}
+#endif  // HOLYTLS_HAVE_ZLIB
+
 // Parse complete client (masked) frames out of win and re-emit each as an
 // UNMASKED server frame into wout (a client MUST mask, a server MUST NOT — so a
-// byte echo would bounce back masked frames the client rejects). A leftover
-// partial frame stays buffered in win. The echoed frame keeps the opcode + FIN.
+// byte echo would bounce back masked frames the client rejects). Under
+// permessage-deflate, a data frame's RSV1-compressed payload is inflated then
+// re-deflated for the echo (exercising the client's deflate AND inflate). A
+// leftover partial frame stays buffered in win. The client sends single (FIN)
+// frames, so each frame is a whole message.
 static void lb_ws_reframe(LbStream *st) {
   U64 i = 0;
   for (;;) {
     if (st->win_len - i < 2) break;
     U8 b0 = st->win[i], b1 = st->win[i + 1];
+    B32 rsv1 = (b0 & 0x40) != 0;
+    U8 opcode = b0 & 0x0f;
     B32 masked = (b1 & 0x80) != 0;
     U64 plen = b1 & 0x7f;
     U64 hdr = 2;
@@ -303,27 +412,53 @@ static void lb_ws_reframe(LbStream *st) {
     if (st->win_len - i < hdr + mklen + plen) break;  // incomplete frame
     const U8 *mk = st->win + i + hdr;
     const U8 *pl = st->win + i + hdr + mklen;
-    // Server frame header: same b0 (FIN+opcode), no MASK bit.
+    U8 *raw = (U8 *)malloc(plen ? plen : 1);  // unmasked frame payload
+    if (!raw) break;                          // OOM (test helper)
+    for (U64 j = 0; j < plen; ++j) raw[j] = masked ? (U8)(pl[j] ^ mk[j & 3]) : pl[j];
+    i += hdr + mklen + plen;
+
+    const U8 *epay = raw;  // bytes to echo back
+    U64 elen = plen;
+    B32 ersv1 = 0;
+    U8 *tmp = 0;  // re-deflated echo (freed below)
+    B32 is_data = (opcode == 0x1 || opcode == 0x2 || opcode == 0x0);
+#ifdef HOLYTLS_HAVE_ZLIB
+    if (st->ws_pmd && is_data) {
+      const U8 *msg = raw;
+      U64 msglen = plen;
+      U8 *inf = 0;
+      U64 il = 0;
+      if (rsv1 && lb_pmd_inflate(st, raw, plen, &inf, &il)) {
+        msg = inf;
+        msglen = il;
+      }
+      U64 dl = 0;
+      if (lb_pmd_deflate(st, msg, msglen, &tmp, &dl)) {
+        epay = tmp;
+        elen = dl;
+        ersv1 = 1;
+      }
+      if (inf) free(inf);
+    }
+#endif
+    // Server frame header: FIN (from b0) + (RSV1 if recompressed) + opcode.
     U8 sh[10];
     U64 shl = 0;
-    sh[shl++] = b0;
-    if (plen < 126)
-      sh[shl++] = (U8)plen;
-    else if (plen <= 0xffff) {
+    sh[shl++] = (U8)((b0 & 0x80) | (ersv1 ? 0x40 : 0) | opcode);
+    if (elen < 126)
+      sh[shl++] = (U8)elen;
+    else if (elen <= 0xffff) {
       sh[shl++] = 126;
-      sh[shl++] = (U8)(plen >> 8);
-      sh[shl++] = (U8)plen;
+      sh[shl++] = (U8)(elen >> 8);
+      sh[shl++] = (U8)elen;
     } else {
       sh[shl++] = 127;
-      for (int k = 7; k >= 0; --k) sh[shl++] = (U8)(plen >> (k * 8));
+      for (int k = 7; k >= 0; --k) sh[shl++] = (U8)(elen >> (k * 8));
     }
     lb_wout_append(st, sh, shl);
-    // Unmask the payload into wout.
-    for (U64 j = 0; j < plen; ++j) {
-      U8 byte = masked ? (U8)(pl[j] ^ mk[j & 3]) : pl[j];
-      lb_wout_append(st, &byte, 1);
-    }
-    i += hdr + mklen + plen;
+    lb_wout_append(st, epay, elen);
+    if (tmp) free(tmp);
+    free(raw);
   }
   if (i) {  // drop consumed bytes, keep the partial tail
     MemoryMove(st->win, st->win + i, st->win_len - i);
@@ -340,7 +475,9 @@ static int lb_h2_data(nghttp2_session *s, U8 flags, S32 sid, const U8 *data,
     if (st->win_len + len > st->win_cap) {
       U64 ncap = st->win_cap ? st->win_cap : 65536;
       while (ncap < st->win_len + len) ncap *= 2;
-      st->win = (U8 *)realloc(st->win, ncap);
+      U8 *nw = (U8 *)realloc(st->win, ncap);
+      if (!nw) return 0;  // OOM (test helper)
+      st->win = nw;
       st->win_cap = ncap;
     }
     MemoryCopy(st->win + st->win_len, data, len);
@@ -391,12 +528,29 @@ static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
       str8_match(str8((U8 *)st->method, st->method_len), str8_lit("CONNECT"))) {
     st->is_ws = 1;
     st->ws_responded = 1;
-    nghttp2_nv nv[1] = {
+    nghttp2_nv nv[2] = {
         {(U8 *)":status", (U8 *)"200", 7, 3, NGHTTP2_NV_FLAG_NONE}};
+    size_t nvn = 1;
+    // permessage-deflate: accept it (echo the extension) if enabled and the
+    // client offered it — the echo path then inflates/re-deflates each message.
+    if (c->server->ws_pmd && st->req_ext_len &&
+        str8_find(str8((U8 *)st->req_ext, st->req_ext_len),
+                  str8_lit("permessage-deflate")) >= 0) {
+      st->ws_pmd = 1;
+      // ncto mode also imposes client_no_context_takeover, exercising the
+      // client's per-message deflateReset. (The server's own inflate stays
+      // persistent — it still decodes the client's independently-deflated
+      // messages.)
+      const char *ev = c->server->ws_pmd_ncto
+                           ? "permessage-deflate; client_no_context_takeover"
+                           : "permessage-deflate";
+      nv[nvn++] = (nghttp2_nv){(U8 *)"sec-websocket-extensions", (U8 *)ev, 24,
+                               strlen(ev), NGHTTP2_NV_FLAG_NONE};
+    }
     nghttp2_data_provider2 prd;
     prd.source.ptr = st;
     prd.read_callback = lb_ws_echo_read;
-    nghttp2_submit_response2(c->h2, st->stream_id, nv, 1, &prd);
+    nghttp2_submit_response2(c->h2, st->stream_id, nv, nvn, &prd);
     return 0;
   }
 
@@ -460,6 +614,10 @@ static int lb_h2_stream_close(nghttp2_session *s, S32 sid, U32 ec, void *user) {
     free(st->resp_body);
     free(st->win);
     free(st->wout);
+#ifdef HOLYTLS_HAVE_ZLIB
+    if (st->sin_init) inflateEnd(&st->sin);
+    if (st->sout_init) deflateEnd(&st->sout);
+#endif
     free(st);
     nghttp2_session_set_stream_user_data(s, sid, 0);
   }
@@ -644,6 +802,16 @@ LbServer *lb_ws_echo_start(EventLoop *loop, U16 *out_port) {
   s->ws_echo = 1;  // handler stays 0: this origin only serves WS Extended CONNECT
   U16 port = lb_listen(loop, &s->listener, lb_on_conn, s);
   if (out_port) *out_port = port;
+  return s;
+}
+LbServer *lb_ws_echo_start_pmd(EventLoop *loop, U16 *out_port) {
+  LbServer *s = lb_ws_echo_start(loop, out_port);
+  s->ws_pmd = 1;  // also negotiate permessage-deflate when the client offers it
+  return s;
+}
+LbServer *lb_ws_echo_start_pmd_ncto(EventLoop *loop, U16 *out_port) {
+  LbServer *s = lb_ws_echo_start_pmd(loop, out_port);
+  s->ws_pmd_ncto = 1;  // impose client_no_context_takeover
   return s;
 }
 static void lb_on_listener_closed(uv_handle_t *h) {

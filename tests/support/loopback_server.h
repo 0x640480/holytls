@@ -74,4 +74,13 @@ void lb_server_stop(LbServer *s);
 // (non-CONNECT) requests are ignored. Stop/free with lb_server_stop.
 LbServer *lb_ws_echo_start(EventLoop *loop, U16 *out_port);
 
+// Like lb_ws_echo_start, but also negotiates RFC 7692 permessage-deflate when
+// the client offers it: the echo path inflates each compressed client message
+// and re-deflates it for the reply (exercising the client's deflate + inflate).
+LbServer *lb_ws_echo_start_pmd(EventLoop *loop, U16 *out_port);
+
+// Like lb_ws_echo_start_pmd, but also negotiates client_no_context_takeover, so
+// the client must reset its deflate stream after every message (RFC 7692).
+LbServer *lb_ws_echo_start_pmd_ncto(EventLoop *loop, U16 *out_port);
+
 #endif  // HOLYTLS_TEST_LOOPBACK_SERVER_H
