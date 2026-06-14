@@ -32,7 +32,6 @@ internal B32 quic_init_ngtcp2(QuicConnection *c);
 internal void quic_begin_udp(QuicConnection *c);
 internal void quic_on_resolved(uv_getaddrinfo_t *req, int status,
                                struct addrinfo *res);
-internal void quic_alloc_cb(uv_handle_t *h, size_t suggested, uv_buf_t *buf);
 internal void quic_recv_cb(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
                            const struct sockaddr *addr, unsigned flags);
 internal void quic_timer_cb(uv_timer_t *t);
@@ -154,7 +153,7 @@ internal void quic_begin_udp(QuicConnection *c) {
   uv_timer_init(loop_uv(c->loop), &c->timer);
   c->timer_inited = 1;
   c->timer.data = c;
-  uv_udp_recv_start(&c->udp, quic_alloc_cb, quic_recv_cb);
+  uv_udp_recv_start(&c->udp, net_alloc_cb, quic_recv_cb);
   // If 0-RTT is armed (quic_init_ngtcp2 enabled early data + restored the TP),
   // open the early window and let the caller submit its request as 0-RTT before
   // the Initial is flushed; the request bytes coalesce into the first flight.
@@ -418,7 +417,7 @@ internal void quic_on_ctrl_connected(uv_connect_t *req, int status) {
     quic_fail(c, uv_strerror(status));
     return;
   }
-  uv_read_start((uv_stream_t *)&c->ctrl, quic_alloc_cb, quic_ctrl_read_cb);
+  uv_read_start((uv_stream_t *)&c->ctrl, net_alloc_cb, quic_ctrl_read_cb);
   U8 buf[8];
   U64 m = proxy_socks5_greeting(&c->proxy, buf, sizeof buf);
   c->nlen = 0;
@@ -654,14 +653,6 @@ U64 quic_conn_encode_0rtt_tp(QuicConnection *c, U8 *dst, U64 cap) {
 }
 
 //- io
-
-internal void quic_alloc_cb(uv_handle_t *h, size_t suggested, uv_buf_t *buf) {
-  (void)h;
-  (void)suggested;
-  static thread_local U8 storage[65536];
-  buf->base = (char *)storage;
-  buf->len = sizeof storage;
-}
 
 internal void quic_recv_cb(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
                            const struct sockaddr *addr, unsigned flags) {

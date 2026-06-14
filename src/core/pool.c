@@ -3,6 +3,7 @@
 #include "core/decompress.h"
 #include "core/url.h"
 #include "h3/h3_control.h"
+#include "h3/h3_nv.h"
 
 // This file is part of the unity TU and is #included AFTER core/client.c, so it
 // reuses client.c's internal helpers directly: method_str, origin_of,
@@ -117,13 +118,7 @@ internal void pool_req_done(PoolReq *r) {
 internal void pool_req_deliver_error(PoolReq *r, const char *err) {
   if (r->responded) return;
   r->responded = 1;
-  Response resp;
-  MemoryZeroStruct(&resp);
-  resp.error = err;
-  resp.final_url = r->url;
-  client_cb_enter(r->client);
-  if (r->cb) r->cb(r->user, &resp);
-  client_cb_exit(r->client);
+  client_deliver_error(r->client, r->cb, r->user, r->url, err);
 }
 internal void pool_req_fail(PoolReq *r, const char *err) {
   pool_req_deliver_error(r, err);
@@ -615,15 +610,6 @@ internal void pool_h2_drain(void *user) {
 }
 
 //- H3 transport (per-conn QPACK + control/qpack uni streams; per-req bidi) ---
-internal nghttp3_nv pool_h3_nv(String8 n, String8 v) {
-  nghttp3_nv nv;
-  nv.name = n.str;
-  nv.namelen = n.size;
-  nv.value = v.str;
-  nv.valuelen = v.size;
-  nv.flags = NGHTTP3_NV_FLAG_NONE;
-  return nv;
-}
 
 internal PoolReq *pool_h3_find_stream(H3Conn *hc, S64 sid) {
   for (int i = 0; i < hc->stream_count; ++i)
@@ -754,22 +740,22 @@ internal void pool_h3_submit(PoolConn *pc, PoolReq *r) {
   for (U8 i = 0; i < hc->prof->pseudo_count; ++i) {
     switch (hc->prof->pseudo_order[i]) {
       case Pseudo_Method:
-        nva[nvlen++] = pool_h3_nv(str8_lit(":method"), method);
+        nva[nvlen++] = h3_make_nv(str8_lit(":method"), method);
         break;
       case Pseudo_Authority:
-        nva[nvlen++] = pool_h3_nv(str8_lit(":authority"), r->authority);
+        nva[nvlen++] = h3_make_nv(str8_lit(":authority"), r->authority);
         break;
       case Pseudo_Scheme:
-        nva[nvlen++] = pool_h3_nv(str8_lit(":scheme"), str8_lit("https"));
+        nva[nvlen++] = h3_make_nv(str8_lit(":scheme"), str8_lit("https"));
         break;
       case Pseudo_Path:
-        nva[nvlen++] = pool_h3_nv(str8_lit(":path"), r->path);
+        nva[nvlen++] = h3_make_nv(str8_lit(":path"), r->path);
         break;
     }
   }
   for (U64 i = 0; i < r->req_headers.count; ++i)
     nva[nvlen++] =
-        pool_h3_nv(r->req_headers.v[i].name, r->req_headers.v[i].value);
+        h3_make_nv(r->req_headers.v[i].name, r->req_headers.v[i].value);
 
   nghttp3_buf pbuf, rbuf, ebuf;
   U8 raw_pbuf[16];

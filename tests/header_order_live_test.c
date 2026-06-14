@@ -201,8 +201,13 @@ int main(void) {
   exp_raw[qn++] = "accept";
   exp_raw[qn++] = "x-raw";
   MemoryZeroStruct(&cx);
-  client_send(&client, Method_GET, str8_cstring(url), rawh, ArrayCount(rawh), 0,
-              0, on_response, &cx);
+  client_request(&client,
+                 &(RequestParams){.method = Method_GET,
+                                  .url = str8_cstring(url),
+                                  .headers = rawh,
+                                  .header_count = ArrayCount(rawh),
+                                  .no_redirects = 1},
+                 on_response, &cx);
   loop_run(&loop);
   check_received(&cx, exp_raw, qn, "override");
 
@@ -218,8 +223,13 @@ int main(void) {
   exp_ro[rqn++] = "user-agent";
   exp_ro[rqn++] = "accept";
   MemoryZeroStruct(&cx);
-  client_send(&client, Method_GET, str8_cstring(url), rawh, ArrayCount(rawh), 0,
-              0, on_response, &cx);
+  client_request(&client,
+                 &(RequestParams){.method = Method_GET,
+                                  .url = str8_cstring(url),
+                                  .headers = rawh,
+                                  .header_count = ArrayCount(rawh),
+                                  .no_redirects = 1},
+                 on_response, &cx);
   loop_run(&loop);
   check_received(&cx, exp_ro, rqn, "override+order");
   client_set_header_order(&client, 0, 0);

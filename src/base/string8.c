@@ -8,8 +8,6 @@ String8 str8_range(U8 *first, U8 *one_past_last) {
   return str8(first, (U64)(one_past_last - first));
 }
 
-char ascii_lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
-
 B32 str8_match(String8 a, String8 b) {
   return a.size == b.size &&
          (a.size == 0 || MemoryCompare(a.str, b.str, a.size) == 0);
@@ -18,7 +16,7 @@ B32 str8_match(String8 a, String8 b) {
 B32 str8_match_ci(String8 a, String8 b) {
   if (a.size != b.size) return 0;
   for (U64 i = 0; i < a.size; ++i)
-    if (ascii_lower((char)a.str[i]) != ascii_lower((char)b.str[i])) return 0;
+    if (char_to_lower(a.str[i]) != char_to_lower(b.str[i])) return 0;
   return 1;
 }
 
@@ -120,12 +118,19 @@ S64 str8_find_ci(String8 hay, String8 needle) {
   if (needle.size > hay.size) return -1;
   for (U64 i = 0; i + needle.size <= hay.size; ++i) {
     U64 j = 0;
-    while (j < needle.size && ascii_lower((char)hay.str[i + j]) ==
-                                  ascii_lower((char)needle.str[j]))
+    while (j < needle.size &&
+           char_to_lower(hay.str[i + j]) == char_to_lower(needle.str[j]))
       ++j;
     if (j == needle.size) return (S64)i;
   }
   return -1;
+}
+
+void hex_encode(U8 *out, const U8 *bytes, U64 n) {
+  for (U64 i = 0; i < n; ++i) {
+    out[2 * i] = (U8)hex_digit_lower((U8)(bytes[i] >> 4));
+    out[2 * i + 1] = (U8)hex_digit_lower(bytes[i]);
+  }
 }
 
 String8 str8_from_u64(Arena *arena, U64 value, U32 radix, U8 min_digits) {
@@ -133,7 +138,7 @@ String8 str8_from_u64(Arena *arena, U64 value, U32 radix, U8 min_digits) {
   char tmp[64];  // u64 in base 2 is at most 64 digits
   U64 n = 0;
   do {
-    tmp[n++] = "0123456789abcdef"[value % radix];
+    tmp[n++] = hex_digit_lower((U8)(value % radix));
     value /= radix;
   } while (value && n < sizeof tmp);
   while (n < min_digits && n < sizeof tmp) tmp[n++] = '0';

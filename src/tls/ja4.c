@@ -50,8 +50,6 @@ internal void cur_skip(Cursor *c, U64 n) {
 
 //- hashes -------------------------------------------------------------------
 
-global const char k_hex[] = "0123456789abcdef";
-
 B32 ja4_is_grease(U16 v) {
   return (v & 0x0f0f) == 0x0a0a && (v >> 8) == (v & 0xff);
 }
@@ -64,7 +62,7 @@ String8 ja4_sha256_hex(Arena *arena, String8 s, U64 hex_chars) {
   U8 *out = push_array_no_zero(arena, U8, n);
   for (U64 i = 0; i < n; ++i) {
     U8 b = d[i >> 1];
-    out[i] = (U8)k_hex[(i & 1) ? (b & 0xf) : (b >> 4)];
+    out[i] = (U8)hex_digit_lower((i & 1) ? (b & 0xf) : (b >> 4));
   }
   return str8(out, n);
 }
@@ -73,10 +71,7 @@ internal String8 md5_hex(Arena *arena, String8 s) {
   U8 d[MD5_DIGEST_LENGTH];
   MD5(s.str, s.size, d);
   U8 *out = push_array_no_zero(arena, U8, 2 * MD5_DIGEST_LENGTH);
-  for (int i = 0; i < MD5_DIGEST_LENGTH; ++i) {
-    out[2 * i] = (U8)k_hex[d[i] >> 4];
-    out[2 * i + 1] = (U8)k_hex[d[i] & 0xf];
-  }
+  hex_encode(out, d, MD5_DIGEST_LENGTH);
   return str8(out, 2 * MD5_DIGEST_LENGTH);
 }
 
@@ -213,10 +208,10 @@ internal String8 join_hex(Arena *arena, const U16 *v, U64 n) {
   for (U64 i = 0; i < n; ++i) {
     if (i) out[off++] = ',';
     U16 x = v[i];
-    out[off++] = (U8)k_hex[(x >> 12) & 0xf];
-    out[off++] = (U8)k_hex[(x >> 8) & 0xf];
-    out[off++] = (U8)k_hex[(x >> 4) & 0xf];
-    out[off++] = (U8)k_hex[x & 0xf];
+    out[off++] = (U8)hex_digit_lower((U8)(x >> 12));
+    out[off++] = (U8)hex_digit_lower((U8)(x >> 8));
+    out[off++] = (U8)hex_digit_lower((U8)(x >> 4));
+    out[off++] = (U8)hex_digit_lower((U8)x);
   }
   return str8(out, off);
 }

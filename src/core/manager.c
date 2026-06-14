@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "base/base.h"
+#include "base/string8.h"  // hex_encode for the session-id formatter
 
 void manager_init(Manager *m) {
   MemoryZeroStruct(m);
@@ -25,12 +26,8 @@ void manager_set_session_timeout(Manager *m, U64 ms) {
 
 //- helpers (all called under the mutex) -------------------------------------
 internal void manager_hex(const U8 *raw, U64 n, char *out) {
-  static const char hexd[] = "0123456789abcdef";
-  for (U64 i = 0; i < n; ++i) {
-    out[i * 2] = hexd[raw[i] >> 4];
-    out[i * 2 + 1] = hexd[raw[i] & 0xf];
-  }
-  out[n * 2] = 0;
+  hex_encode((U8 *)out, raw, n);
+  out[n * 2] = 0;  // NUL-terminate (hex_encode writes only the 2*n digits)
 }
 
 internal ManagerSlot *manager_find(Manager *m, const char *id) {

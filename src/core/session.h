@@ -44,21 +44,17 @@ void session_cleanup(Session *s);  // arena_release (struct is the caller's)
 Session *session_create(const SessionConfig *cfg);
 void session_destroy(Session *s);
 
-// Issue a request on `client` (the shared transport), with this session's
-// cookies
-// + its own per-hop redirect loop. Async: the response is delivered to `cb`
-// (valid only during the callback, like the Client).
-void session_request(Session *s, Client *client, Method m, String8 url,
-                     const Header *headers, U64 header_count, const U8 *body,
-                     U64 body_len, ResponseFn cb, void *user);
+// Issue a request on `client` (the shared transport) described by `p` (see
+// RequestParams in core/client.h), with this session's cookies + its own
+// per-hop redirect loop. Async: the response is delivered to `cb` (valid only
+// during the callback, like the Client). Set `p->fetch_mode` for coherent
+// Sec-Fetch-* headers (replaces the old session_fetch). `p->no_redirects` and
+// `p->deadline_ns` are ignored — the Session always runs its own cookie-aware
+// redirect loop (up to s->max_redirects) and derives one chain-wide deadline
+// from client_set_timeout_ms.
+void session_request(Session *s, Client *client, const RequestParams *p,
+                     ResponseFn cb, void *user);
 void session_get(Session *s, Client *client, String8 url, ResponseFn cb,
                  void *user);
-
-// Like session_request, but with Sec-Fetch-* headers coherent with `mode` and
-// the request context (Sec-Fetch-Site computed from a Referer header if
-// present).
-void session_fetch(Session *s, Client *client, FetchMode mode, Method m,
-                   String8 url, const Header *headers, U64 header_count,
-                   const U8 *body, U64 body_len, ResponseFn cb, void *user);
 
 #endif  // HOLYTLS_SESSION_H

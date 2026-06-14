@@ -3,6 +3,7 @@
 #include <uv.h>
 
 #include "core/alt_svc.h"
+#include "core/client_internal.h"
 #include "core/decompress.h"
 #include "core/ech.h"
 #include "core/header_order.h"
@@ -549,16 +550,26 @@ internal void h2req_on_ready(void *user, B32 ok, const char *err) {
   h2req_drain(req);
 }
 
-internal void h2req_deliver_error(H2Request *req, const char *err) {
-  if (req->responded) return;
-  req->responded = 1;
+// Build-and-deliver an error Response (only .error + .final_url populated) to a
+// request callback, bracketed by the re-entrancy guard. The per-request
+// `responded` latch stays at each call site — it lives in differently-typed
+// request structs (H2Request / QuicRequest / PoolReq) that otherwise share this
+// identical tail across the direct and pooled paths.
+internal void client_deliver_error(Client *c, ResponseFn cb, void *user,
+                                   String8 final_url, const char *err) {
   Response resp;
   MemoryZeroStruct(&resp);
   resp.error = err;
-  resp.final_url = req->url;
-  client_cb_enter(req->client);
-  if (req->cb) req->cb(req->user, &resp);
-  client_cb_exit(req->client);
+  resp.final_url = final_url;
+  client_cb_enter(c);
+  if (cb) cb(user, &resp);
+  client_cb_exit(c);
+}
+
+internal void h2req_deliver_error(H2Request *req, const char *err) {
+  if (req->responded) return;
+  req->responded = 1;
+  client_deliver_error(req->client, req->cb, req->user, req->url, err);
 }
 
 internal void h2req_finish(H2Request *req) {
@@ -819,13 +830,7 @@ internal void quicreq_on_ready(void *user, B32 ok, const char *err) {
 internal void quicreq_deliver_error(QuicRequest *req, const char *err) {
   if (req->responded) return;
   req->responded = 1;
-  Response resp;
-  MemoryZeroStruct(&resp);
-  resp.error = err;
-  resp.final_url = req->url;
-  client_cb_enter(req->client);
-  if (req->cb) req->cb(req->user, &resp);
-  client_cb_exit(req->client);
+  client_deliver_error(req->client, req->cb, req->user, req->url, err);
 }
 
 internal void quicreq_finish(QuicRequest *req) {
@@ -1390,14 +1395,35 @@ internal void client_redirect_cb(void *user, const Response *r) {
   arena_release(st->arena);
 }
 
-void client_request(Client *c, Method m, String8 url, const Header *headers,
-                    U64 header_count, const U8 *body, U64 body_len,
-                    ResponseFn cb, void *user) {
-  if (c->max_redirects == 0) {  // following disabled -> dispatch directly
-    client_dispatch(c, m, url, headers, header_count, body, body_len, cb, user,
-                    client_deadline(c));
+void client_request(Client *c, const RequestParams *p, ResponseFn cb,
+                    void *user) {
+  // Sec-Fetch synthesis (the former client_fetch): when a fetch_mode is set,
+  // merge the coherent Sec-Fetch-* headers ahead of dispatch. The merged set
+  // lives in its own arena, copied synchronously by the dispatch / redirect
+  // setup below, so it's released before we return.
+  const Header *headers = p->headers;
+  U64 header_count = p->header_count;
+  Arena *fetch_arena = 0;
+  if (p->fetch_mode != FetchMode_Default) {
+    fetch_arena = arena_alloc();
+    HeaderList merged;
+    header_list_init(&merged, fetch_arena);
+    sec_fetch_merge(&merged, p->fetch_mode, p->url, headers, header_count);
+    headers = merged.v;
+    header_count = merged.count;
+  }
+
+  U64 deadline = p->deadline_ns ? p->deadline_ns : client_deadline(c);
+
+  // Single hop: caller forced it (the former client_send), or following is
+  // disabled on the client.
+  if (p->no_redirects || c->max_redirects == 0) {
+    client_dispatch(c, p->method, p->url, headers, header_count, p->body.str,
+                    p->body.size, cb, user, deadline);
+    if (fetch_arena) arena_release(fetch_arena);
     return;
   }
+
   // Carry the request across hops in its own arena (the per-hop request arenas
   // are independent and freed as each hop completes).
   Arena *arena = arena_alloc();
@@ -1406,51 +1432,32 @@ void client_request(Client *c, Method m, String8 url, const Header *headers,
   st->client = c;
   st->user_cb = cb;
   st->user = user;
-  st->method = m;
+  st->method = p->method;
   st->left = c->max_redirects;
   st->chain_start_ns = uv_hrtime();
-  st->deadline_ns = client_deadline(c);  // one deadline for the whole chain
-  st->cur_url = push_str8_copy(arena, url);
+  st->deadline_ns = deadline;  // one deadline for the whole chain
+  st->cur_url = push_str8_copy(arena, p->url);
   header_list_init(&st->headers, arena);
   for (U64 i = 0; i < header_count; ++i)
     header_list_push(&st->headers, push_str8_copy(arena, headers[i].name),
                      push_str8_copy(arena, headers[i].value), headers[i].flags);
-  st->body = body_len ? push_str8_copy(arena, str8((U8 *)body, body_len))
-                      : str8_zero();
-  client_dispatch(c, m, st->cur_url, st->headers.v, st->headers.count,
+  st->body = p->body.size ? push_str8_copy(arena, p->body) : str8_zero();
+  client_dispatch(c, p->method, st->cur_url, st->headers.v, st->headers.count,
                   st->body.str, st->body.size, client_redirect_cb, st,
                   st->deadline_ns);
+  if (fetch_arena) arena_release(fetch_arena);
 }
 
 void client_get(Client *c, String8 url, ResponseFn cb, void *user) {
-  client_request(c, Method_GET, url, 0, 0, 0, 0, cb, user);
+  client_request(c, &(RequestParams){.method = Method_GET, .url = url}, cb,
+                 user);
 }
 
-void client_send_deadline(Client *c, Method m, String8 url,
-                          const Header *headers, U64 header_count,
-                          const U8 *body, U64 body_len, ResponseFn cb,
-                          void *user, U64 deadline_ns) {
-  client_dispatch(c, m, url, headers, header_count, body, body_len, cb, user,
-                  deadline_ns);
-}
-
-void client_send(Client *c, Method m, String8 url, const Header *headers,
-                 U64 header_count, const U8 *body, U64 body_len, ResponseFn cb,
+void client_post(Client *c, String8 url, String8 body, ResponseFn cb,
                  void *user) {
-  client_send_deadline(c, m, url, headers, header_count, body, body_len, cb,
-                       user, client_deadline(c));
-}
-
-void client_fetch(Client *c, FetchMode mode, Method m, String8 url,
-                  const Header *headers, U64 header_count, const U8 *body,
-                  U64 body_len, ResponseFn cb, void *user) {
-  Arena *a = arena_alloc();
-  HeaderList merged;
-  header_list_init(&merged, a);
-  sec_fetch_merge(&merged, mode, url, headers, header_count);
-  client_request(c, m, url, merged.v, merged.count, body, body_len, cb, user);
-  arena_release(
-      a);  // merged headers are copied synchronously by client_request
+  client_request(
+      c, &(RequestParams){.method = Method_POST, .url = url, .body = body}, cb,
+      user);
 }
 
 void client_set_max_redirects(Client *c, U64 max) { c->max_redirects = max; }

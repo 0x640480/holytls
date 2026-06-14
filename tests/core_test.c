@@ -10,6 +10,7 @@
 #include "base/string8.h"
 #include "core/alt_svc.h"
 #include "core/client.h"
+#include "core/client_internal.h"
 #include "core/decompress.h"
 #include "core/header.h"
 #include "core/header_order.h"

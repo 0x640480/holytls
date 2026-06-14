@@ -43,7 +43,6 @@ B32 str8_match(String8 a, String8 b);     // exact
 B32 str8_match_ci(String8 a, String8 b);  // ASCII case-insensitive
 B32 str8_starts_with(String8 s, String8 prefix);
 B32 str8_ends_with(String8 s, String8 suffix);
-char ascii_lower(char c);
 internal inline B32 ascii_is_space(char c) {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' ||
          c == '\f';
@@ -68,6 +67,16 @@ internal inline U8 char_to_upper(U8 c) {
 internal inline U8 char_to_lower(U8 c) {
   return char_is_upper(c) ? (U8)(c + 32) : c;
 }
+// Lowercase hex digit for the low nibble of `v` (high bits ignored, so callers
+// can pass `byte >> 4` / `byte & 0xf` or a `% radix` remainder for radix <=
+// 16).
+internal inline char hex_digit_lower(U8 v) {
+  return "0123456789abcdef"[v & 0xf];
+}
+// Lowercase-hex-encode `n` bytes into `out`, writing exactly 2*n chars and no
+// NUL terminator. Shared by the hash/id formatters (JA4/MD5 digests, session
+// ids) that previously hand-rolled this loop.
+void hex_encode(U8 *out, const U8 *bytes, U64 n);
 
 //- view operations (tsoding sv.h-style; all non-allocating, return sub-views)
 

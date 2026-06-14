@@ -10,6 +10,9 @@
 
 // The kind of fetch, mapping to coherent Sec-Fetch-Mode/Dest/User values.
 typedef enum FetchMode {
+  FetchMode_Default,     // the zero value: DON'T synthesize Sec-Fetch-* — keep
+                         // the profile's static navigation defaults (the old
+                         // client_request / session_request behavior)
   FetchMode_Navigate,    // top-level page load: navigate / document / user ?1
   FetchMode_Cors,        // fetch()/XHR (CORS): cors / empty / (no user)
   FetchMode_NoCors,      // no-cors fetch or subresource: no-cors / empty

@@ -75,7 +75,12 @@ static RC do_req(EventLoop *loop, Client *c, Method m, const char *url,
   g_expect_len = body_len;
   if (m == Method_HEAD) g_expect_len = 0;  // ...except HEAD (no response body)
   uv_timer_start(&g_wd, wd_cb, 8000, 0);
-  client_send(c, m, str8_cstring(url), 0, 0, body, body_len, on_resp, &rc);
+  client_request(c,
+                 &(RequestParams){.method = m,
+                                  .url = str8_cstring(url),
+                                  .body = str8((U8 *)body, body_len),
+                                  .no_redirects = 1},
+                 on_resp, &rc);
   loop_run(loop);
   uv_timer_stop(&g_wd);
   return rc;

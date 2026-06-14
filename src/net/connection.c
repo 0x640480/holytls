@@ -59,7 +59,9 @@ internal void conn_flush_output(Connection *c);
 internal void conn_pending_append(Connection *c, const U8 *data, U64 len);
 internal B32 conn_flush_pending(Connection *c);
 internal void conn_on_connected(uv_connect_t *req, int status);
-internal void conn_alloc_cb(uv_handle_t *h, size_t suggested, uv_buf_t *buf);
+// Generic libuv read-buffer provider, shared with the QUIC path
+// (quic_connection.c, later in the unity TU) — see the definition below.
+internal void net_alloc_cb(uv_handle_t *h, size_t suggested, uv_buf_t *buf);
 internal void conn_read_cb(uv_stream_t *stream, ssize_t nread,
                            const uv_buf_t *buf);
 internal void conn_write_cb(uv_write_t *req, int status);
@@ -122,7 +124,7 @@ internal void conn_on_connected(uv_connect_t *req, int status) {
   }
   c->t_connected_ns =
       uv_hrtime();  // TCP connect done (to the proxy when proxied)
-  uv_read_start((uv_stream_t *)&c->tcp, conn_alloc_cb, conn_read_cb);
+  uv_read_start((uv_stream_t *)&c->tcp, net_alloc_cb, conn_read_cb);
   if (c->proxy.type == ProxyType_None) {
     c->state = ConnState_Handshaking;
     conn_drive_handshake(c);
@@ -132,12 +134,14 @@ internal void conn_on_connected(uv_connect_t *req, int status) {
   }
 }
 
-internal void conn_alloc_cb(uv_handle_t *h, size_t suggested, uv_buf_t *buf) {
+// Reused per-thread read buffer for every libuv stream/datagram read in the
+// loop (TCP ciphertext here, UDP datagrams and the proxy control stream in
+// quic_connection.c). The read callbacks consume the bytes synchronously before
+// the next read event — single loop thread, one read in flight — so a single
+// shared buffer needs no per-read malloc/free and never aliases a live read.
+internal void net_alloc_cb(uv_handle_t *h, size_t suggested, uv_buf_t *buf) {
   (void)h;
   (void)suggested;
-  // Reused per-thread buffer: conn_read_cb consumes the bytes synchronously
-  // (feed_ciphertext copies into the BIO) before the next read event, so no
-  // per-read malloc/free is needed.
   static thread_local U8 storage[65536];
   buf->base = (char *)storage;
   buf->len = sizeof storage;

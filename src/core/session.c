@@ -85,12 +85,17 @@ internal void session_dispatch_hop(SessionReq *req) {
     if (cookie.size) header_list_push(&hop, str8_lit("cookie"), cookie, 0);
   }
 
-  // client_send_deadline = single hop (no client-side redirects) carrying the
-  // one chain-wide deadline -> we own the redirect loop, the timeout spans all
-  // hops.
-  client_send_deadline(req->client, req->method, req->cur_url, hop.v, hop.count,
-                       req->body.str, req->body.size, session_hop_cb, req,
-                       req->deadline_ns);
+  // no_redirects = single hop (no client-side redirects); we own the redirect
+  // loop, and the one chain-wide deadline spans all hops.
+  client_request(req->client,
+                 &(RequestParams){.method = req->method,
+                                  .url = req->cur_url,
+                                  .headers = hop.v,
+                                  .header_count = hop.count,
+                                  .body = req->body,
+                                  .no_redirects = 1,
+                                  .deadline_ns = req->deadline_ns},
+                 session_hop_cb, req);
 }
 
 internal void session_hop_cb(void *user, const Response *r) {
@@ -138,9 +143,8 @@ internal void session_hop_cb(void *user, const Response *r) {
   arena_recycle(req->arena);  // terminal hop: clear + return to the pool
 }
 
-void session_request(Session *s, Client *client, Method m, String8 url,
-                     const Header *headers, U64 header_count, const U8 *body,
-                     U64 body_len, ResponseFn cb, void *user) {
+void session_request(Session *s, Client *client, const RequestParams *p,
+                     ResponseFn cb, void *user) {
   Arena *a = arena_acquire();
   SessionReq *req = push_struct(a, SessionReq);
   req->arena = a;
@@ -148,36 +152,38 @@ void session_request(Session *s, Client *client, Method m, String8 url,
   req->client = client;
   req->user_cb = cb;
   req->user = user;
-  req->method = m;
+  req->method = p->method;
   req->left = s->max_redirects;
   req->chain_start_ns = uv_hrtime();
   U64 t =
       client_get_timeout_ms(client);  // one deadline for the whole hop chain
   req->deadline_ns = t ? uv_hrtime() + t * 1000000ull : 0;
-  req->cur_url = push_str8_copy(a, url);
+  req->cur_url = push_str8_copy(a, p->url);
   header_list_init(&req->caller_headers, a);
-  for (U64 i = 0; i < header_count; ++i)
-    header_list_push(&req->caller_headers, push_str8_copy(a, headers[i].name),
-                     push_str8_copy(a, headers[i].value), headers[i].flags);
-  req->body =
-      body_len ? push_str8_copy(a, str8((U8 *)body, body_len)) : str8_zero();
+  if (p->fetch_mode != FetchMode_Default) {
+    // Coherent Sec-Fetch-* for this mode (the former session_fetch): merge into
+    // a transient list (referencing caller bytes), then deep-copy into the
+    // chain-lived caller_headers so the bytes survive every hop.
+    HeaderList merged;
+    header_list_init(&merged, a);
+    sec_fetch_merge(&merged, p->fetch_mode, p->url, p->headers,
+                    p->header_count);
+    for (U64 i = 0; i < merged.count; ++i)
+      header_list_push(&req->caller_headers,
+                       push_str8_copy(a, merged.v[i].name),
+                       push_str8_copy(a, merged.v[i].value), merged.v[i].flags);
+  } else {
+    for (U64 i = 0; i < p->header_count; ++i)
+      header_list_push(
+          &req->caller_headers, push_str8_copy(a, p->headers[i].name),
+          push_str8_copy(a, p->headers[i].value), p->headers[i].flags);
+  }
+  req->body = p->body.size ? push_str8_copy(a, p->body) : str8_zero();
   session_dispatch_hop(req);
 }
 
 void session_get(Session *s, Client *client, String8 url, ResponseFn cb,
                  void *user) {
-  session_request(s, client, Method_GET, url, 0, 0, 0, 0, cb, user);
-}
-
-void session_fetch(Session *s, Client *client, FetchMode mode, Method m,
-                   String8 url, const Header *headers, U64 header_count,
-                   const U8 *body, U64 body_len, ResponseFn cb, void *user) {
-  Arena *a = arena_acquire();
-  HeaderList merged;
-  header_list_init(&merged, a);
-  sec_fetch_merge(&merged, mode, url, headers, header_count);
-  session_request(s, client, m, url, merged.v, merged.count, body, body_len, cb,
-                  user);
-  arena_recycle(
-      a);  // copied synchronously by session_request (-> SessionReq arena)
+  session_request(s, client, &(RequestParams){.method = Method_GET, .url = url},
+                  cb, user);
 }

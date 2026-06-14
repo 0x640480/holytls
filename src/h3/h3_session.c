@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "h3/h3_control.h"
+#include "h3/h3_nv.h"
 
 // Server-initiated uni streams (control + QPACK enc/dec): a tiny fixed set,
 // kept in an inline array with linear scan rather than a tree.
@@ -34,16 +35,6 @@ struct H3Session {
   H3Uni uni[8];
   int uni_count;
 };
-
-internal nghttp3_nv h3_make_nv(String8 n, String8 v) {
-  nghttp3_nv nv;
-  nv.name = n.str;
-  nv.namelen = n.size;
-  nv.value = v.str;
-  nv.valuelen = v.size;
-  nv.flags = NGHTTP3_NV_FLAG_NONE;
-  return nv;
-}
 
 internal void h3_on_stream_data(void *user, S64 stream_id, const U8 *data,
                                 U64 len, B32 fin);

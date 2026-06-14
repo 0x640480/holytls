@@ -70,10 +70,13 @@ int main(void) {
   client_set_header_order_str(&client, "accept, accept-language, user-agent");
 
   // client.Do(req) — async: submit now, the response lands in on_response.
-  session_request(&session, &client, Method_GET,
-                  str8_lit("https://tls.peet.ws/api/all"), headers,
-                  ArrayCount(headers), /*body=*/0, /*body_len=*/0, on_response,
-                  /*user=*/0);
+  session_request(
+      &session, &client,
+      &(RequestParams){.method = Method_GET,
+                       .url = str8_lit("https://tls.peet.ws/api/all"),
+                       .headers = headers,
+                       .header_count = ArrayCount(headers)},
+      on_response, /*user=*/0);
 
   loop_run(
       &loop);  // runs until the request completes (this is the "blocking" bit)
