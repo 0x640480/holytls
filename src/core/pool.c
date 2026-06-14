@@ -197,6 +197,8 @@ internal PoolConn *pool_conn_open(ConnPool *p, PoolProto proto, PoolReq *r) {
     conn_on_fully_closed(&pc->h2_conn, pool_h2_on_fully_closed, pc);
     conn_on_closed(&pc->h2_conn, pool_h2_on_closed, pc);
     conn_set_dns_cache(&pc->h2_conn, &c->dns_cache);
+    if (c->has_local_address)  // bind the chosen egress source IP
+      conn_set_local_address(&pc->h2_conn, str8_cstring(c->local_address));
     if (c->proxy.type != ProxyType_None)  // pooled H2 also tunnels through it
       conn_set_proxy(&pc->h2_conn, &c->proxy, c->proxy_ctx.ctx, &c->proxy_tls);
   } else {
@@ -206,6 +208,8 @@ internal PoolConn *pool_conn_open(ConnPool *p, PoolProto proto, PoolReq *r) {
     quic_on_closed(&pc->h3_conn, pool_h3_on_closed, pc);
     quic_on_recv_done(&pc->h3_conn, pool_h3_recv_done, pc);
     quic_set_dns_cache(&pc->h3_conn, &c->dns_cache);
+    if (c->has_local_address)  // bind the chosen egress source IP (UDP)
+      quic_set_local_address(&pc->h3_conn, str8_cstring(c->local_address));
     if (c->proxy.type ==
         ProxyType_Socks5)  // pooled H3 also tunnels via SOCKS5 UDP
       quic_set_proxy(&pc->h3_conn, &c->proxy);
@@ -435,7 +439,8 @@ internal void pool_conn_fallback_legacy(PoolConn *pc) {
     PoolReq *next = r->queue_next;
     h2req_start(pc->client, r->method_enum, r->url, r->caller_headers,
                 r->caller_header_count, r->caller_body.str, r->caller_body.size,
-                r->cb, r->user, r->deadline_ns);
+                r->cb, r->user, r->deadline_ns,
+                /*proxy=*/0);  // pool path uses the client's single proxy
     pool_req_done(r);  // disarm the pooled timer; h2req_start armed its own
     r = next;
   }

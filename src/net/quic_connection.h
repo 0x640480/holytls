@@ -81,6 +81,8 @@ struct QuicConnection {
   uv_getaddrinfo_t resolver;
   uv_udp_t udp;
   uv_timer_t timer;
+  struct sockaddr_storage bind_addr;  // source address to bind before connect
+  B32 has_bind_addr;                  // (egress IP selection); 0 = OS default
   B32 udp_inited;
   B32 timer_inited;
   B32 ready_fired;
@@ -157,6 +159,12 @@ struct QuicConnection {
   U8 udp_hdr[262];  // prebuilt SOCKS5 UDP request header (target addr/port)
   U64 udp_hdr_len;
 };
+
+// Bind this QUIC connection's UDP socket to source IP `ip` (IPv4/IPv6 literal)
+// before connecting — egress-address selection. Returns 1 if parsed, 0 on a bad
+// literal. Set before quic_conn_connect. (Not inline: shares the IP parser with
+// connection.c, defined later in the unity TU.)
+B32 quic_set_local_address(QuicConnection *c, String8 ip);
 
 // Route this QUIC connection through a SOCKS5 UDP-ASSOCIATE proxy (set before
 // quic_conn_connect; a ProxyType_None / non-Socks5 config is a no-op). The

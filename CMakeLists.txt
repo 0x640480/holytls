@@ -23,6 +23,14 @@ option(HOLYTLS_ARENA_STATS "Compile in arena allocation counters (for benchmarks
 option(HOLYTLS_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(HOLYTLS_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 option(HOLYTLS_FUZZ "Build coverage-guided libFuzzer harnesses (clang only)" OFF)
+# The flat C ABI shared library (capi/) that language bindings (Python/cffi, …)
+# load. A SHARED lib must statically absorb holytls + all deps, so every static
+# dep needs position-independent code — turn PIC on globally before FetchContent
+# configures them.
+option(HOLYTLS_BUILD_CAPI "Build the libholytls_capi shared library (FFI ABI)" ${PROJECT_IS_TOP_LEVEL})
+if(HOLYTLS_BUILD_CAPI)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 # When cross-compiling (e.g. MinGW-w64) there are no system codecs to find — build
 # zlib/brotli/zstd from source instead. Defaults ON for Windows targets.
 option(HOLYTLS_FETCH_CODECS
@@ -282,6 +290,37 @@ if(HOLYTLS_ARENA_STATS)
   target_compile_definitions(holytls PUBLIC HOLYTLS_ARENA_STATS)
 endif()
 
+# ---------------------------------------------------------------------------
+# Flat C ABI shared library (capi/holytls_capi.c) — the surface language
+# bindings (Python/cffi, Go/cgo, …) bind against. SHARED so foreign runtimes can
+# dlopen/link one self-contained object; PRIVATE-links holytls so the whole
+# static stack (TLS engine + libuv + nghttp2/ngtcp2/nghttp3 + codecs) is absorbed
+# into it and no holytls symbols leak out (only the holytls_* ABI is exported).
+# ---------------------------------------------------------------------------
+if(HOLYTLS_BUILD_CAPI)
+  add_library(holytls_capi SHARED capi/holytls_capi.c)
+  target_include_directories(holytls_capi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/capi)
+  target_link_libraries(holytls_capi PRIVATE holytls)
+  target_compile_options(holytls_capi PRIVATE ${HOLYTLS_WARN})
+  if(WIN32)
+    # MinGW/MSVC: export everything (the Windows norm); the import lib lists the
+    # holytls_* ABI either way.
+    set_target_properties(holytls_capi PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  else()
+    # ELF: export ONLY the holytls_* ABI and localize every absorbed static
+    # symbol (TLS/libuv/http internals), so the .so can't clash with a host app
+    # that also links OpenSSL/libuv. A version script promotes the named globals;
+    # do NOT also set -fvisibility=hidden here (it would demote holytls_* to
+    # local before the script could export them).
+    target_link_options(holytls_capi PRIVATE
+      -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/capi/holytls_capi.map)
+  endif()
+  if(HOLYTLS_ASAN)
+    target_compile_options(holytls_capi PRIVATE -fsanitize=address,undefined)
+    target_link_options(holytls_capi PRIVATE -fsanitize=address,undefined)
+  endif()
+endif()
+
 # Extra ${ARGN} sources are added to the test executable (e.g. a shared helper
 # like tests/support/loopback_server.c). The tests/ dir is on the include path so
 # such helpers resolve as "support/...".
@@ -351,6 +390,7 @@ holytls_test(http_version_test)
 holytls_test_defer(http_version_live_test)
 holytls_test(proxy_test)
 holytls_test(response_test)
+holytls_test(stream_decode_test)
 # Offline tests sharing the in-process loopback origin (tests/support).
 holytls_test(request_test       tests/support/loopback_server.c)
 holytls_test(timeout_test       tests/support/loopback_server.c)

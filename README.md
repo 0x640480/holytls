@@ -229,6 +229,37 @@ by default for Windows), and libstdc++/winpthread are linked statically — so t
 
 ---
 
+## Python binding
+
+A `requests`-style Python API ([cffi](https://cffi.readthedocs.io), API mode) lives
+in [`bindings/python/`](bindings/python/). It links a self-contained native shared
+library (`libholytls_capi`, built from [`capi/`](capi/)) that bridges holytls's async
+event loop to a blocking call — plus a batch call for true single-loop concurrency.
+
+```python
+import holytls
+
+with holytls.Client(dual=True) as client:
+    r = client.get("https://tls.peet.ws/api/all")
+    print(r.status_code, r.alpn, r.json()["tls"]["ja4"])
+
+    # many requests in flight on one event loop:
+    for resp in client.get_many(["https://example.com", "https://example.org"]):
+        print(resp.status_code, resp.url)
+```
+
+```sh
+cmake -B build-capi -G Ninja -DHOLYTLS_BUILD_CAPI=ON \
+    -DHOLYTLS_BUILD_TESTS=OFF -DHOLYTLS_BUILD_EXAMPLES=OFF
+cmake --build build-capi --target holytls_capi
+pip install ./bindings/python
+```
+
+See [`bindings/python/README.md`](bindings/python/README.md) for the full API
+(Client, Session, concurrent batches, proxies, ECH/resumption, the response model).
+
+---
+
 ## Third-party libraries
 
 holytls is a thin C layer over some excellent open-source work. The networking

@@ -1,0 +1,11 @@
+# Linker version script for libholytls_capi.so: export only the flat C ABI and
+# localize everything else absorbed from the static holytls stack (BoringSSL,
+# libuv, nghttp2/ngtcp2/nghttp3, codecs). This keeps the binding's .so from
+# clashing with a host process that also links OpenSSL/libuv, and keeps its
+# dynamic symbol table to just the surface bindings call.
+{
+  global:
+    holytls_*;
+  local:
+    *;
+};

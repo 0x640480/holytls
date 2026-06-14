@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "base/platform_net.h"  // inet_pton, sockaddr_in/in6 (winsock on Windows)
 #include "net/dns_cache.h"
 
 // libuv writes need the buffer to outlive the call (freed in the write
@@ -81,10 +82,44 @@ typedef enum ProxyPhase {
   ProxyPhase_Socks5Connect,   // CONNECT request sent, awaiting the reply
 } ProxyPhase;
 
+// Parse an IPv4/IPv6 literal into a source sockaddr (port 0 = ephemeral). A ':'
+// marks IPv6. Returns 1 on success.
+internal B32 ip_literal_to_sockaddr(String8 ip, struct sockaddr_storage *out) {
+  char buf[64];
+  if (ip.size == 0 || ip.size >= sizeof buf) return 0;
+  MemoryCopy(buf, ip.str, ip.size);
+  buf[ip.size] = 0;
+  MemoryZeroStruct(out);
+  U64 idx;
+  if (str8_index_of(ip, ':', &idx)) {
+    struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)out;
+    if (inet_pton(AF_INET6, buf, &a6->sin6_addr) != 1) return 0;
+    a6->sin6_family = AF_INET6;
+  } else {
+    struct sockaddr_in *a4 = (struct sockaddr_in *)out;
+    if (inet_pton(AF_INET, buf, &a4->sin_addr) != 1) return 0;
+    a4->sin_family = AF_INET;
+  }
+  return 1;
+}
+
+B32 conn_set_local_address(Connection *c, String8 ip) {
+  if (!ip_literal_to_sockaddr(ip, &c->bind_addr)) return 0;
+  c->has_bind_addr = 1;
+  return 1;
+}
+
 // Connect the (already-created) TCP handle to `addr` — from a fresh resolution
 // or the DNS cache. On failure, fails the connection.
 internal void conn_begin_tcp_connect(Connection *c,
                                      const struct sockaddr *addr) {
+  if (c->has_bind_addr) {  // bind the chosen source address (egress IP)
+    int brc = uv_tcp_bind(&c->tcp, (const struct sockaddr *)&c->bind_addr, 0);
+    if (brc) {
+      conn_fail(c, uv_strerror(brc));
+      return;
+    }
+  }
   c->connect_req.data = c;
   int rc = uv_tcp_connect(&c->connect_req, &c->tcp, addr, conn_on_connected);
   if (rc) {
@@ -720,7 +755,11 @@ void conn_connect(Connection *c, const char *host, U16 port,
     struct sockaddr_storage ss;
     socklen_t sl = 0;
     if (dns_cache_get(c->dns_cache, c->resolve_host, uv_now(loop_uv(c->loop)),
-                      &ss, &sl)) {
+                      &ss, &sl) &&
+        // Skip a cached address whose family can't match a bound source IP
+        // (binding v4 then connecting v6 fails) — re-resolve with the family
+        // hint below instead.
+        (!c->has_bind_addr || ss.ss_family == c->bind_addr.ss_family)) {
       dns_sockaddr_set_port(&ss, rport);
       c->t_resolved_ns = uv_hrtime();  // ~0ms DNS on a cache hit
       c->dns_was_cached = 1;
@@ -733,7 +772,9 @@ void conn_connect(Connection *c, const char *host, U16 port,
   c->resolver.data = c;
   struct addrinfo hints;
   MemoryZeroStruct(&hints);
-  hints.ai_family = AF_UNSPEC;
+  // Constrain resolution to the bound source family so the (first, only-used)
+  // address is connect-compatible; AF_UNSPEC otherwise.
+  hints.ai_family = c->has_bind_addr ? c->bind_addr.ss_family : AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   char portstr[8];
   snprintf(portstr, sizeof portstr, "%u", rport);

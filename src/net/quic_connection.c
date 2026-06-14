@@ -88,6 +88,12 @@ void quic_conn_cleanup(QuicConnection *c) {
   }
 }
 
+B32 quic_set_local_address(QuicConnection *c, String8 ip) {
+  if (!ip_literal_to_sockaddr(ip, &c->bind_addr)) return 0;  // shared parser
+  c->has_bind_addr = 1;
+  return 1;
+}
+
 void quic_conn_connect(QuicConnection *c, const char *host, U16 port,
                        QuicReadyFn on_ready, void *user) {
   c->on_ready = on_ready;
@@ -108,7 +114,10 @@ void quic_conn_connect(QuicConnection *c, const char *host, U16 port,
     struct sockaddr_storage ss;
     socklen_t sl = 0;
     if (dns_cache_get(c->dns_cache, c->host, uv_now(loop_uv(c->loop)), &ss,
-                      &sl)) {
+                      &sl) &&
+        // Skip a cached address that can't match a bound source IP (see
+        // connection.c) — re-resolve with the family hint below instead.
+        (!c->has_bind_addr || ss.ss_family == c->bind_addr.ss_family)) {
       dns_sockaddr_set_port(&ss, c->port);
       MemoryCopy(&c->remote_addr, &ss, sl);
       c->remote_addrlen = sl;
@@ -123,7 +132,8 @@ void quic_conn_connect(QuicConnection *c, const char *host, U16 port,
   c->resolver.data = c;
   struct addrinfo hints;
   MemoryZeroStruct(&hints);
-  hints.ai_family = AF_UNSPEC;
+  // Constrain resolution to the bound source family (connect-compatible).
+  hints.ai_family = c->has_bind_addr ? c->bind_addr.ss_family : AF_UNSPEC;
   hints.ai_socktype = SOCK_DGRAM;
   char portstr[8];
   snprintf(portstr, sizeof portstr, "%u", port);
@@ -139,6 +149,11 @@ internal void quic_begin_udp(QuicConnection *c) {
   uv_udp_init(loop_uv(c->loop), &c->udp);
   c->udp_inited = 1;
   c->udp.data = c;
+  if (c->has_bind_addr &&  // bind the chosen source address (egress IP)
+      uv_udp_bind(&c->udp, (const struct sockaddr *)&c->bind_addr, 0) != 0) {
+    quic_fail(c, "uv_udp_bind failed");
+    return;
+  }
   if (uv_udp_connect(&c->udp, (struct sockaddr *)&c->remote_addr) != 0) {
     quic_fail(c, "uv_udp_connect failed");
     return;

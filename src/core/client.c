@@ -10,6 +10,7 @@
 #include "core/json.h"
 #include "core/pool.h"
 #include "core/url.h"
+#include "base/platform_net.h"  // inet_pton (validate client_set_local_address)
 #include "h1/h1.h"
 #include "h2/h2.h"
 #include "h3/h3_session.h"
@@ -202,7 +203,8 @@ internal EchConfigEntry *ech_cache_get(Client *c, String8 origin);
 internal void client_dispatch_inner(Client *c, Method m, String8 url,
                                     const Header *headers, U64 header_count,
                                     const U8 *body, U64 body_len, ResponseFn cb,
-                                    void *user, U64 deadline_ns);
+                                    void *user, U64 deadline_ns,
+                                    const ProxyConfig *proxy);
 
 // Build the ordered request headers (+ default accept-encoding /
 // content-length) for a request into `out` (initialised on `arena`). Returns
@@ -354,6 +356,7 @@ struct H2Request {
   B32 retrying;    // closing in order to reconnect (0-RTT reject fallback)
   B32 retried_no_early;  // already retried once without 0-RTT (one-shot guard)
   ReqTimer *timeout;     // whole-operation deadline timer (0 = no timeout)
+  ProxyConfig proxy;     // resolved proxy for this request (type None = direct)
 };
 
 internal void h2req_deliver_error(H2Request *req, const char *err);
@@ -634,8 +637,10 @@ internal void h2req_connect(H2Request *req, B32 allow_early) {
   conn_on_fully_closed(&req->conn, h2req_on_fully_closed, req);
   conn_on_closed(&req->conn, h2req_on_closed, req);
   conn_set_dns_cache(&req->conn, &c->dns_cache);
-  if (c->proxy.type != ProxyType_None)  // tunnel through the configured proxy
-    conn_set_proxy(&req->conn, &c->proxy, c->proxy_ctx.ctx, &c->proxy_tls);
+  if (c->has_local_address)  // bind the chosen egress source IP
+    conn_set_local_address(&req->conn, str8_cstring(c->local_address));
+  if (req->proxy.type != ProxyType_None)  // tunnel through the resolved proxy
+    conn_set_proxy(&req->conn, &req->proxy, c->proxy_ctx.ctx, &c->proxy_tls);
   if (c->ech_enabled) {  // offer real ECH if the origin's config is cached
     EchConfigEntry *e = ech_cache_get(c, req->origin);
     if (e && e->config_len) conn_set_ech(&req->conn, e->config, e->config_len);
@@ -661,13 +666,15 @@ internal void h2req_connect(H2Request *req, B32 allow_early) {
 internal void h2req_start(Client *c, Method m, String8 url,
                           const Header *headers, U64 header_count,
                           const U8 *body, U64 body_len, ResponseFn cb,
-                          void *user, U64 deadline_ns) {
+                          void *user, U64 deadline_ns,
+                          const ProxyConfig *proxy) {
   Arena *arena = arena_acquire();
   H2Request *req = push_array(arena, H2Request, 1);
   req->arena = arena;
   req->client = c;
   req->cb = cb;
   req->user = user;
+  req->proxy = proxy ? *proxy : c->proxy;  // resolved proxy (None = direct)
   req->t_start_ns = uv_hrtime();
   req->method = method_str(m);
   req->idempotent = (m == Method_GET || m == Method_HEAD);
@@ -733,6 +740,7 @@ struct QuicRequest {
   B32 retrying;          // closing to reconnect (0-RTT reject fallback)
   B32 retried_no_early;  // already retried once without 0-RTT (one-shot guard)
   ReqTimer *timeout;     // whole-operation deadline timer (0 = no timeout)
+  ProxyConfig proxy;     // resolved proxy for this request (type None = direct)
 };
 
 internal void quicreq_deliver_error(QuicRequest *req, const char *err);
@@ -885,9 +893,11 @@ internal void quicreq_connect(QuicRequest *req, B32 allow_early) {
   quic_on_fully_closed(&req->conn, quicreq_on_fully_closed, req);
   quic_on_closed(&req->conn, quicreq_on_closed, req);
   quic_set_dns_cache(&req->conn, &c->dns_cache);
-  if (c->proxy.type ==
+  if (c->has_local_address)  // bind the chosen egress source IP (UDP)
+    quic_set_local_address(&req->conn, str8_cstring(c->local_address));
+  if (req->proxy.type ==
       ProxyType_Socks5)  // tunnel QUIC via SOCKS5 UDP ASSOCIATE
-    quic_set_proxy(&req->conn, &c->proxy);
+    quic_set_proxy(&req->conn, &req->proxy);
   if (c->ech_enabled) {  // offer real ECH if the origin's config is cached
     EchConfigEntry *e = ech_cache_get(c, req->origin);
     if (e && e->config_len) quic_set_ech(&req->conn, e->config, e->config_len);
@@ -916,13 +926,15 @@ internal void quicreq_connect(QuicRequest *req, B32 allow_early) {
 internal void quicreq_start(Client *c, Method m, String8 url,
                             const Header *headers, U64 header_count,
                             const U8 *body, U64 body_len, ResponseFn cb,
-                            void *user, U64 deadline_ns) {
+                            void *user, U64 deadline_ns,
+                            const ProxyConfig *proxy) {
   Arena *arena = arena_acquire();
   QuicRequest *req = push_array(arena, QuicRequest, 1);
   req->arena = arena;
   req->client = c;
   req->cb = cb;
   req->user = user;
+  req->proxy = proxy ? *proxy : c->proxy;  // resolved proxy (None = direct)
   req->t_start_ns = uv_hrtime();
   req->method = m;
   req->idempotent = (m == Method_GET || m == Method_HEAD);
@@ -972,6 +984,7 @@ void client_init(Client *c, EventLoop *loop, const Profile *profile,
   c->loop = loop;
   c->profile = profile;
   c->ctx = build_ctx(&profile->tls, verify);
+  c->proxy_verify = 1;  // verify HTTPS-proxy certs by default (per-request)
   dns_cache_init(&c->dns_cache, DNS_CACHE_DEFAULT_TTL_MS);
 }
 
@@ -983,6 +996,7 @@ void client_init_dual(Client *c, EventLoop *loop, const Profile *h2,
   c->h3_profile = h3;
   c->ctx = build_ctx(&h2->tls, verify);
   c->h3_ctx = build_ctx(&h3->tls, verify);
+  c->proxy_verify = 1;  // verify HTTPS-proxy certs by default (per-request)
   dns_cache_init(&c->dns_cache, DNS_CACHE_DEFAULT_TTL_MS);
 }
 
@@ -1059,7 +1073,8 @@ B32 client_h3_available(Client *c, String8 origin) {
 internal void client_dispatch_inner(Client *c, Method m, String8 url,
                                     const Header *headers, U64 header_count,
                                     const U8 *body, U64 body_len, ResponseFn cb,
-                                    void *user, U64 deadline_ns) {
+                                    void *user, U64 deadline_ns,
+                                    const ProxyConfig *proxy) {
   if (!client_ok(c)) {
     Response r;
     MemoryZeroStruct(&r);
@@ -1070,10 +1085,15 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
     return;
   }
   HttpVersion hv = c->http_version;
+  // The proxy in effect for this request: the per-request override / pool pick
+  // (`proxy`) if given, else the client's single proxy. Rotation/override forces
+  // the per-request transport path (pooling would defeat the rotation).
+  const ProxyConfig *px = proxy ? proxy : &c->proxy;
+  B32 use_pool = c->pool && c->max_conns_per_origin && !proxy;
 
   // HTTP/HTTPS CONNECT proxies are TCP-only, so H3 can't tunnel through them. A
   // SOCKS5 proxy carries UDP (UDP ASSOCIATE), so H3 IS allowed through SOCKS5.
-  if ((c->proxy.type == ProxyType_Http || c->proxy.type == ProxyType_Https) &&
+  if ((px->type == ProxyType_Http || px->type == ProxyType_Https) &&
       hv == HttpVersion_H3) {
     Response r;
     MemoryZeroStruct(&r);
@@ -1098,12 +1118,12 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
       client_cb_exit(c);
       return;
     }
-    if (c->pool && c->max_conns_per_origin)
+    if (use_pool)
       pool_dispatch(c, PoolProto_H3, m, url, headers, header_count, body,
                     body_len, cb, user, deadline_ns);
     else
       quicreq_start(c, m, url, headers, header_count, body, body_len, cb, user,
-                    deadline_ns);
+                    deadline_ns, proxy);
     return;
   }
 
@@ -1111,7 +1131,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
   // h2); h2req_connect swaps in c->h1_tls so the server negotiates http/1.1.
   if (hv == HttpVersion_H1) {
     h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-                deadline_ns);
+                deadline_ns, proxy);
     return;
   }
 
@@ -1119,7 +1139,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
   // h3. Forced H2 skips this gate and stays on TCP. A SOCKS5 proxy permits H3
   // (UDP ASSOCIATE); HTTP/HTTPS proxies force TCP.
   if (hv == HttpVersion_Auto &&
-      (c->proxy.type == ProxyType_None || c->proxy.type == ProxyType_Socks5) &&
+      (px->type == ProxyType_None || px->type == ProxyType_Socks5) &&
       c->h3_profile && ctx_ok(&c->h3_ctx)) {
     ParsedUrl pu = url_parse(url);
     if (pu.ok) {
@@ -1127,23 +1147,23 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
       B32 avail = client_h3_available(c, origin_of(scratch.arena, pu));
       scratch_end(scratch);
       if (avail) {
-        if (c->pool && c->max_conns_per_origin)  // opt-in pooling (H3/QUIC)
+        if (use_pool)  // opt-in pooling (H3/QUIC)
           pool_dispatch(c, PoolProto_H3, m, url, headers, header_count, body,
                         body_len, cb, user, deadline_ns);
         else
           quicreq_start(c, m, url, headers, header_count, body, body_len, cb,
-                        user, deadline_ns);
+                        user, deadline_ns, proxy);
         return;
       }
     }
   }
-  if (c->pool && c->max_conns_per_origin) {  // opt-in pooling (H2/TCP)
+  if (use_pool) {  // opt-in pooling (H2/TCP)
     pool_dispatch(c, PoolProto_H2, m, url, headers, header_count, body,
                   body_len, cb, user, deadline_ns);
     return;
   }
   h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-              deadline_ns);
+              deadline_ns, proxy);
 }
 
 //- real ECH: per-origin ECHConfigList cache + DoH prefetch gate -------------
@@ -1201,7 +1221,9 @@ struct EchPrefetch {
   String8 body;
   ResponseFn cb;
   void *user;
-  U64 deadline_ns;  // the operation deadline (the DoH round-trip eats into it)
+  U64 deadline_ns;   // the operation deadline (the DoH round-trip eats into it)
+  ProxyConfig proxy; // the request's resolved proxy (carried across the DoH)
+  B32 has_proxy;     // 1 => use proxy on replay; 0 => the client's single proxy
 };
 
 internal void client_ech_doh_cb(void *user, const Response *r) {
@@ -1214,7 +1236,8 @@ internal void client_ech_doh_cb(void *user, const Response *r) {
   // Replay the original request, bypassing the gate (already prefetched).
   client_dispatch_inner(c, pf->method, pf->url, pf->headers.v,
                         pf->headers.count, pf->body.str, pf->body.size, pf->cb,
-                        pf->user, pf->deadline_ns);
+                        pf->user, pf->deadline_ns,
+                        pf->has_proxy ? &pf->proxy : 0);
   arena_release(pf->arena);
 }
 
@@ -1222,13 +1245,18 @@ internal void client_ech_doh_cb(void *user, const Response *r) {
 internal void client_ech_prefetch(Client *c, Method m, String8 url,
                                   const Header *headers, U64 header_count,
                                   const U8 *body, U64 body_len, ResponseFn cb,
-                                  void *user, ParsedUrl pu, U64 deadline_ns) {
+                                  void *user, ParsedUrl pu, U64 deadline_ns,
+                                  const ProxyConfig *proxy) {
   Arena *a = arena_alloc();
   EchPrefetch *pf = push_struct(a, EchPrefetch);
   pf->arena = a;
   pf->client = c;
   pf->origin = origin_of(a, pu);
   pf->deadline_ns = deadline_ns;
+  if (proxy) {
+    pf->proxy = *proxy;
+    pf->has_proxy = 1;
+  }
   pf->method = m;
   pf->url = push_str8_copy(a, url);
   header_list_init(&pf->headers, a);
@@ -1241,16 +1269,20 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
   pf->user = user;
   String8 doh = push_str8f(a, "https://dns.google/resolve?name=%.*s&type=HTTPS",
                            (int)pu.host.size, pu.host.str);
+  // The DoH lookup itself goes via the client's single proxy (NULL = c->proxy),
+  // independent of the original request's rotation/override choice.
   client_dispatch_inner(c, Method_GET, doh, 0, 0, 0, 0, client_ech_doh_cb, pf,
-                        deadline_ns);
+                        deadline_ns, 0);
 }
 
 // The dispatch gate: when ECH is on and the target's config isn't cached yet,
-// fetch it first (DoH) and replay; otherwise dispatch normally.
+// fetch it first (DoH) and replay; otherwise dispatch normally. `proxy` is the
+// request's resolved proxy (0 = the client's single proxy).
 internal void client_dispatch(Client *c, Method m, String8 url,
                               const Header *headers, U64 header_count,
                               const U8 *body, U64 body_len, ResponseFn cb,
-                              void *user, U64 deadline_ns) {
+                              void *user, U64 deadline_ns,
+                              const ProxyConfig *proxy) {
   if (c->ech_enabled) {
     ParsedUrl pu = url_parse(url);
     if (pu.ok && pu.https) {
@@ -1261,13 +1293,13 @@ internal void client_dispatch(Client *c, Method m, String8 url,
       scratch_end(scr);
       if (prefetch) {
         client_ech_prefetch(c, m, url, headers, header_count, body, body_len,
-                            cb, user, pu, deadline_ns);
+                            cb, user, pu, deadline_ns, proxy);
         return;
       }
     }
   }
   client_dispatch_inner(c, m, url, headers, header_count, body, body_len, cb,
-                        user, deadline_ns);
+                        user, deadline_ns, proxy);
 }
 
 // The absolute deadline (uv_hrtime ns) for a new operation from the client's
@@ -1366,6 +1398,8 @@ struct RedirectState {
   U64 chain_start_ns;  // whole-chain start (uv_hrtime) for total_ms
   U64 deadline_ns;     // whole-chain timeout deadline (0 = none), shared by all
                        // hops
+  ProxyConfig proxy;   // resolved proxy, sticky across the whole chain
+  B32 has_proxy;       // 1 => use proxy; 0 => the client's single proxy
 };
 
 internal void client_redirect_cb(void *user, const Response *r) {
@@ -1380,7 +1414,8 @@ internal void client_redirect_cb(void *user, const Response *r) {
     st->left--;
     client_dispatch(st->client, st->method, st->cur_url, st->headers.v,
                     st->headers.count, st->body.str, st->body.size,
-                    client_redirect_cb, st, st->deadline_ns);
+                    client_redirect_cb, st, st->deadline_ns,
+                    st->has_proxy ? &st->proxy : 0);
     return;
   }
   // Final response (or no Location / budget exhausted / error): deliver + free.
@@ -1395,8 +1430,54 @@ internal void client_redirect_cb(void *user, const Response *r) {
   arena_release(st->arena);
 }
 
+// Build the shared HTTPS-proxy outer TLS context on first need (host-independent
+// — one ctx serves the single proxy, every pool entry, and any per-request
+// override). Idempotent; freed in client_cleanup, self-healing if a later
+// client_set_proxy frees it.
+internal void client_ensure_proxy_ctx(Client *c, B32 verify) {
+  if (c->proxy_ctx.ctx) return;
+  c->proxy_tls = c->profile->tls;
+  c->proxy_tls.alpn_wire = k_alpn_http11;
+  c->proxy_tls.alpn_wire_len = (U16)sizeof k_alpn_http11;
+  c->proxy_tls.alps_count = 0;
+  c->proxy_ctx = build_ctx(&c->proxy_tls, verify);
+  c->proxy_verify = verify;  // record the verify the live shared ctx was built
+                             // with, so it stays consistent with the ctx (the
+                             // ctx is build-once; the FIRST HTTPS proxy's verify
+                             // wins until a client_set_proxy change frees it)
+}
+
+// Resolve the proxy in effect for a request: a per-request override URL (if
+// valid) wins, else the next rotation-pool entry (round-robin). Returns 1 +
+// fills *out when a rotation/override proxy applies (forcing the non-pooled
+// path); 0 means "use the client's single proxy" (the legacy path). Builds the
+// HTTPS outer ctx on demand.
+internal B32 client_resolve_proxy(Client *c, String8 override_url,
+                                  ProxyConfig *out) {
+  if (override_url.size) {
+    if (!proxy_parse(override_url, out)) return 0;  // malformed -> fall back
+    if (out->type == ProxyType_Https)
+      client_ensure_proxy_ctx(c, c->proxy_verify);
+    return 1;
+  }
+  if (c->proxy_pool_count) {
+    *out = c->proxy_pool[c->proxy_rr];
+    c->proxy_rr = (U8)((c->proxy_rr + 1) % c->proxy_pool_count);
+    if (out->type == ProxyType_Https)  // (re)build the shared outer ctx on demand
+      client_ensure_proxy_ctx(c, c->proxy_verify);
+    return 1;
+  }
+  return 0;
+}
+
 void client_request(Client *c, const RequestParams *p, ResponseFn cb,
                     void *user) {
+  // Resolve this request's proxy once (per-request override > rotation pool >
+  // the client's single proxy), sticky across the whole redirect chain.
+  ProxyConfig chosen;
+  MemoryZeroStruct(&chosen);
+  B32 have_proxy = client_resolve_proxy(c, p->proxy, &chosen);
+  const ProxyConfig *px = have_proxy ? &chosen : 0;  // 0 => client's c->proxy
   // Sec-Fetch synthesis (the former client_fetch): when a fetch_mode is set,
   // merge the coherent Sec-Fetch-* headers ahead of dispatch. The merged set
   // lives in its own arena, copied synchronously by the dispatch / redirect
@@ -1419,7 +1500,7 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
   // disabled on the client.
   if (p->no_redirects || c->max_redirects == 0) {
     client_dispatch(c, p->method, p->url, headers, header_count, p->body.str,
-                    p->body.size, cb, user, deadline);
+                    p->body.size, cb, user, deadline, px);
     if (fetch_arena) arena_release(fetch_arena);
     return;
   }
@@ -1436,6 +1517,8 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
   st->left = c->max_redirects;
   st->chain_start_ns = uv_hrtime();
   st->deadline_ns = deadline;  // one deadline for the whole chain
+  st->proxy = chosen;          // sticky proxy across the whole chain
+  st->has_proxy = have_proxy;
   st->cur_url = push_str8_copy(arena, p->url);
   header_list_init(&st->headers, arena);
   for (U64 i = 0; i < header_count; ++i)
@@ -1444,7 +1527,7 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
   st->body = p->body.size ? push_str8_copy(arena, p->body) : str8_zero();
   client_dispatch(c, p->method, st->cur_url, st->headers.v, st->headers.count,
                   st->body.str, st->body.size, client_redirect_cb, st,
-                  st->deadline_ns);
+                  st->deadline_ns, px);
   if (fetch_arena) arena_release(fetch_arena);
 }
 
@@ -1615,24 +1698,46 @@ B32 client_set_proxy(Client *c, String8 proxy_url, B32 verify_proxy) {
     MemoryZeroStruct(&c->proxy_ctx);
   }
   c->proxy = next;
-  if (c->proxy.type == ProxyType_Https) {
-    // Speak to the proxy with Chrome's TLS knobs but http/1.1-only ALPN
-    // (CONNECT is HTTP/1.1) and no ALPS — the same idiom as the forced-H1
-    // profile.
-    c->proxy_tls = c->profile->tls;
-    c->proxy_tls.alpn_wire = k_alpn_http11;
-    c->proxy_tls.alpn_wire_len = (U16)sizeof k_alpn_http11;
-    c->proxy_tls.alps_count = 0;
-    c->proxy_ctx = build_ctx(&c->proxy_tls, verify_proxy);
-  }
+  if (c->proxy.type == ProxyType_Https)  // build the shared outer-TLS ctx
+    client_ensure_proxy_ctx(c, verify_proxy);  // records proxy_verify
   // Stop reusing pooled conns established through the old proxy (new requests
   // open fresh conns through the new one). No-op when pooling is off.
   if (c->pool) pool_evict_all(c->pool);
   return 1;
 }
 
+B32 client_add_proxy(Client *c, String8 proxy_url, B32 verify_proxy) {
+  if (c->proxy_pool_count >= CLIENT_PROXY_POOL_MAX) return 0;
+  ProxyConfig pc;
+  MemoryZeroStruct(&pc);
+  if (!proxy_url.size || !proxy_parse(proxy_url, &pc)) return 0;  // malformed
+  c->proxy_pool[c->proxy_pool_count++] = pc;
+  if (pc.type == ProxyType_Https)  // build the shared outer-TLS ctx eagerly
+    client_ensure_proxy_ctx(c, verify_proxy);  // records proxy_verify
+  return 1;
+}
+
 String8 client_get_proxy(Client *c, Arena *arena) {
   return proxy_to_url(arena, &c->proxy);
+}
+
+B32 client_set_local_address(Client *c, String8 ip) {
+  if (ip.size == 0) {  // clear -> OS default
+    c->has_local_address = 0;
+    c->local_address[0] = 0;
+    return 1;
+  }
+  if (ip.size >= sizeof c->local_address) return 0;
+  char buf[64];
+  MemoryCopy(buf, ip.str, ip.size);
+  buf[ip.size] = 0;
+  U64 idx;
+  int af = str8_index_of(ip, ':', &idx) ? AF_INET6 : AF_INET;
+  U8 tmp[16];
+  if (inet_pton(af, buf, tmp) != 1) return 0;  // not a valid IP literal
+  MemoryCopy(c->local_address, buf, ip.size + 1);
+  c->has_local_address = 1;
+  return 1;
 }
 
 //- response convenience accessors -------------------------------------------
