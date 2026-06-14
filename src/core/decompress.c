@@ -133,6 +133,150 @@ internal B32 zstd_decode(const U8 *data, U64 len, U8Buf *out) {
 }
 #endif
 
+// --- streaming decode -------------------------------------------------------
+
+typedef enum DecKind {
+  Dec_Identity,
+  Dec_Gzip,     // zlib auto-detect (gzip + zlib-wrapped)
+  Dec_Brotli,
+  Dec_Zstd,
+} DecKind;
+
+struct StreamDecoder {
+  DecKind kind;
+  U64 total_out;  // cumulative decoded bytes (bomb cap)
+  B32 dead;       // a prior push failed; further pushes are no-ops returning 0
+#ifdef HOLYTLS_HAVE_ZLIB
+  z_stream zs;
+  B32 zs_init;
+#endif
+#ifdef HOLYTLS_HAVE_BROTLI
+  BrotliDecoderState *br;
+#endif
+#ifdef HOLYTLS_HAVE_ZSTD
+  ZSTD_DCtx *zd;
+#endif
+};
+
+StreamDecoder *stream_decoder_create(String8 encoding) {
+  StreamDecoder *d = (StreamDecoder *)calloc(1, sizeof *d);
+  if (!d) return 0;
+  String8 s = encoding;  // last comma token, trimmed (mirrors decode_content)
+  U64 comma;
+  if (str8_rindex_of(s, ',', &comma)) s = str8_skip(s, comma + 1);
+  s = str8_trim(s);
+  d->kind = Dec_Identity;
+#ifdef HOLYTLS_HAVE_ZSTD
+  if (eqi(s, "zstd")) {
+    d->kind = Dec_Zstd;
+    d->zd = ZSTD_createDCtx();
+    if (!d->zd) d->kind = Dec_Identity;  // degrade to passthrough on OOM
+  } else
+#endif
+#ifdef HOLYTLS_HAVE_BROTLI
+      if (eqi(s, "br")) {
+    d->kind = Dec_Brotli;
+    d->br = BrotliDecoderCreateInstance(0, 0, 0);
+    if (!d->br) d->kind = Dec_Identity;
+  } else
+#endif
+#ifdef HOLYTLS_HAVE_ZLIB
+      if (eqi(s, "gzip") || eqi(s, "x-gzip") || eqi(s, "deflate")) {
+    // 15+32 auto-detects gzip and zlib-wrapped deflate (the common cases); raw
+    // headerless deflate is not handled here (rare; would surface as an error).
+    if (inflateInit2(&d->zs, 15 + 32) == Z_OK) {
+      d->kind = Dec_Gzip;
+      d->zs_init = 1;
+    }
+  }
+#endif
+  (void)s;
+  return d;
+}
+
+// Emit a decoded run, enforcing the bomb cap. Returns 0 on breach.
+internal B32 dec_emit(StreamDecoder *d, const U8 *p, U64 n, DecodeChunkFn cb,
+                      void *user) {
+  if (n == 0) return 1;
+  d->total_out += n;
+  if (d->total_out > DECODE_MAX_OUT) return 0;
+  cb(user, p, n);
+  return 1;
+}
+
+B32 stream_decoder_push(StreamDecoder *d, const U8 *in, U64 len,
+                        DecodeChunkFn cb, void *user) {
+  if (!d || d->dead) return 0;
+  if (d->kind == Dec_Identity)
+    return (d->dead = !dec_emit(d, in, len, cb, user)) ? 0 : 1;
+  U8 buf[16384];
+#ifdef HOLYTLS_HAVE_ZLIB
+  if (d->kind == Dec_Gzip) {
+    d->zs.next_in = (Bytef *)in;
+    d->zs.avail_in = (uInt)len;
+    int rv;
+    do {
+      d->zs.next_out = buf;
+      d->zs.avail_out = sizeof buf;
+      rv = inflate(&d->zs, Z_NO_FLUSH);
+      if (rv != Z_OK && rv != Z_STREAM_END && rv != Z_BUF_ERROR) goto fail;
+      if (!dec_emit(d, buf, sizeof buf - d->zs.avail_out, cb, user)) goto fail;
+      if (rv == Z_BUF_ERROR) break;  // needs more input (or done)
+    } while (d->zs.avail_in > 0 || d->zs.avail_out == 0);
+    if (rv == Z_STREAM_END) { /* done; further input ignored */
+    }
+    return 1;
+  }
+#endif
+#ifdef HOLYTLS_HAVE_BROTLI
+  if (d->kind == Dec_Brotli) {
+    size_t avail_in = len;
+    const U8 *next_in = in;
+    BrotliDecoderResult r;
+    do {
+      size_t avail_out = sizeof buf;
+      U8 *next_out = buf;
+      r = BrotliDecoderDecompressStream(d->br, &avail_in, &next_in, &avail_out,
+                                        &next_out, 0);
+      if (r == BROTLI_DECODER_RESULT_ERROR) goto fail;
+      if (!dec_emit(d, buf, sizeof buf - avail_out, cb, user)) goto fail;
+    } while (r == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT);
+    return 1;
+  }
+#endif
+#ifdef HOLYTLS_HAVE_ZSTD
+  if (d->kind == Dec_Zstd) {
+    ZSTD_inBuffer ib = {in, len, 0};
+    while (ib.pos < ib.size) {
+      ZSTD_outBuffer ob = {buf, sizeof buf, 0};
+      size_t r = ZSTD_decompressStream(d->zd, &ob, &ib);
+      if (ZSTD_isError(r)) goto fail;
+      if (!dec_emit(d, buf, ob.pos, cb, user)) goto fail;
+      if (ob.pos == 0 && r == 0) break;
+    }
+    return 1;
+  }
+#endif
+  return 1;
+fail:
+  d->dead = 1;
+  return 0;
+}
+
+void stream_decoder_free(StreamDecoder *d) {
+  if (!d) return;
+#ifdef HOLYTLS_HAVE_ZLIB
+  if (d->zs_init) inflateEnd(&d->zs);
+#endif
+#ifdef HOLYTLS_HAVE_BROTLI
+  if (d->br) BrotliDecoderDestroyInstance(d->br);
+#endif
+#ifdef HOLYTLS_HAVE_ZSTD
+  if (d->zd) ZSTD_freeDCtx(d->zd);
+#endif
+  free(d);
+}
+
 B32 decode_content(Arena *arena, String8 encoding, const U8 *data, U64 len,
                    String8 *out) {
   // Use the last token of a comma-listed encoding, trimmed.
