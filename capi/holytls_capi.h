@@ -206,6 +206,16 @@ holytls_response *holytls_perform(holytls_client *c, const holytls_request *req)
 size_t holytls_perform_many(holytls_client *c, const holytls_request *reqs,
                             size_t count, holytls_response **out_responses);
 
+// Like holytls_perform, but STREAMS the (decoded) response body: `on_chunk`
+// fires with each decoded chunk as it arrives (the chunk bytes are valid only
+// for that call) instead of buffering, and the returned holytls_response carries
+// an empty body. Bounded memory over HTTP/2; H1/H3 deliver the whole body in one
+// `on_chunk` call (v1). Forces a single hop (no redirects) and the non-pooled
+// path. A NULL `on_chunk` behaves like holytls_perform.
+holytls_response *holytls_perform_stream(
+    holytls_client *c, const holytls_request *req,
+    void (*on_chunk)(void *user, const uint8_t *data, uint64_t len), void *user);
+
 void holytls_response_free(holytls_response *r);
 
 // ---------------------------------------------------------------------------

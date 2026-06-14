@@ -91,6 +91,12 @@ struct Response {
 // copy out anything you keep.
 typedef void (*ResponseFn)(void *user, const Response *resp);
 
+// Streaming response-body sink (see RequestParams.on_chunk). Invoked with
+// DECODED body chunks as they arrive instead of buffering the whole body; the
+// chunk bytes are valid only for the duration of the call. When set, the final
+// Response delivered to ResponseFn carries an empty body.
+typedef void (*BodyChunkFn)(void *user, const U8 *data, U64 len);
+
 // Parameters for client_request — a designated-initializer options struct whose
 // zero value is a redirect-following GET with the profile's default headers.
 // Only `url` is required. This single struct replaces the former
@@ -117,6 +123,11 @@ struct RequestParams {
                          // client's proxy pool / single proxy for this request,
                          // sticky across its redirect chain; empty = none).
                          // Forces the non-pooled path (rotation excludes reuse).
+  BodyChunkFn on_chunk;  // optional streaming sink: when set, decoded body
+                         // chunks go to on_chunk(chunk_user, ...) as they
+                         // arrive and the Response body is empty. Forces a
+                         // single hop (no redirects) on the non-pooled path.
+  void *chunk_user;
 };
 
 // Request/response middleware (set once on the Client; see client_set_pre_hook

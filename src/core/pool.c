@@ -412,7 +412,7 @@ internal void pool_h2_submit(PoolConn *pc, PoolReq *r) {
   S32 sid = h2_session_submit_request(
       pc->h2, method_str(r->method_enum), r->scheme, r->authority, r->path,
       r->req_headers.v, r->req_headers.count, r->body.str, r->body.size,
-      pool_h2_on_response, r);
+      pool_h2_on_response, r, /*on_chunk=*/0, /*chunk_user=*/0);  // pool: no stream
   if (sid < 0) {
     pool_req_fail(r, "h2 submit failed");
     return;
@@ -440,7 +440,7 @@ internal void pool_conn_fallback_legacy(PoolConn *pc) {
     h2req_start(pc->client, r->method_enum, r->url, r->caller_headers,
                 r->caller_header_count, r->caller_body.str, r->caller_body.size,
                 r->cb, r->user, r->deadline_ns,
-                /*proxy=*/0);  // pool path uses the client's single proxy
+                /*proxy=*/0, /*on_chunk=*/0, 0);  // pool: single proxy, no stream
     pool_req_done(r);  // disarm the pooled timer; h2req_start armed its own
     r = next;
   }

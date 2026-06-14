@@ -2,17 +2,26 @@
 
 #include <nghttp2/nghttp2.h>
 
+#include "core/decompress.h"  // streaming response-body decode
+
 typedef struct Req Req;
 struct Req {
   H2Session *sess;
   S32 stream_id;
   int status;
   HeaderList headers;
-  U8 *body;  // growable response-body buffer (arena)
+  U8 *body;  // growable response-body buffer (arena); unused when streaming
   U64 body_len;
   U64 body_cap;
   H2RespFn cb;
   void *user;
+  // Streaming (on_chunk != 0): DATA is decoded + handed to on_chunk as it
+  // arrives instead of buffered; the delivered H2Response body is empty.
+  H2ChunkFn on_chunk;
+  void *chunk_user;
+  StreamDecoder *dec;  // malloc'd; created lazily on first DATA, freed at close
+  B32 dec_inited;
+  B32 stream_failed;  // a decode/bomb error mid-stream -> deliver ok=0
 };
 
 struct H2Session {
@@ -93,7 +102,21 @@ internal int on_data_cb(nghttp2_session *session, U8 flags, S32 stream_id,
   (void)flags;
   H2Session *s = (H2Session *)user;
   Req *req = (Req *)nghttp2_session_get_stream_user_data(session, stream_id);
-  if (req) body_append(s, req, data, len);
+  if (req && req->on_chunk) {
+    // Streaming: lazily build the decoder from the (now-complete) response
+    // headers, then push DATA through it -> decoded chunks to on_chunk. A
+    // decode/bomb failure marks the stream so close delivers ok=0.
+    if (!req->dec_inited) {
+      String8 *ce = header_list_get_ci(&req->headers, str8_lit("content-encoding"));
+      req->dec = stream_decoder_create(ce ? *ce : str8_zero());
+      req->dec_inited = 1;
+    }
+    if (req->dec &&
+        !stream_decoder_push(req->dec, data, len, req->on_chunk, req->chunk_user))
+      req->stream_failed = 1;
+  } else if (req) {
+    body_append(s, req, data, len);
+  }
   // With no_auto_window_update (the preface WINDOW_UPDATE is fingerprint
   // bytes), nghttp2 replenishes recv windows only when we report bytes
   // consumed. We consume on delivery, so nghttp2 emits stream + connection
@@ -114,14 +137,20 @@ internal int on_stream_close_cb(nghttp2_session *session, S32 stream_id,
   if (!req) return 0;
   if (s->open_streams > 0) s->open_streams -= 1;
 
+  if (req->dec) {  // streaming: tear down the decoder (also covers RST/cancel)
+    stream_decoder_free(req->dec);
+    req->dec = 0;
+  }
+
   H2Response resp;
   MemoryZeroStruct(&resp);
   resp.stream_id = stream_id;
   resp.status = req->status;
   resp.headers = &req->headers;
-  resp.body = req->body;
-  resp.body_len = req->body_len;
-  resp.ok = (error_code == NGHTTP2_NO_ERROR);
+  // Streamed responses delivered their body via on_chunk; carry an empty body.
+  resp.body = req->on_chunk ? 0 : req->body;
+  resp.body_len = req->on_chunk ? 0 : req->body_len;
+  resp.ok = (error_code == NGHTTP2_NO_ERROR) && !req->stream_failed;
   if (req->cb) req->cb(req->user, &resp);
   return 0;  // Req is arena-owned; freed in bulk on h2_session_release
 }
@@ -229,7 +258,7 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
                               String8 authority, String8 path,
                               const Header *headers, U64 header_count,
                               const U8 *body, U64 body_len, H2RespFn cb,
-                              void *user) {
+                              void *user, H2ChunkFn on_chunk, void *chunk_user) {
   if (!s->session) return -1;
 
   // The nv array is transient (nghttp2 deep-copies name/value during submit).
@@ -283,6 +312,8 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
   header_list_init(&req->headers, s->arena);
   req->cb = cb;
   req->user = user;
+  req->on_chunk = on_chunk;  // non-null => stream the body, don't buffer
+  req->chunk_user = chunk_user;
 
   nghttp2_data_provider2 prd;
   nghttp2_data_provider2 *prdp = 0;

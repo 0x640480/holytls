@@ -327,6 +327,25 @@ holytls_response *holytls_perform(holytls_client *hc,
   return resp ? resp : make_error_response("no response");
 }
 
+holytls_response *holytls_perform_stream(
+    holytls_client *hc, const holytls_request *req,
+    void (*on_chunk)(void *user, const uint8_t *data, uint64_t len),
+    void *user) {
+  if (!hc || !req || !req->url) return make_error_response("invalid request");
+  Arena *a = arena_acquire();
+  RequestParams p;
+  build_params(a, req, &p);
+  p.on_chunk = on_chunk;  // BodyChunkFn == void(*)(void*,const U8*,U64), exact
+  p.chunk_user = user;
+  holytls_response *resp = 0;
+  int pending = 1;
+  CallCtx ctx = {&hc->loop, &resp, &pending};
+  client_request(&hc->client, &p, on_response, &ctx);
+  loop_run(&hc->loop);
+  arena_recycle(a);
+  return resp ? resp : make_error_response("no response");
+}
+
 size_t holytls_perform_many(holytls_client *hc, const holytls_request *reqs,
                             size_t count, holytls_response **out) {
   if (!hc || !reqs || !out || count == 0) return 0;

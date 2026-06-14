@@ -401,6 +401,7 @@ class Client:
         form=None,
         files=None,
         proxy: Optional[str] = None,
+        on_chunk=None,
         fetch_mode: FetchMode = FetchMode.DEFAULT,
         allow_redirects: bool = True,
     ) -> Response:
@@ -421,7 +422,30 @@ class Client:
             keep=keep,
             proxy=proxy,
         )
-        c_resp = lib.holytls_perform(self._c, c_req)
+        if on_chunk is not None:
+            # Stream the (decoded) body to on_chunk as it arrives; the returned
+            # Response has empty content. cffi does NOT propagate an exception
+            # raised in a callback through the C call (it would print + continue),
+            # so capture it in the bridge and re-raise after the call returns.
+            err: list = []
+
+            def _bridge(user, data, n):
+                if err:  # already failed — stop calling the user's callback
+                    return
+                try:
+                    on_chunk(bytes(ffi.buffer(data, n)))
+                except BaseException as e:  # noqa: BLE001 - re-raised below
+                    err.append(e)
+
+            cb = ffi.callback("void(void *, const uint8_t *, uint64_t)", _bridge)
+            keep.append(cb)  # keep the callback cdata alive across the blocking call
+            c_resp = lib.holytls_perform_stream(self._c, c_req, cb, ffi.NULL)
+            if err:
+                if c_resp != ffi.NULL:
+                    lib.holytls_response_free(c_resp)
+                raise err[0]
+        else:
+            c_resp = lib.holytls_perform(self._c, c_req)
         if c_resp == ffi.NULL:
             raise HolyTLSError("native allocation failure")
         return _response_from_c(c_resp)

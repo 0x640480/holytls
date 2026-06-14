@@ -111,6 +111,23 @@ client = holytls.Client(local_address="203.0.113.7")
 A `Session` resolves its proxy once (per-request `proxy=` or one pool pick) and
 keeps it sticky across the whole cookie-aware redirect chain.
 
+### Streaming large bodies
+
+Pass `on_chunk=` to stream the **decoded** body in pieces instead of buffering it
+— bounded memory for large downloads. The callback fires as data arrives; the
+returned `Response` carries an empty `content`.
+
+```python
+with open("big.bin", "wb") as f:
+    client.get("https://host/big.bin", on_chunk=f.write)
+```
+
+Notes: streaming is a **push** callback (not a pull `iter_content` — holytls runs
+the request to completion in one blocking call). It forces a **single hop** (no
+redirects) and the non-pooled path. **HTTP/2 streams for real** (bounded memory);
+H1/H3 deliver the whole decoded body in one `on_chunk` call. An exception raised
+in `on_chunk` is re-raised from the `get`/`post` call after the request unwinds.
+
 ### Concurrency — `get_many` / `request_many`
 
 The native event-loop concurrency: every request runs on **one loop, one thread**,
