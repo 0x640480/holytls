@@ -113,6 +113,10 @@ struct RequestParams {
                          // to client_set_max_redirects redirects.
   U64 deadline_ns;       // optional absolute uv_hrtime() deadline for the whole
                          // operation; 0 = derive from client_set_timeout_ms.
+  String8 proxy;         // optional per-request proxy URL (overrides the
+                         // client's proxy pool / single proxy for this request,
+                         // sticky across its redirect chain; empty = none).
+                         // Forces the non-pooled path (rotation excludes reuse).
 };
 
 // Request/response middleware (set once on the Client; see client_set_pre_hook
@@ -335,6 +339,22 @@ B32 client_get_override_default_headers(Client *c);
 // Off by default.
 B32 client_set_proxy(Client *c, String8 proxy_url, B32 verify_proxy);
 
+// Add a proxy to the rotation pool. When the pool is non-empty, each non-pooled
+// request round-robins to the next entry (overriding the single client_set_proxy
+// proxy), sticky across that request's redirect chain; a per-request
+// RequestParams.proxy overrides the pool. `verify_proxy` applies to HTTPS-proxy
+// certificate checks (the outer TLS ctx is shared across all proxies). Returns 1
+// if added, 0 on a malformed URL or a full pool (CLIENT_PROXY_POOL_MAX). Proxy
+// rotation forces the per-request (non-pooled) transport path. Off by default.
+B32 client_add_proxy(Client *c, String8 proxy_url, B32 verify_proxy);
+
+// Bind every outgoing connection (TCP + QUIC) to source IP `ip` (an IPv4 or
+// IPv6 literal) — egress-address selection for multi-homed hosts. An empty
+// string clears it (OS default). Returns 1 if parsed, 0 on a bad literal
+// (leaving the setting unchanged). The source family must match the
+// destination's. Off by default.
+B32 client_set_local_address(Client *c, String8 ip);
+
 // The current proxy as a URL ("scheme://[user:pass@]host:port") in `arena`, or
 // {0,0} when direct (no proxy). holytls uses a single proxy config — a SOCKS5
 // proxy serves both TCP (H1/H2) and UDP (H3); HTTP/HTTPS proxies serve TCP
@@ -415,6 +435,7 @@ struct ResumeCacheEntry {
 };
 
 #define CLIENT_HEADER_ORDER_MAX 32  // header-order override capacity
+#define CLIENT_PROXY_POOL_MAX 64    // proxy-rotation pool capacity
 
 struct Client {
   EventLoop *loop;
@@ -461,10 +482,24 @@ struct Client {
 
   // Forward proxy (opt-in; ProxyType_None = direct). proxy_ctx/proxy_tls are
   // built only for an HTTPS proxy (the outer TLS handshake to the proxy
-  // itself).
+  // itself) — host-independent, so the one ctx serves the single proxy, every
+  // pool entry, and any per-request override.
   ProxyConfig proxy;
   CtxResult proxy_ctx;
   TlsProfile proxy_tls;
+  B32 proxy_verify;  // verify setting used to build proxy_ctx (for lazy rebuild)
+
+  // Proxy rotation pool (opt-in; client_add_proxy). When non-empty, each
+  // non-pooled request round-robins to the next entry (sticky across its
+  // redirect chain). A per-request RequestParams.proxy overrides both.
+  ProxyConfig proxy_pool[CLIENT_PROXY_POOL_MAX];
+  U8 proxy_pool_count;
+  U8 proxy_rr;  // round-robin cursor
+
+  // Source-address binding (egress IP selection; empty = OS default). Applied to
+  // every outgoing TCP + QUIC connection.
+  char local_address[64];
+  B32 has_local_address;
 
   // Header-order override (advanced; count 0 => the profile's default order).
   // The name bytes live in header_order_buf; header_order[] are views into it.

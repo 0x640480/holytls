@@ -60,6 +60,8 @@ struct SessionReq {
   U64 chain_start_ns;  // whole-chain start (uv_hrtime) for total_ms
   U64 deadline_ns;     // whole-chain timeout deadline (0 = none), shared by all
                        // hops
+  String8 proxy;       // resolved proxy URL, sticky across the hop chain (a
+                       // session is one identity; rotate once, not per hop)
 };
 
 internal void session_hop_cb(void *user, const Response *r);
@@ -93,7 +95,8 @@ internal void session_dispatch_hop(SessionReq *req) {
                           .header_count = hop.count,
                           .body = req->body,
                           .no_redirects = 1,
-                          .deadline_ns = req->deadline_ns};
+                          .deadline_ns = req->deadline_ns,
+                          .proxy = req->proxy};
   client_request(req->client, &params, session_hop_cb, req);
 }
 
@@ -158,6 +161,19 @@ void session_request(Session *s, Client *client, const RequestParams *p,
       client_get_timeout_ms(client);  // one deadline for the whole hop chain
   req->deadline_ns = t ? uv_hrtime() + t * 1000000ull : 0;
   req->cur_url = push_str8_copy(a, p->url);
+  // Resolve the proxy ONCE for the whole hop chain: a per-request override is
+  // used verbatim; otherwise rotate the pool a single time (a session is one
+  // identity, so it must not flip proxies between cookie-aware hops). Empty =>
+  // the client's single proxy. client_resolve_proxy is defined in client.c
+  // (included earlier in the unity TU).
+  if (p->proxy.size) {
+    req->proxy = push_str8_copy(a, p->proxy);
+  } else {
+    ProxyConfig pc;
+    MemoryZeroStruct(&pc);
+    if (client_resolve_proxy(client, str8_zero(), &pc))
+      req->proxy = proxy_to_url(a, &pc);
+  }
   header_list_init(&req->caller_headers, a);
   if (p->fetch_mode != FetchMode_Default) {
     // Coherent Sec-Fetch-* for this mode (the former session_fetch): merge into

@@ -15,7 +15,23 @@ void loop_shutdown(EventLoop *loop) {
   uv_loop_close(&loop->uv);
 }
 
-int loop_run(EventLoop *loop) { return uv_run(&loop->uv, UV_RUN_DEFAULT); }
+int loop_run(EventLoop *loop) {
+  int r = uv_run(&loop->uv, UV_RUN_DEFAULT);
+  // A uv_close scheduled from INSIDE the final closing-handles drain — e.g. a
+  // per-request deadline timer disarmed when its connection handle finishes
+  // closing (h2req_on_fully_closed -> req_timer_disarm) — is appended to
+  // closing_handles AFTER uv__run_closing_handles already snapshotted that list
+  // for the iteration. If the loop was stopped (uv_stop — as the blocking
+  // C-API does on the last response delivered), uv_run then exits before
+  // reaping it, so loop_run would return with that handle's close callback
+  // still pending (the timer is freed only by a later loop_run/loop_shutdown).
+  // Reap such stragglers now with one NON-BLOCKING iteration so loop_run leaves
+  // the loop quiesced. Gated on uv_loop_alive, so a normal run-to-completion
+  // (nothing pending) pays nothing; UV_RUN_NOWAIT cannot block, and the prior
+  // uv_run already cleared the stop flag.
+  if (uv_loop_alive(&loop->uv)) uv_run(&loop->uv, UV_RUN_NOWAIT);
+  return r;
+}
 
 void loop_stop(EventLoop *loop) { uv_stop(&loop->uv); }
 

@@ -89,6 +89,9 @@ struct Connection {
   B32 dns_was_cached;  // this connect used a cached address (evict it on
                        // failure)
 
+  struct sockaddr_storage bind_addr;  // source address to bind before connect
+  B32 has_bind_addr;                  // (egress IP selection); 0 = OS default
+
   // Proxy tunnel (proxy.type == ProxyType_None => direct). When set,
   // conn_connect resolves+connects the PROXY; after the negotiation the inner
   // (target) TLS handshake runs over the tunnel — the target ClientHello is
@@ -185,6 +188,12 @@ internal inline void conn_set_proxy(Connection *c, const ProxyConfig *p,
   if (proxy_ctx) SSL_CTX_up_ref(proxy_ctx);
   c->proxy_profile = proxy_profile;
 }
+
+// Bind outgoing connections to source IP `ip` (IPv4 or IPv6 literal) before
+// connecting — egress-address selection. Returns 1 if parsed, 0 on a bad
+// literal (binding stays off). Set before conn_connect. The source family must
+// match the destination's (bind v4 -> connect v4).
+B32 conn_set_local_address(Connection *c, String8 ip);
 
 void conn_init(Connection *c, EventLoop *loop, SSL_CTX *ctx,
                const TlsProfile *profile);
