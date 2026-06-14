@@ -98,7 +98,7 @@ internal void on_ready(void *user, B32 ok, const char *err) {
   Header hdr = {str8_lit("accept"), str8_lit("*/*"), 0};
   S32 sid = h2_session_submit_request(
       cx->h2, str8_lit("GET"), str8_lit("https"), str8_lit(HOST),
-      str8_lit("/json"), &hdr, 1, 0, 0, on_h2_resp, cx);
+      str8_lit("/json"), &hdr, 1, 0, 0, on_h2_resp, cx, /*on_chunk=*/0, 0);
   if (sid < 0) {
     conn_close(cx->conn);
     return;

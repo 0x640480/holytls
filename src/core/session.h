@@ -51,7 +51,9 @@ void session_destroy(Session *s);
 // Sec-Fetch-* headers (replaces the old session_fetch). `p->no_redirects` and
 // `p->deadline_ns` are ignored — the Session always runs its own cookie-aware
 // redirect loop (up to s->max_redirects) and derives one chain-wide deadline
-// from client_set_timeout_ms.
+// from client_set_timeout_ms. `p->on_chunk` IS honored (the body is streamed to
+// the sink); as in client_request a streamed body is terminal, so a streaming
+// request does NOT follow redirects.
 void session_request(Session *s, Client *client, const RequestParams *p,
                      ResponseFn cb, void *user);
 void session_get(Session *s, Client *client, String8 url, ResponseFn cb,
