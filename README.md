@@ -43,21 +43,6 @@ browser actually performs:
   list is produced by Chrome's own deterministic per-version algorithm, so a new
   Chrome version is a one-line bump, not a guess.
 
-### vs. bogdanfinn/tls-client
-
-| | **holytls** | typical TLS-impersonation client |
-|---|---|---|
-| Language | **C** — embeddable static lib, no runtime | Go |
-| TLS fingerprint (JA3/JA4) | byte-exact | yes |
-| HTTP/2 fingerprint (Akamai) | **byte-exact, live-verified** | usually yes |
-| HTTP/3 / QUIC fingerprint | **byte-exact (QUIC-JA4 + h3 hash)** + Chrome's alt-svc upgrade | partial / none |
-| Real ECH (encrypted SNI) | **yes** (DNS HTTPS RR + DoH) | no |
-| TLS 1.3 0-RTT early data | **yes** (H2 and H3) | no |
-| Concurrency | one libuv loop, thousands of conns | goroutines |
-| Proxy | HTTP / HTTPS / SOCKS5 **+ QUIC-over-SOCKS5**, runtime switching, custom CA | HTTP / SOCKS |
-| Header control | full override + explicit order | order key |
----
-
 ## Quick start
 
 Pull it into your CMake project — that's the supported integration (it builds its
