@@ -127,7 +127,8 @@ internal void test_h2_multiplex(void) {
   for (int i = 0; i < 3; ++i)
     ids[i] = h2_session_submit_request(cli, str8_lit("GET"), str8_lit("https"),
                                        str8_lit("example.com"), paths[i], 0, 0,
-                                       0, 0, cli_resp, &results[i]);
+                                       0, 0, cli_resp, &results[i],
+                                       /*on_chunk=*/0, 0);
   CHECK(ids[0] == 1 && ids[1] == 3 && ids[2] == 5);  // distinct odd stream ids
 
   // Pump both directions until quiescent.

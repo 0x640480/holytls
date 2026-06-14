@@ -97,7 +97,7 @@ internal String8 akamai_text(Arena *arena, const Http2Profile *prof) {
   h2_session_start(cli);
   h2_session_submit_request(cli, str8_lit("GET"), str8_lit("https"),
                             str8_lit("tls.browserleaks.com"), str8_lit("/"), 0,
-                            0, 0, 0, noop_resp, 0);
+                            0, 0, 0, noop_resp, 0, /*on_chunk=*/0, 0);
 
   Cap cap = {{0}, {0}, 0, -1, {0}, 0};
   nghttp2_session_callbacks *cbs = 0;

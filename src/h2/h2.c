@@ -22,6 +22,10 @@ struct Req {
   StreamDecoder *dec;  // malloc'd; created lazily on first DATA, freed at close
   B32 dec_inited;
   B32 stream_failed;  // a decode/bomb error mid-stream -> deliver ok=0
+  Req *dec_next;  // intrusive link: Reqs that created a decoder (s->dec_list),
+                  // so h2_session_release can free any still-live decoder
+                  // (nghttp2_session_del frees open streams WITHOUT firing
+                  // on_stream_close, which would otherwise leak the decoder)
 };
 
 struct H2Session {
@@ -32,6 +36,7 @@ struct H2Session {
   nghttp2_session *session;
   int open_streams;     // concurrent in-flight streams (multiplexing)
   B32 goaway_received;  // server asked us to stop opening new streams
+  Req *dec_list;        // intrusive list of Reqs that created a StreamDecoder
 };
 
 // Request body source for nghttp2's DATA-frame read callback (arena-owned).
@@ -110,6 +115,10 @@ internal int on_data_cb(nghttp2_session *session, U8 flags, S32 stream_id,
       String8 *ce = header_list_get_ci(&req->headers, str8_lit("content-encoding"));
       req->dec = stream_decoder_create(ce ? *ce : str8_zero());
       req->dec_inited = 1;
+      if (req->dec) {  // track for teardown-time cleanup (see h2_session_release)
+        req->dec_next = s->dec_list;
+        s->dec_list = req;
+      }
     }
     if (req->dec &&
         !stream_decoder_push(req->dec, data, len, req->on_chunk, req->chunk_user))
@@ -213,6 +222,16 @@ H2Session *h2_session_alloc(const Http2Profile *prof, H2SendFn send_fn,
 
 void h2_session_release(H2Session *s) {
   if (!s) return;
+  // Free any streaming decoder still live on an open stream. nghttp2_session_del
+  // frees open streams DIRECTLY without firing on_stream_close_cb, so a stream
+  // aborted mid-body (timeout / connection drop / shutdown) would otherwise
+  // orphan the malloc'd StreamDecoder + its zlib/brotli/zstd state. on_stream_close
+  // nulls req->dec after freeing, so closed streams are skipped (no double-free).
+  for (Req *r = s->dec_list; r; r = r->dec_next)
+    if (r->dec) {
+      stream_decoder_free(r->dec);
+      r->dec = 0;
+    }
   if (s->session) nghttp2_session_del(s->session);
   arena_release(s->arena);  // frees the struct + all reqs/headers/bodies
 }

@@ -62,6 +62,9 @@ struct SessionReq {
                        // hops
   String8 proxy;       // resolved proxy URL, sticky across the hop chain (a
                        // session is one identity; rotate once, not per hop)
+  BodyChunkFn on_chunk;  // streaming sink (0 = buffer); when set, the session
+                         // streams the single hop and does NOT follow redirects
+  void *chunk_user;
 };
 
 internal void session_hop_cb(void *user, const Response *r);
@@ -96,7 +99,9 @@ internal void session_dispatch_hop(SessionReq *req) {
                           .body = req->body,
                           .no_redirects = 1,
                           .deadline_ns = req->deadline_ns,
-                          .proxy = req->proxy};
+                          .proxy = req->proxy,
+                          .on_chunk = req->on_chunk,
+                          .chunk_user = req->chunk_user};
   client_request(req->client, &params, session_hop_cb, req);
 }
 
@@ -119,9 +124,10 @@ internal void session_hop_cb(void *user, const Response *r) {
   // 2) Follow a redirect ourselves (so the next hop gets its own cookies),
   //    via the hop logic shared with client.c's redirect loop (the carried
   //    caller headers never include the jar's Cookie — it's recomputed per
-  //    hop).
+  //    hop). A streaming request is terminal (its body already went to the
+  //    sink), so it never follows a redirect — mirroring client_request.
   RedirectHop hop;
-  if (req->left > 0 &&
+  if (!req->on_chunk && req->left > 0 &&
       redirect_prepare_hop(req->arena, req->cur_url, req->method,
                            &req->caller_headers, r, &hop)) {
     req->caller_headers = hop.headers;
@@ -154,6 +160,8 @@ void session_request(Session *s, Client *client, const RequestParams *p,
   req->client = client;
   req->user_cb = cb;
   req->user = user;
+  req->on_chunk = p->on_chunk;  // stream the (single) hop's body to the sink
+  req->chunk_user = p->chunk_user;
   req->method = p->method;
   req->left = s->max_redirects;
   req->chain_start_ns = uv_hrtime();

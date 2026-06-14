@@ -115,6 +115,8 @@ typedef struct LbStream {
   U64 body_len, body_cap;
   U8 *resp_body;  // copied at submit time; drained by the data provider
   U64 resp_len, resp_off;
+  B32 stall;  // send the body but never EOF (hold the stream open) — for
+              // exercising a client that aborts mid-stream
   struct LbStream *next;  // per-connection list (freed on close incl. withheld)
 } LbStream;
 
@@ -250,10 +252,14 @@ static nghttp2_ssize lb_h2_body_read(nghttp2_session *s, S32 sid, U8 *buf,
   (void)user;
   LbStream *st = (LbStream *)source->ptr;
   U64 remain = st->resp_len - st->resp_off;
+  // Stall: once the whole body is sent, hold the stream open (never EOF) so the
+  // client gets the full body but no fin — it must abort (timeout) to finish.
+  if (remain == 0 && st->stall) return NGHTTP2_ERR_DEFERRED;
   U64 n = remain < length ? remain : length;
   if (n) MemoryCopy(buf, st->resp_body + st->resp_off, n);
   st->resp_off += n;
-  if (st->resp_off >= st->resp_len) *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+  if (st->resp_off >= st->resp_len && !st->stall)
+    *data_flags |= NGHTTP2_DATA_FLAG_EOF;
   return (nghttp2_ssize)n;
 }
 static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
@@ -296,6 +302,7 @@ static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
     MemoryCopy(st->resp_body, resp.body, resp.body_len);
     st->resp_len = resp.body_len;
     st->resp_off = 0;
+    st->stall = resp.stall;
     nghttp2_data_provider2 prd;
     prd.source.ptr = st;
     prd.read_callback = lb_h2_body_read;

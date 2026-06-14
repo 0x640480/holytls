@@ -31,11 +31,13 @@ global U8 *g_body;  // the server's fixed response body
 global U64 g_body_len;
 
 static void body_handler(const LbRequest *req, LbResponse *resp, void *user) {
-  (void)req;
   (void)user;
   resp->status = 200;
   resp->body = g_body;  // the server copies it
   resp->body_len = g_body_len;
+  // "/stall": send the body but never END_STREAM, so the client streams the
+  // body (decoder created) then must abort (timeout) with the stream still open.
+  if (str8_contains(req->path, str8_lit("stall"))) resp->stall = 1;
 }
 
 typedef struct Sink {
@@ -114,6 +116,48 @@ static void run(EventLoop *loop, LbAlpn alpn, HttpVersion ver, const char *label
   }
 }
 
+// Abort a streaming H2 request mid-flight: the server sends the whole body but
+// never END_STREAM, so the decoder is created (and the body streams) but the
+// stream stays open; a short client timeout aborts it, then client_cleanup ->
+// h2_session_release tears the session down with the stream still open. The
+// per-stream StreamDecoder MUST be freed there (nghttp2_session_del does not
+// fire on_stream_close) — ASan/LSan proves no leak.
+static void run_cancel(EventLoop *loop) {
+  U16 port = 0;
+  LbServer *srv = lb_server_start(loop, LB_ALPN_H2, body_handler, 0, &port);
+  char url[64];
+  snprintf(url, sizeof url, "https://127.0.0.1:%u/stall", port);
+
+  Client c;
+  client_init(&c, loop, profile_chrome148(), /*verify=*/0);
+  client_set_http_version(&c, HttpVersion_H2);
+  client_set_timeout_ms(&c, 400);  // abort: the server never sends fin
+
+  Sink sink = {(U8 *)malloc(g_body_len + 64), 0, g_body_len + 64, 0};
+  RC rc;
+  MemoryZeroStruct(&rc);
+  uv_timer_start(&g_wd, wd_cb, 8000, 0);
+  RequestParams p = {.method = Method_GET,
+                     .url = str8_cstring(url),
+                     .no_redirects = 1,
+                     .on_chunk = on_chunk,
+                     .chunk_user = &sink};
+  client_request(&c, &p, on_resp, &rc);
+  loop_run(loop);
+  uv_timer_stop(&g_wd);
+
+  fprintf(stderr, "  [cancel] ok=%d chunks=%d streamed=%llu (decoder live at teardown)\n",
+          rc.ok, sink.chunks, (unsigned long long)sink.len);
+  CHECK(rc.responded && !rc.ok);  // aborted by the timeout, not a clean close
+  CHECK(sink.chunks >= 1);        // the decoder WAS created (body streamed)
+
+  free(sink.buf);
+  client_cleanup(&c);  // h2_session_release with the streaming stream still open
+  lb_server_stop(srv);
+  for (int g = 0; g < 500 && uv_run(loop_uv(loop), UV_RUN_NOWAIT); ++g) {
+  }
+}
+
 int main(void) {
   g_body_len = 256 * 1024;  // large enough to span many H2 DATA frames
   g_body = (U8 *)malloc(g_body_len);
@@ -127,6 +171,7 @@ int main(void) {
 
   run(&loop, LB_ALPN_H2, HttpVersion_H2, "h2-stream", /*expect_multi=*/1);
   run(&loop, LB_ALPN_H1, HttpVersion_H1, "h1-fallback", /*expect_multi=*/0);
+  run_cancel(&loop);  // decoder-leak-on-abort (ASan)
 
   uv_close((uv_handle_t *)&g_wd, 0);
   loop_shutdown(&loop);

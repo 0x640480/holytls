@@ -51,6 +51,8 @@ struct LbResponse {
   const char *extra_values[8];
   U64 extra_count;
   B32 withhold;  // send NOTHING (keep the stream/conn open) — the timeout case
+  B32 stall;     // send the body but never END_STREAM (hold the stream open) —
+                 // the client gets the full body but no fin (mid-stream abort)
 };
 
 // Fired once per fully-received request. `resp` is zeroed before the call.
