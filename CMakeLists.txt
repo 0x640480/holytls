@@ -67,8 +67,19 @@ FetchContent_Declare(libuv
 set(ENABLE_LIB_ONLY ON CACHE BOOL "" FORCE)
 set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
 set(ENABLE_DOC OFF CACHE BOOL "" FORCE)
+# nghttp2 is patched (cmake/patches) to re-emit the RFC 7540 HEADERS-frame
+# priority that nghttp2 dropped in its RFC 9218 transition — browsers (Chrome,
+# Firefox) still send it, so a profile's HEADERS priority is reproduced exactly.
+# Applied idempotently at populate time (same mechanism as the BoringSSL patch).
+find_package(Git REQUIRED)
 FetchContent_Declare(nghttp2
-  GIT_REPOSITORY https://github.com/nghttp2/nghttp2.git GIT_TAG v1.69.0 GIT_SHALLOW TRUE)
+  GIT_REPOSITORY https://github.com/nghttp2/nghttp2.git GIT_TAG v1.69.0 GIT_SHALLOW TRUE
+  PATCH_COMMAND ${CMAKE_COMMAND}
+    -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+    -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/nghttp2-rfc7540-headers-priority.patch
+    -DSRC_DIR=<SOURCE_DIR>
+    -DLABEL=nghttp2
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_patch.cmake)
 
 # ngtcp2 (QUIC) + nghttp3 (HTTP/3) — core libs only, TLS-agnostic. ngtcp2's own
 # BoringSSL crypto helper is compiled by us below (its CMake detection link-tests
