@@ -46,9 +46,11 @@ from holytls._client import (
     available_profiles,
     version,
 )
+from holytls._async import AsyncClient
 
 __all__ = [
     "Client",
+    "AsyncClient",
     "Session",
     "WebSocket",
     "Response",

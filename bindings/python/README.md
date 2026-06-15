@@ -15,6 +15,20 @@ with holytls.Client(http_version="auto") as client:  # H2, then H3 via alt-svc
     print(r.json()["tls"]["ja4"])             # t13d1516h2_8daaf6152771_d8a2da3f94cd
 ```
 
+Prefer asyncio? `AsyncClient` mirrors the same surface — every request is a
+coroutine, and `asyncio.gather` runs them concurrently on the one native loop:
+
+```python
+import asyncio, holytls
+
+async def main():
+    async with holytls.AsyncClient(http_version="auto") as client:
+        r = await client.get("https://example.com")
+        results = await asyncio.gather(*(client.get(u) for u in urls))  # concurrent
+
+asyncio.run(main())
+```
+
 ## How it works
 
 holytls is an **async, single-threaded** client built on a libuv event loop —

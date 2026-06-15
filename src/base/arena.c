@@ -241,3 +241,19 @@ void arena_recycle(Arena *arena) {
   g_recycle_head = arena;
   g_recycle_count++;
 }
+
+void arena_thread_cleanup(void) {
+  for (Arena *a = g_recycle_head; a;) {
+    Arena *next = a->recycle_next;
+    arena_release(a);
+    a = next;
+  }
+  g_recycle_head = 0;
+  g_recycle_count = 0;
+  for (int i = 0; i < 2; ++i) {
+    if (g_scratch[i]) {
+      arena_release(g_scratch[i]);
+      g_scratch[i] = 0;
+    }
+  }
+}

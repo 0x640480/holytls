@@ -50,6 +50,15 @@ void arena_release(Arena *arena);
 Arena *arena_acquire(void);
 void arena_recycle(Arena *arena);
 
+//- thread-local pool teardown
+// Release THIS thread's scratch + recycle arena pools (the ones arena_acquire /
+// scratch_begin build lazily). They are thread_local and otherwise never torn
+// down — fine for the main/long-lived thread (the pools stay reachable to
+// process exit), but a worker thread that used arenas and then EXITS would
+// orphan its pools (thread_local storage is destroyed first), which leaks. Call
+// this on such a thread right before it returns. Idempotent; no-op if unused.
+void arena_thread_cleanup(void);
+
 //- allocation
 void *arena_push(Arena *arena, U64 size, U64 align);
 void *arena_push_zero(Arena *arena, U64 size, U64 align);
