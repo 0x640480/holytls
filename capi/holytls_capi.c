@@ -231,23 +231,37 @@ internal void build_params(Arena *a, const holytls_request *req,
 // Client lifecycle + configuration.
 // ---------------------------------------------------------------------------
 
-internal holytls_client *client_new_from(const Profile *h2,
-                                         const QuicProfile *h3,
-                                         holytls_http_version mode, int verify) {
+// Init a caller-owned EventLoop + Client pair from a resolved profile/mode.
+// Returns 1 on success (loop + client initialized), 0 if the selection is
+// invalid (no profile, or an H3-capable mode with no QUIC variant) — in which
+// case nothing was initialized. Shared by the blocking + async constructors.
+internal int client_loop_init(EventLoop *loop, Client *client,
+                              const Profile *h2, const QuicProfile *h3,
+                              holytls_http_version mode, int verify) {
   HttpVersion hv = map_http_version(mode);
   // The QUIC transport is built iff the mode can ever use H3 — so "dual" is a
   // derived fact, not a separate knob. AUTO upgrades to H3 via alt-svc; H3
   // forces it. H2/H1 stay on TCP and skip QUIC entirely.
   int dual = (hv == HttpVersion_Auto) || (hv == HttpVersion_H3);
   if (!h2 || (dual && !h3)) return 0;  // unknown profile name / no h3 variant
+  loop_init(loop);
+  if (dual)
+    client_init_dual(client, loop, h2, h3, verify ? 1 : 0);
+  else
+    client_init(client, loop, h2, verify ? 1 : 0);
+  client_set_http_version(client, hv);  // preset the policy at construction
+  return 1;
+}
+
+internal holytls_client *client_new_from(const Profile *h2,
+                                         const QuicProfile *h3,
+                                         holytls_http_version mode, int verify) {
   holytls_client *hc = (holytls_client *)calloc(1, sizeof *hc);
   if (!hc) return 0;
-  loop_init(&hc->loop);
-  if (dual)
-    client_init_dual(&hc->client, &hc->loop, h2, h3, verify ? 1 : 0);
-  else
-    client_init(&hc->client, &hc->loop, h2, verify ? 1 : 0);
-  client_set_http_version(&hc->client, hv);  // preset the policy at construction
+  if (!client_loop_init(&hc->loop, &hc->client, h2, h3, mode, verify)) {
+    free(hc);
+    return 0;
+  }
   return hc;
 }
 
@@ -447,6 +461,306 @@ void holytls_response_free(holytls_response *r) {
     free((void *)r->headers);
   }
   free(r);
+}
+
+// ---------------------------------------------------------------------------
+// Async client — non-blocking submit + a loop on a caller-spawned thread.
+//
+// Threading model: the loop runs on ONE dedicated thread (holytls_async_run).
+// All Client state (dispatch, response copy, cleanup) is touched ONLY there. The
+// asyncio thread calls holytls_async_submit/stop, which touch only the mutex'd
+// queue + uv_async_send (the one libuv call documented thread-safe). A request's
+// bytes are deep-copied (malloc, not arena — arenas are loop-thread-only) before
+// crossing; the completion's holytls_response is plain malloc'd memory, so the
+// caller can marshal + free it on whatever thread it lands the result on.
+// ---------------------------------------------------------------------------
+
+// One queued submission: owned malloc copies of a flat request, crossing from
+// the submitting thread to the loop thread; freed on the loop thread after
+// dispatch.
+typedef struct AsyncSubmit AsyncSubmit;
+struct AsyncSubmit {
+  AsyncSubmit *next;
+  char *url;
+  holytls_header *headers;  // each name/value malloc'd
+  size_t header_count;
+  uint8_t *body;
+  size_t body_len;
+  char *proxy;
+  holytls_method method;
+  holytls_fetch_mode fetch_mode;
+  int no_redirects;
+  uint64_t req_id;
+  holytls_async_complete_fn cb;
+  void *user;
+};
+
+typedef struct AsyncCtx AsyncCtx;
+
+struct holytls_async_client {
+  holytls_client base;  // {EventLoop loop; Client client;} — reuse the sync body
+  uv_async_t async;     // persistent: keeps the loop alive AND wakes it
+  uv_mutex_t qlock;     // guards the submission queue + stopping
+  AsyncSubmit *qhead, *qtail;
+  int stopping;
+  AsyncCtx *inflight;   // dll of dispatched-not-yet-completed ctxs (LOOP THREAD
+                        // ONLY); survivors are freed at teardown so a request
+                        // abandoned at stop doesn't leak its ctx
+  Arena *arena;         // loop-thread-only scratch for per-dispatch Header rows.
+                        // Owned (not the thread-local arena_acquire pool, which
+                        // would leak when THIS loop thread exits).
+};
+
+// Per-request completion trampoline ctx. malloc'd (not arena): client_request
+// may deliver synchronously OR much later, so this must outlive the submit.
+// Intrusively linked into holytls_async_client.inflight on the loop thread.
+struct AsyncCtx {
+  AsyncCtx *prev, *next;
+  holytls_async_client *ac;
+  uint64_t req_id;
+  holytls_async_complete_fn cb;
+  void *user;
+};
+
+internal void async_submit_free(AsyncSubmit *s) {
+  if (!s) return;
+  free(s->url);
+  free(s->body);
+  free(s->proxy);
+  if (s->headers) {
+    for (size_t i = 0; i < s->header_count; i++) {
+      free((void *)s->headers[i].name);
+      free((void *)s->headers[i].value);
+    }
+    free(s->headers);
+  }
+  free(s);
+}
+
+// Deep-copy a flat request into an owned AsyncSubmit (runs off the loop thread).
+// Returns NULL on OOM (any partial copies are freed).
+internal AsyncSubmit *async_submit_copy(const holytls_request *req,
+                                        uint64_t req_id,
+                                        holytls_async_complete_fn cb,
+                                        void *user) {
+  AsyncSubmit *s = (AsyncSubmit *)calloc(1, sizeof *s);
+  if (!s) return 0;
+  s->method = req->method;
+  s->fetch_mode = req->fetch_mode;
+  s->no_redirects = req->no_redirects ? 1 : 0;
+  s->req_id = req_id;
+  s->cb = cb;
+  s->user = user;
+  s->url = dup_cstr(req->url);
+  if (!s->url) goto oom;
+  if (req->body && req->body_len) {
+    s->body = dup_bytes(req->body, req->body_len);
+    if (!s->body) goto oom;
+    s->body_len = req->body_len;
+  }
+  if (req->proxy) {
+    s->proxy = dup_cstr(req->proxy);
+    if (!s->proxy) goto oom;
+  }
+  if (req->header_count && req->headers) {
+    s->headers = (holytls_header *)calloc(req->header_count, sizeof *s->headers);
+    if (!s->headers) goto oom;
+    s->header_count = req->header_count;  // set before the loop so OOM cleanup
+                                          // walks every (zeroed) slot
+    for (size_t i = 0; i < req->header_count; i++) {
+      s->headers[i].name = dup_cstr(req->headers[i].name);
+      s->headers[i].value = dup_cstr(req->headers[i].value);
+      if (!s->headers[i].name || !s->headers[i].value) goto oom;
+    }
+  }
+  return s;
+oom:
+  async_submit_free(s);
+  return 0;
+}
+
+// Reconstruct a flat holytls_request view over the owned copies, then reuse
+// build_params (Header rows land in `a`; client_request copies them out).
+internal void build_params_from_submit(Arena *a, const AsyncSubmit *s,
+                                       RequestParams *out) {
+  holytls_request req;
+  MemoryZeroStruct(&req);
+  req.method = s->method;
+  req.url = s->url;
+  req.headers = s->headers;
+  req.header_count = s->header_count;
+  req.body = s->body;
+  req.body_len = s->body_len;
+  req.fetch_mode = s->fetch_mode;
+  req.no_redirects = s->no_redirects;
+  req.proxy = s->proxy;
+  build_params(a, &req, out);
+}
+
+// Response trampoline — fires on the loop thread when a request completes.
+// Copies the "valid only during the callback" Response into owned heap memory
+// and hands ownership to the user's completion callback.
+internal void on_async_response(void *user, const Response *resp) {
+  AsyncCtx *cx = (AsyncCtx *)user;
+  holytls_response *out = response_copy(resp);
+  if (!out) out = make_error_response("out of memory copying response");
+  if (out) cx->cb(cx->user, cx->req_id, out);
+  // Unlink from the in-flight list (loop thread; no lock) and free.
+  if (cx->prev)
+    cx->prev->next = cx->next;
+  else
+    cx->ac->inflight = cx->next;
+  if (cx->next) cx->next->prev = cx->prev;
+  free(cx);
+}
+
+// uv_async callback — runs on the loop thread. Drains the whole submit queue
+// (uv coalesces sends, so process all) and dispatches each via client_request.
+internal void on_async(uv_async_t *h) {
+  holytls_async_client *ac = (holytls_async_client *)h->data;
+
+  // Detach under the lock, then process unlocked so a synchronous completion
+  // that re-submits can re-lock without deadlocking.
+  uv_mutex_lock(&ac->qlock);
+  AsyncSubmit *batch = ac->qhead;
+  ac->qhead = ac->qtail = 0;
+  int stopping = ac->stopping;
+  uv_mutex_unlock(&ac->qlock);
+
+  for (AsyncSubmit *s = batch; s;) {
+    AsyncSubmit *next = s->next;
+    if (stopping) {
+      // Never dispatched — complete it so the awaiter doesn't hang.
+      holytls_response *er = make_error_response("client closing");
+      if (er) s->cb(s->user, s->req_id, er);
+    } else {
+      AsyncCtx *cx = (AsyncCtx *)calloc(1, sizeof *cx);
+      if (!cx) {
+        holytls_response *er = make_error_response("out of memory");
+        if (er) s->cb(s->user, s->req_id, er);
+      } else {
+        cx->ac = ac;
+        cx->req_id = s->req_id;
+        cx->cb = s->cb;
+        cx->user = s->user;
+        // Link BEFORE dispatch: client_request may deliver synchronously, and
+        // on_async_response must find cx already in the list to unlink it.
+        cx->prev = 0;
+        cx->next = ac->inflight;
+        if (ac->inflight) ac->inflight->prev = cx;
+        ac->inflight = cx;
+        Temp t = temp_begin(ac->arena);  // rewinds the Header rows per dispatch
+        RequestParams p;
+        build_params_from_submit(ac->arena, s, &p);
+        client_request(&ac->base.client, &p, on_async_response, cx);
+        temp_end(t);  // client_request copied url/headers/body synchronously
+      }
+    }
+    async_submit_free(s);
+    s = next;
+  }
+
+  // Stop is signalled by setting `stopping` + waking us: just uv_stop so
+  // uv_run returns. The async handle is NOT closed here (loop_shutdown closes it
+  // during _free — closing it twice would abort libuv).
+  if (stopping) uv_stop(loop_uv(&ac->base.loop));
+}
+
+holytls_async_client *holytls_async_client_new_named(const char *profile_name,
+                                                     holytls_http_version mode,
+                                                     int verify) {
+  const Profile *h2 = pick_profile_named(profile_name);
+  const QuicProfile *h3 = pick_quic_named(profile_name);
+  holytls_async_client *ac = (holytls_async_client *)calloc(1, sizeof *ac);
+  if (!ac) return 0;
+  if (!client_loop_init(&ac->base.loop, &ac->base.client, h2, h3, mode, verify)) {
+    free(ac);
+    return 0;
+  }
+  if (uv_mutex_init(&ac->qlock) != 0) {
+    client_cleanup(&ac->base.client);
+    loop_shutdown(&ac->base.loop);
+    free(ac);
+    return 0;
+  }
+  if (uv_async_init(loop_uv(&ac->base.loop), &ac->async, on_async) != 0) {
+    uv_mutex_destroy(&ac->qlock);
+    client_cleanup(&ac->base.client);
+    loop_shutdown(&ac->base.loop);
+    free(ac);
+    return 0;
+  }
+  ac->async.data = ac;
+  ac->arena = arena_alloc();
+  return ac;
+}
+
+holytls_client *holytls_async_client_base(holytls_async_client *ac) {
+  return ac ? &ac->base : 0;
+}
+
+int holytls_async_submit(holytls_async_client *ac, const holytls_request *req,
+                         uint64_t req_id, holytls_async_complete_fn cb,
+                         void *user) {
+  if (!ac || !req || !req->url || !cb) return 0;
+  AsyncSubmit *s = async_submit_copy(req, req_id, cb, user);  // off-loop copy
+  if (!s) return 0;
+  uv_mutex_lock(&ac->qlock);
+  if (ac->stopping) {
+    uv_mutex_unlock(&ac->qlock);
+    async_submit_free(s);
+    return 0;
+  }
+  if (ac->qtail)
+    ac->qtail->next = s;
+  else
+    ac->qhead = s;
+  ac->qtail = s;
+  uv_mutex_unlock(&ac->qlock);
+  uv_async_send(&ac->async);  // the one thread-safe libuv call
+  return 1;
+}
+
+void holytls_async_run(holytls_async_client *ac) {
+  if (!ac) return;
+  uv_run(loop_uv(&ac->base.loop), UV_RUN_DEFAULT);
+  // Straggler drain (same idiom as loop_run): reap handles closed during the
+  // final closing-handles pass so the loop is left quiesced for _free.
+  if (uv_loop_alive(loop_uv(&ac->base.loop)))
+    uv_run(loop_uv(&ac->base.loop), UV_RUN_NOWAIT);
+  // This thread is about to exit; release the per-thread arena pools the request
+  // path (h2req_start/quicreq_start via arena_acquire) built here, else they'd
+  // leak when this thread's thread_local storage is destroyed.
+  arena_thread_cleanup();
+}
+
+void holytls_async_stop(holytls_async_client *ac) {
+  if (!ac) return;
+  uv_mutex_lock(&ac->qlock);
+  ac->stopping = 1;  // reject further submits; observed by on_async
+  uv_mutex_unlock(&ac->qlock);
+  uv_async_send(&ac->async);
+}
+
+void holytls_async_client_free(holytls_async_client *ac) {
+  if (!ac) return;
+  // Precondition: the loop thread has returned from holytls_async_run and been
+  // joined, so in_callback==0 and no thread races us here.
+  client_cleanup(&ac->base.client);
+  loop_shutdown(&ac->base.loop);  // closes the async handle + any stragglers
+  if (ac->arena) arena_release(ac->arena);
+  uv_mutex_destroy(&ac->qlock);
+  for (AsyncSubmit *s = ac->qhead; s;) {  // defensive: any residual queue
+    AsyncSubmit *next = s->next;
+    async_submit_free(s);
+    s = next;
+  }
+  for (AsyncCtx *cx = ac->inflight; cx;) {  // ctxs of requests abandoned at stop
+    AsyncCtx *next = cx->next;
+    free(cx);
+    cx = next;
+  }
+  free(ac);
 }
 
 // ---------------------------------------------------------------------------

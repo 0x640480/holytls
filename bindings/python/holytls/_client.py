@@ -296,6 +296,77 @@ def _response_from_c(c_resp) -> Response:
         lib.holytls_response_free(c_resp)
 
 
+def _apply_config(
+    c,
+    *,
+    timeout_ms=0,
+    max_redirects=0,
+    ech=False,
+    resumption=False,
+    early_data=False,
+    max_conns_per_origin=0,
+    dns_cache_ttl_ms=None,
+    override_default_headers=False,
+    header_order=None,
+    proxy=None,
+    proxies=None,
+    verify_proxy=True,
+    local_address=None,
+    cert=None,
+    cert_password=None,
+    ca_file=None,
+    key_log_file=None,
+):
+    """Apply the shared construction options to a raw native ``holytls_client *``
+    handle (used by both Client and AsyncClient). Raises HolyTLSError on an
+    invalid proxy / local address / certificate / CA file."""
+    if timeout_ms:
+        lib.holytls_client_set_timeout_ms(c, int(timeout_ms))
+    if max_redirects:
+        lib.holytls_client_set_max_redirects(c, int(max_redirects))
+    if ech:
+        lib.holytls_client_set_ech_enabled(c, 1)
+    if resumption:
+        lib.holytls_client_set_resumption_enabled(c, 1)
+    if early_data:
+        lib.holytls_client_set_early_data_enabled(c, 1)
+    if max_conns_per_origin:
+        lib.holytls_client_set_max_conns_per_origin(c, int(max_conns_per_origin))
+    if dns_cache_ttl_ms is not None:
+        lib.holytls_client_set_dns_cache_ttl_ms(c, int(dns_cache_ttl_ms))
+    if override_default_headers:
+        lib.holytls_client_override_default_headers(c, 1)
+    if header_order is not None:
+        csv = header_order if isinstance(header_order, str) else ", ".join(header_order)
+        lib.holytls_client_set_header_order(c, csv.encode("utf-8"))
+    if proxy:
+        if not lib.holytls_client_set_proxy(
+            c, proxy.encode("utf-8"), 1 if verify_proxy else 0
+        ):
+            raise HolyTLSError(f"invalid proxy URL: {proxy!r}")
+    if proxies:
+        for purl in proxies:
+            if not lib.holytls_client_add_proxy(
+                c, purl.encode("utf-8"), 1 if verify_proxy else 0
+            ):
+                raise HolyTLSError(f"invalid proxy URL: {purl!r}")
+    if local_address is not None:
+        if not lib.holytls_client_set_local_address(c, local_address.encode("utf-8")):
+            raise HolyTLSError(f"invalid local address: {local_address!r}")
+    if cert is not None:
+        cert_path, key_path = (cert[0], cert[1]) if isinstance(cert, (tuple, list)) else (cert, cert)
+        pw = cert_password.encode("utf-8") if cert_password else ffi.NULL
+        if not lib.holytls_client_set_client_cert(
+            c, str(cert_path).encode("utf-8"), str(key_path).encode("utf-8"), pw
+        ):
+            raise HolyTLSError(f"could not load client certificate: {cert!r}")
+    if ca_file:
+        if not lib.holytls_client_add_ca_file(c, ca_file.encode("utf-8")):
+            raise HolyTLSError(f"could not load CA file: {ca_file!r}")
+    if key_log_file:
+        lib.holytls_client_set_key_log_file(c, key_log_file.encode("utf-8"))
+
+
 class Client:
     """A Chrome-fingerprinted HTTP client.
 
@@ -352,46 +423,29 @@ class Client:
             raise HolyTLSError("failed to create native client (out of memory)")
         self._closed = False
 
-        if timeout_ms:
-            lib.holytls_client_set_timeout_ms(self._c, int(timeout_ms))
-        if max_redirects:
-            lib.holytls_client_set_max_redirects(self._c, int(max_redirects))
         # http_version is applied at construction (holytls_client_new_named sets
-        # it after picking the transport), so no separate set call is needed here.
-        if ech:
-            lib.holytls_client_set_ech_enabled(self._c, 1)
-        if resumption:
-            lib.holytls_client_set_resumption_enabled(self._c, 1)
-        if early_data:
-            lib.holytls_client_set_early_data_enabled(self._c, 1)
-        if max_conns_per_origin:
-            lib.holytls_client_set_max_conns_per_origin(self._c, int(max_conns_per_origin))
-        if dns_cache_ttl_ms is not None:
-            lib.holytls_client_set_dns_cache_ttl_ms(self._c, int(dns_cache_ttl_ms))
-        if override_default_headers:
-            lib.holytls_client_override_default_headers(self._c, 1)
-        if header_order is not None:
-            self.set_header_order(header_order)
-        if proxy:
-            if not self.set_proxy(proxy, verify_proxy=verify_proxy):
-                raise HolyTLSError(f"invalid proxy URL: {proxy!r}")
-        if proxies:
-            for purl in proxies:
-                if not self.add_proxy(purl, verify_proxy=verify_proxy):
-                    raise HolyTLSError(f"invalid proxy URL: {purl!r}")
-        if local_address is not None:
-            if not self.set_local_address(local_address):
-                raise HolyTLSError(f"invalid local address: {local_address!r}")
-        if cert is not None:
-            if isinstance(cert, (tuple, list)):
-                self.set_client_cert(cert[0], cert[1], password=cert_password)
-            else:
-                self.set_client_cert(cert, password=cert_password)
-        if ca_file:
-            if not lib.holytls_client_add_ca_file(self._c, ca_file.encode("utf-8")):
-                raise HolyTLSError(f"could not load CA file: {ca_file!r}")
-        if key_log_file:
-            lib.holytls_client_set_key_log_file(self._c, key_log_file.encode("utf-8"))
+        # it after picking the transport). The rest of the knobs are shared with
+        # AsyncClient via _apply_config.
+        _apply_config(
+            self._c,
+            timeout_ms=timeout_ms,
+            max_redirects=max_redirects,
+            ech=ech,
+            resumption=resumption,
+            early_data=early_data,
+            max_conns_per_origin=max_conns_per_origin,
+            dns_cache_ttl_ms=dns_cache_ttl_ms,
+            override_default_headers=override_default_headers,
+            header_order=header_order,
+            proxy=proxy,
+            proxies=proxies,
+            verify_proxy=verify_proxy,
+            local_address=local_address,
+            cert=cert,
+            cert_password=cert_password,
+            ca_file=ca_file,
+            key_log_file=key_log_file,
+        )
 
     # -- configuration (also settable after construction) --------------------
 

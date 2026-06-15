@@ -254,6 +254,66 @@ holytls_response *holytls_perform_stream(
 void holytls_response_free(holytls_response *r);
 
 // ---------------------------------------------------------------------------
+// Async client — a non-blocking variant for foreign event loops (e.g. Python
+// asyncio). Unlike holytls_client (which OWNS its loop and drives it to
+// completion on each blocking call), the async client's loop runs on a
+// dedicated thread the caller spawns (calling holytls_async_run), and requests
+// are submitted without blocking; each completion fires on that loop thread.
+// All client state is touched ONLY on the loop thread — the submit/stop calls
+// are the sole thread-safe entry points (a mutex'd queue + uv_async wakeup).
+// ---------------------------------------------------------------------------
+
+typedef struct holytls_async_client holytls_async_client;
+
+// Request completion. Fires ON THE LOOP THREAD (the holytls_async_run thread)
+// when the request finishes. `req_id` echoes the id passed to submit, so the
+// caller can correlate. OWNERSHIP of `resp` transfers to the callback — it must
+// be freed with holytls_response_free() (typically after marshalling). `resp` is
+// never NULL: a transport failure is an ok=0 response; only catastrophic OOM
+// would be, and the trampoline substitutes an error response.
+typedef void (*holytls_async_complete_fn)(void *user, uint64_t req_id,
+                                           holytls_response *resp);
+
+// Create an async client (same profile/mode/verify matrix as
+// holytls_client_new_named). The loop is NOT running yet — start it by calling
+// holytls_async_run on a dedicated thread. Returns NULL on alloc failure or an
+// unknown profile name.
+holytls_async_client *holytls_async_client_new_named(const char *profile_name,
+                                                     holytls_http_version mode,
+                                                     int verify);
+
+// Borrow the inner client for CONFIGURATION ONLY (the holytls_client_set_*
+// functions), and ONLY before the loop thread is started — config touches client
+// state and is not thread-safe. Do NOT issue requests on the returned handle.
+holytls_client *holytls_async_client_base(holytls_async_client *ac);
+
+// Submit one request WITHOUT blocking. Thread-safe — callable from any thread
+// (typically the asyncio thread). Deep-copies everything it needs out of `req`
+// (url, headers, body, proxy) synchronously, so `req` and its strings need only
+// live for the duration of THIS call. When the response lands, `cb(user,
+// req_id, resp)` fires on the loop thread. Returns 1 on success, 0 if the client
+// is stopping or on allocation failure (in which case `cb` is never called).
+int holytls_async_submit(holytls_async_client *ac, const holytls_request *req,
+                         uint64_t req_id, holytls_async_complete_fn cb,
+                         void *user);
+
+// Run the loop until holytls_async_stop is observed. BLOCKS — call it on a
+// dedicated thread. A persistent uv_async keeps the loop alive across idle
+// periods (no requests in flight), so this does not return prematurely. All
+// submitted requests are driven on this thread.
+void holytls_async_run(holytls_async_client *ac);
+
+// Ask the loop thread to exit holytls_async_run. Thread-safe and idempotent.
+// Stops accepting new submits; any still-queued (not yet dispatched) submit is
+// completed with an ok=0 "client closing" response so awaiters never hang.
+void holytls_async_stop(holytls_async_client *ac);
+
+// Free the async client. PRECONDITION: holytls_async_run has returned and its
+// thread has been JOINED (no thread is touching the client). Tears down the
+// client, loop, and async machinery.
+void holytls_async_client_free(holytls_async_client *ac);
+
+// ---------------------------------------------------------------------------
 // Session — a cookie jar + per-hop redirect identity layered on a client. The
 // transport (and its fingerprint) is the passed-in client; the session adds
 // matching cookies per request, absorbs Set-Cookie, and follows redirects with
