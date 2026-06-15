@@ -1,5 +1,10 @@
 // Minimal URL parser for http(s)://host[:port][/path][?query]. Returns String8
-// views into the input, which must outlive the result.
+// views into the input, which must outlive the result. Sets `ok=0` (rejects) on
+// a non-http(s) scheme, a missing "://", an empty host, an unterminated IPv6
+// literal `[..`, an invalid or out-of-range port (non-digit or >65535), a
+// control char / space in the authority, or CR/LF/NUL in the path — the last
+// two fail closed against Host-header / request-line injection. A bare trailing
+// ':' (no digits) uses the scheme default port; a '#' fragment is dropped.
 #ifndef HOLYTLS_URL_H
 #define HOLYTLS_URL_H
 
