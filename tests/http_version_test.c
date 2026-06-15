@@ -24,10 +24,11 @@ internal void test_setter_and_h1(void) {
   EventLoop loop;
   loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_Auto,
+              /*verify=*/0);
   CHECK(client_ok(&c));
 
-  CHECK(c.http_version == HttpVersion_Auto);  // default
+  CHECK(c.http_version == HttpVersion_Auto);  // client_init presets the mode
   client_set_http_version(&c, HttpVersion_H2);
   CHECK(c.http_version == HttpVersion_H2);
 
@@ -63,7 +64,7 @@ internal void test_force_h3_without_quic(void) {
   EventLoop loop;
   loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome148(),
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
               /*verify=*/1);  // H2-only (no QUIC)
   CHECK(client_ok(&c));
   client_set_http_version(&c, HttpVersion_H3);  // forced, but no QUIC profile

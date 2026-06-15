@@ -44,7 +44,8 @@ int main(void) {
   loop_init(&loop);
   defer { loop_shutdown(&loop); };
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   defer { client_cleanup(&c); };
   CHECK(client_ok(&c));
 

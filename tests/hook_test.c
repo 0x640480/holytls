@@ -75,7 +75,8 @@ internal void test_setters(void) {
   EventLoop loop;
   loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   CHECK(client_ok(&c));
 
   CHECK(c.pre_hook == 0 && c.post_hook == 0);  // off by default

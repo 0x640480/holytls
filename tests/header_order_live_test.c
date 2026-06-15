@@ -156,7 +156,8 @@ int main(void) {
   loop_init(&loop);
   defer { loop_shutdown(&loop); };
   Client client;
-  client_init(&client, &loop, p, /*verify=*/0);  // self-signed oracle
+  client_init(&client, &loop, p, NULL, HttpVersion_H2,
+              /*verify=*/0);  // self-signed oracle
   defer { client_cleanup(&client); };
   CHECK(client_ok(&client));
 

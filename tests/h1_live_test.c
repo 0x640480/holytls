@@ -71,7 +71,7 @@ int main(void) {
   prof.tls.alpn_wire_len = (U16)sizeof h1_alpn;
 
   Client client;
-  client_init(&client, &loop, &prof, /*verify=*/1);
+  client_init(&client, &loop, &prof, NULL, HttpVersion_H2, /*verify=*/1);
   defer { client_cleanup(&client); };
   CHECK(client_ok(&client));
 

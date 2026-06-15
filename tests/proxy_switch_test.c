@@ -180,7 +180,8 @@ internal void run_rotation(B32 pooling) {
   U16 pb_port = lb_listen(&loop, &pb, proxy_on_conn, &g_tunnels[1]);
 
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   client_set_http_version(&c, HttpVersion_H2);  // H2 so the pool is in play
   if (pooling) client_set_max_conns_per_origin(&c, 1);
 

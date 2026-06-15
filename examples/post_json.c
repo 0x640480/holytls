@@ -49,7 +49,8 @@ int main(void) {
   loop_init(&loop);
 
   Client client;
-  client_init(&client, &loop, profile_chrome149(), /*verify=*/1);
+  client_init(&client, &loop, profile_chrome149(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   client_set_timeout_ms(&client, 30000);
 
   // A fixed JSON body. (A dynamic shape could be built with the json_mut_*

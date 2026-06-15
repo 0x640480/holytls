@@ -165,7 +165,8 @@ internal void test_pool_lifecycle(void) {
   EventLoop loop;
   loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   CHECK(client_ok(&c));
 
   PoolStats z = client_pool_stats(&c);

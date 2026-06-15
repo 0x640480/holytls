@@ -60,7 +60,8 @@ int main(void) {
     loop_init(&loop);
     defer { loop_shutdown(&loop); };
     Client c;
-    client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
+    client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+                /*verify=*/1);
     defer { client_cleanup(&c); };
     client_set_http_version(&c, HttpVersion_H2);
     Ctx r = fetch(&c, &loop, url);
@@ -76,7 +77,8 @@ int main(void) {
     loop_init(&loop);
     defer { loop_shutdown(&loop); };
     Client c;
-    client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
+    client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+                /*verify=*/1);
     defer { client_cleanup(&c); };
     client_set_http_version(&c, HttpVersion_H1);
     Ctx r = fetch(&c, &loop, url);
@@ -92,8 +94,8 @@ int main(void) {
     loop_init(&loop);
     defer { loop_shutdown(&loop); };
     Client c;
-    client_init_dual(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
-                     /*verify=*/1);
+    client_init(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
+                HttpVersion_Auto, /*verify=*/1);
     defer { client_cleanup(&c); };
     client_set_http_version(&c, HttpVersion_H3);
     Ctx r = fetch(&c, &loop, url);
@@ -109,8 +111,8 @@ int main(void) {
     loop_init(&loop);
     defer { loop_shutdown(&loop); };
     Client c;
-    client_init_dual(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
-                     /*verify=*/1);
+    client_init(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
+                HttpVersion_Auto, /*verify=*/1);
     defer { client_cleanup(&c); };
     Ctx r = fetch(&c, &loop, url);
     fprintf(stderr, "  auto:     ok=%d status=%d alpn=%s\n", r.ok, r.status,

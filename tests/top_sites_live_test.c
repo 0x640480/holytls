@@ -103,8 +103,8 @@ int main(void) {
   loop_init(&loop);
   defer { loop_shutdown(&loop); };
   Client client;
-  client_init_dual(&client, &loop, profile_chrome148(), profile_chrome148_h3(),
-                   /*verify=*/1);
+  client_init(&client, &loop, profile_chrome148(), profile_chrome148_h3(),
+              HttpVersion_Auto, /*verify=*/1);
   defer { client_cleanup(&client); };
   CHECK(client_ok(&client));
 

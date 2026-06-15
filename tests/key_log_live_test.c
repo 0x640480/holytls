@@ -46,7 +46,8 @@ int main(void) {
   EventLoop loop;
   loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&c));
 
   Ctx cx;

@@ -59,7 +59,7 @@ internal QResult query(const Profile *profile, const char *url) {
   loop_init(&loop);
   defer { loop_shutdown(&loop); };
   Client client;
-  client_init(&client, &loop, profile, /*verify=*/0);
+  client_init(&client, &loop, profile, NULL, HttpVersion_H2, /*verify=*/0);
   defer { client_cleanup(&client); };
   CHECK(client_ok(&client));
   QResult q;

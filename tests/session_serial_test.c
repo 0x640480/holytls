@@ -37,7 +37,8 @@ internal void test_round_trip(Arena *a) {
   U64 now = uv_now(loop_uv(&loop));
 
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&c));
 
   // Alt-Svc cache (host:port -> h3 + monotonic-ms expiry).
@@ -75,7 +76,8 @@ internal void test_round_trip(Arena *a) {
 
   // Restore into brand-new objects.
   Client c2;
-  client_init(&c2, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&c2, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&c2));
   Session s2;
   session_init(&s2, 0);

@@ -66,7 +66,8 @@ int main(void) {
   //- client A: warm up + cache a ticket, then save
   //-----------------------------
   Client a;
-  client_init(&a, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&a, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&a));
   client_set_resumption_enabled(&a, 1);
   Session sa;
@@ -86,7 +87,8 @@ int main(void) {
   //- client B: brand-new, load the snapshot, then resume
   //-----------------------
   Client b;
-  client_init(&b, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&b, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&b));
   client_set_resumption_enabled(&b, 1);
   Session sb;

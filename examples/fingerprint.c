@@ -65,7 +65,8 @@ int main(void) {
   // Chrome 149 over HTTP/2 — the Akamai (HTTP/2) fingerprint needs an H2
   // connection, and JA3/JA4 come from the same ClientHello either way.
   Client client;
-  client_init(&client, &loop, profile_chrome149(), /*verify=*/1);
+  client_init(&client, &loop, profile_chrome149(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   client_set_timeout_ms(&client, 30000);
 
   Ctx cx = {0};

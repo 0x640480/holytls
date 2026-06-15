@@ -358,7 +358,8 @@ internal B32 run_scenario(const char *name, ProxyType type, B32 auth) {
   U16 pport = lb_listen(&loop, &proxy, proxy_on_conn, 0);
 
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   client_set_http_version(&c, HttpVersion_H1);
   const char *scheme = type == ProxyType_Http    ? "http"
                        : type == ProxyType_Https ? "https"

@@ -66,7 +66,8 @@ int main(void) {
 
   //- resumption ENABLED: first fresh, second resumes -------------------------
   Client on;
-  client_init(&on, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&on, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&on));
   client_set_resumption_enabled(&on, 1);
 
@@ -85,7 +86,8 @@ int main(void) {
 
   //- resumption DISABLED (default): never resumes ----------------------------
   Client off;
-  client_init(&off, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&off, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&off));  // resumption left OFF
 
   Ctx c = fetch_once(&off, &loop, url);

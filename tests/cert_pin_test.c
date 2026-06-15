@@ -154,7 +154,8 @@ internal void test_client_api(Arena *a) {
   EventLoop loop;
   loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&c));
 
   CHECK(client_pin_certificate(&c, "api.example.com", b32, 0));      // ok

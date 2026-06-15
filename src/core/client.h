@@ -54,8 +54,9 @@ typedef enum HttpVersion {
                      // ext), so the fingerprint is NOT Chrome's h2 fingerprint.
   HttpVersion_H2,    // force HTTP/2 over TCP (never H3); ClientHello unchanged.
   HttpVersion_H3,    // force HTTP/3/QUIC on the first request (no alt-svc
-                     // warmup). Requires a dual client (client_init_dual); else
-                     // requests error.
+                     // warmup). Requires a client built with an h3 profile
+                     // (client_init with HttpVersion_Auto/_H3); else requests
+                     // error.
 } HttpVersion;
 
 // Per-request timing breakdown (milliseconds). For HTTP/3, tcp_ms is 0 and
@@ -177,12 +178,15 @@ yyjson_doc *response_json(const Response *r, Arena *arena);
 ////////////////////////////////
 //~ Client lifecycle
 
-// HTTP/2-only client (the profile's TLS+H2 fingerprint over TCP).
-void client_init(Client *c, EventLoop *loop, const Profile *profile,
-                 B32 verify);
-// Chrome-style dual-transport client (H2 first, QUIC after alt-svc discovery).
-void client_init_dual(Client *c, EventLoop *loop, const Profile *h2,
-                      const QuicProfile *h3, B32 verify);
+// Initialize a client for `h2` (the TLS+H2 fingerprint over TCP). `mode` is the
+// wire-protocol policy (see HttpVersion); the QUIC transport is built only when
+// `mode` can use H3 (HttpVersion_Auto or _H3) AND an `h3` QuicProfile is given
+// — so `h3 = NULL` (or an H1/H2 mode) is an H2/H1-only client. Examples:
+//   client_init(&c, &loop, p, NULL, HttpVersion_H2, 1);          // H2 over TCP
+//   client_init(&c, &loop, p, p_h3, HttpVersion_Auto, 1);        // H2, then H3
+//   client_init(&c, &loop, p, p_h3, HttpVersion_H3, 1);          // force H3
+void client_init(Client *c, EventLoop *loop, const Profile *h2,
+                 const QuicProfile *h3, HttpVersion mode, B32 verify);
 // Tear the client down. Re-entrancy contract: a Client (like everything here)
 // is single-threaded — drive it only from its loop's thread — and a response
 // callback may issue NEW requests on the client but must NOT call
@@ -276,7 +280,7 @@ B32 client_pin_certificate(Client *c, const char *hostname,
 // whose root CA signs the per-host certs it presents — adding that root lets
 // the proxied (decrypted, then re-encrypted) connection still verify, so you
 // can inspect the exact wire bytes holytls sends without turning verification
-// off. Pair with client_set_proxy; call after client_init / client_init_dual.
+// off. Pair with client_set_proxy; call after client_init.
 B32 client_add_ca_file(Client *c, const char *path);
 
 // Present a client certificate for mutual TLS (mTLS): when a server sends a
@@ -286,8 +290,8 @@ B32 client_add_ca_file(Client *c, const char *path);
 // decrypts an encrypted key. Applies to both the H2/TCP and QUIC/H3 target
 // contexts (not the proxy's outer TLS). Returns 1 on success, 0 if a file can't
 // be read/parsed or the key doesn't match the cert. FINGERPRINT-NEUTRAL: the
-// cert is sent only after the ServerHello, so the ClientHello is unchanged. Call
-// after client_init / client_init_dual.
+// cert is sent only after the ServerHello, so the ClientHello is unchanged.
+// Call after client_init.
 B32 client_set_client_cert(Client *c, String8 cert_path, String8 key_path,
                            String8 passphrase);
 
@@ -310,10 +314,11 @@ void client_set_dns_cache_ttl_ms(Client *c, U64 ms);
 
 //- protocol & headers
 
-// Pin the wire protocol (default HttpVersion_Auto). HttpVersion_H3 requires a
-// dual-transport client (client_init_dual); forcing it on an H2-only client
-// makes requests fail with an error. Forced modes do not fall back. See
-// HttpVersion.
+// Override the wire protocol at runtime (it's normally set at client_init).
+// Can only narrow within the built capability: HttpVersion_H3 requires a client
+// built with an h3 profile (client_init with HttpVersion_Auto/_H3); forcing it
+// on an H2/H1-only client makes requests fail. Forced modes do not fall back.
+// See HttpVersion.
 void client_set_http_version(Client *c, HttpVersion v);
 
 // Override the wire header ORDER for outgoing requests (advanced). `names`

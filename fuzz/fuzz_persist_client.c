@@ -22,7 +22,8 @@ static B32
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   if (!g_inited) {
     loop_init(&g_loop);
-    client_init(&g_client, &g_loop, profile_chrome148(), /*verify=*/0);
+    client_init(&g_client, &g_loop, profile_chrome148(), NULL, HttpVersion_H2,
+                /*verify=*/0);
     g_inited = 1;
   }
   client_state_unmarshal(&g_client, fuzz_str8(data, size));

@@ -69,8 +69,8 @@ int main(int argc, char **argv) {
 
   // Dual transport: Chrome 149 over both H2 and HTTP/3.
   Client client;
-  client_init_dual(&client, &loop, profile_chrome149(), profile_chrome149_h3(),
-                   /*verify=*/1);
+  client_init(&client, &loop, profile_chrome149(), profile_chrome149_h3(),
+              HttpVersion_Auto, /*verify=*/1);
 
   client_set_ech_enabled(&client, 1);         // real ECH (GREASE if no config)
   client_set_resumption_enabled(&client, 1);  // TLS 1.3 ticket resumption

@@ -1004,24 +1004,21 @@ internal void quicreq_start(Client *c, Method m, String8 url,
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
-void client_init(Client *c, EventLoop *loop, const Profile *profile,
-                 B32 verify) {
-  MemoryZeroStruct(c);
-  c->loop = loop;
-  c->profile = profile;
-  c->ctx = build_ctx(&profile->tls, verify);
-  c->proxy_verify = 1;  // verify HTTPS-proxy certs by default (per-request)
-  dns_cache_init(&c->dns_cache, DNS_CACHE_DEFAULT_TTL_MS);
-}
-
-void client_init_dual(Client *c, EventLoop *loop, const Profile *h2,
-                      const QuicProfile *h3, B32 verify) {
+void client_init(Client *c, EventLoop *loop, const Profile *h2,
+                 const QuicProfile *h3, HttpVersion mode, B32 verify) {
   MemoryZeroStruct(c);
   c->loop = loop;
   c->profile = h2;
-  c->h3_profile = h3;
   c->ctx = build_ctx(&h2->tls, verify);
-  c->h3_ctx = build_ctx(&h3->tls, verify);
+  // Build the QUIC transport iff the chosen mode can use H3 and an h3 profile
+  // was given (AUTO upgrades via alt-svc; H3 forces it). H2/H1 stay on TCP, and
+  // a NULL h3 is H2/H1-only regardless of mode. `mode` is the wire-protocol
+  // policy; client_set_http_version can narrow it later (but can't add QUIC).
+  if (h3 && (mode == HttpVersion_Auto || mode == HttpVersion_H3)) {
+    c->h3_profile = h3;
+    c->h3_ctx = build_ctx(&h3->tls, verify);
+  }
+  c->http_version = mode;
   c->proxy_verify = 1;  // verify HTTPS-proxy certs by default (per-request)
   dns_cache_init(&c->dns_cache, DNS_CACHE_DEFAULT_TTL_MS);
 }
@@ -1141,7 +1138,8 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
       Response r;
       MemoryZeroStruct(&r);
       r.error =
-          "HTTP/3 forced but client has no QUIC profile (use client_init_dual)";
+          "HTTP/3 forced but client has no QUIC profile (build it with an h3 "
+          "profile + HttpVersion_Auto/_H3)";
       client_cb_enter(c);
       if (cb) cb(user, &r);
       client_cb_exit(c);
