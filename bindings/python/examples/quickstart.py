@@ -11,8 +11,9 @@ import holytls
 def main():
     url = sys.argv[1] if len(sys.argv) > 1 else "https://tls.peet.ws/api/all"
 
-    # dual=True adds HTTP/3; verify=True validates certs as a browser does.
-    with holytls.Client(dual=True, timeout_ms=30000) as client:
+    # http_version="auto" is Chrome-faithful (H2, then H3 after alt-svc); verify
+    # validates certs as a browser does.
+    with holytls.Client(http_version="auto", timeout_ms=30000) as client:
         r = client.get(url)
 
         if not r.ok:  # a transport/TLS failure, NOT an HTTP error status

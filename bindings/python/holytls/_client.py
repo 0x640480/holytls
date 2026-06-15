@@ -312,7 +312,6 @@ class Client:
         self,
         profile: Union[Profile, str, int] = Profile.CHROME,
         *,
-        dual: bool = False,
         verify: bool = True,
         timeout_ms: int = 30000,
         max_redirects: int = 0,
@@ -334,13 +333,17 @@ class Client:
         key_log_file: Optional[str] = None,
     ):
         name = _profile_name(profile)
-        version = HttpVersion.coerce(http_version) if http_version is not None else None
-        # Forcing HTTP/3 requires a dual-transport client; enable it implicitly.
-        if version == HttpVersion.HTTP_3:
-            dual = True
-
+        # One knob: http_version IS the HTTP/3 selector. The native side builds
+        # the QUIC transport iff the mode can use H3 (AUTO or HTTP_3); H2/H1 stay
+        # on TCP. Default is HTTP_2 (lean, no QUIC) — pass http_version="auto" for
+        # the Chrome-faithful H2->H3 path.
+        mode = (
+            HttpVersion.coerce(http_version)
+            if http_version is not None
+            else HttpVersion.HTTP_2
+        )
         self._c = lib.holytls_client_new_named(
-            name.encode("utf-8"), 1 if dual else 0, 1 if verify else 0
+            name.encode("utf-8"), int(mode), 1 if verify else 0
         )
         if self._c == ffi.NULL:
             avail = available_profiles()
@@ -353,8 +356,8 @@ class Client:
             lib.holytls_client_set_timeout_ms(self._c, int(timeout_ms))
         if max_redirects:
             lib.holytls_client_set_max_redirects(self._c, int(max_redirects))
-        if version is not None:
-            lib.holytls_client_set_http_version(self._c, int(version))
+        # http_version is applied at construction (holytls_client_new_named sets
+        # it after picking the transport), so no separate set call is needed here.
         if ech:
             lib.holytls_client_set_ech_enabled(self._c, 1)
         if resumption:

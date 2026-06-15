@@ -239,7 +239,7 @@ event loop to a blocking call — plus a batch call for true single-loop concurr
 ```python
 import holytls
 
-with holytls.Client(dual=True) as client:
+with holytls.Client(http_version="auto") as client:  # H2, then H3 via alt-svc
     r = client.get("https://tls.peet.ws/api/all")
     print(r.status_code, r.alpn, r.json()["tls"]["ja4"])
 

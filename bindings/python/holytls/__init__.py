@@ -5,7 +5,7 @@ TLS / HTTP-2 / HTTP-3 fingerprint.
 
     import holytls
 
-    with holytls.Client(dual=True) as client:
+    with holytls.Client(http_version="auto") as client:  # H2, then H3 via alt-svc
         r = client.get("https://tls.peet.ws/api/all")
         print(r.status_code, r.alpn)
         print(r.json()["tls"]["ja4"])

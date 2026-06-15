@@ -22,7 +22,7 @@ URLS = [
 
 
 def main():
-    with holytls.Client(dual=True, timeout_ms=30000) as client:
+    with holytls.Client(http_version="auto", timeout_ms=30000) as client:
         # Concurrent: all six in flight at once.
         start = time.time()
         responses = client.get_many(URLS)
