@@ -1,14 +1,13 @@
 # holytls
 
-**A C TLS-impersonation HTTP client that reproduces a real browser byte-for-byte —
-across TLS, HTTP/2, *and* HTTP/3.**
+**A C TLS-impersonation HTTP client that reproduces a real browser's fingerprint
+across TLS, HTTP/2, and HTTP/3.**
 
-holytls makes requests that are indistinguishable from a real browser (Chrome or
-Firefox) on the wire. Not just the TLS ClientHello (JA3/JA4) like most
-impersonation clients — also the
-HTTP/2 SETTINGS/WINDOW_UPDATE/priority shape (Akamai), and the full HTTP/3 + QUIC
-fingerprint (h3 settings hash, QUIC-JA4). All four are **live-verified byte-exact**
-against `tls.peet.ws`, `browserleaks.com`, and a fingerprint-preserving MITM proxy:
+holytls matches a real browser (Chrome or Firefox) on the wire — not just the TLS
+ClientHello (JA3/JA4) like most impersonation clients, but also the HTTP/2
+SETTINGS/WINDOW_UPDATE/priority shape (Akamai) and the HTTP/3 + QUIC fingerprint
+(h3 settings hash, QUIC-JA4). All four are live-verified against `tls.peet.ws`,
+`browserleaks.com`, and a fingerprint-preserving MITM proxy:
 
 | Dimension | Chrome 149 fingerprint (reproduced exactly) |
 |---|---|
@@ -27,9 +26,9 @@ a small data file + a registry row.
 
 ## What sets it apart
 
-Most TLS-impersonation clients stop at the TLS handshake. holytls goes the whole
-way down the stack and across all three transports, with the behaviors a real
-browser actually performs:
+Most TLS-impersonation clients stop at the TLS handshake. holytls matches the
+fingerprint across all three transports, and performs the behaviors a real
+browser does:
 
 - **Byte-exact across TLS + HTTP/2 + HTTP/3** — not just JA3/JA4. The H2 Akamai
   fingerprint and the H3/QUIC fingerprints match the target browser exactly too.
@@ -39,23 +38,23 @@ browser actually performs:
 - **WebSocket over the fingerprinted connection** — RFC 6455 with the H1 Upgrade
   or H2 Extended CONNECT path, permessage-deflate, and the browser's WS
   ClientHello — so the TLS fingerprint holds for WS too.
-- **First-class HTTP/3 / QUIC**, with Chrome's real transport behavior: H2 first,
-  then **upgrade to HTTP/3 once an origin advertises `alt-svc: h3`** — Chrome never
-  cold-starts H3, and neither do we.
+- **HTTP/3 / QUIC**, with Chrome's transport behavior: H2 first, then upgrade to
+  HTTP/3 once an origin advertises `alt-svc: h3` — Chrome never cold-starts H3,
+  and neither do we.
 - **Real ECH (Encrypted Client Hello)** — fetches the origin's `ECHConfigList` from
   its DNS HTTPS record over DoH and encrypts the inner ClientHello (real SNI
   hidden), falling back to ECH-GREASE exactly as Chrome does.
 - **TLS 1.3 resumption + 0-RTT early data** — on both TCP/H2 and QUIC/H3, so repeat
   visits look like a real browser's (the resumed-handshake fingerprint, not a fresh
   one).
-- **Massive concurrency, tiny footprint** — one event loop drives thousands of
-  concurrent requests; no threads, no goroutines, no GC.
-- **Wire-truth verifiable** — route through a MITM proxy (e.g. powhttp/mitmproxy)
+- **Concurrency on one event loop** — many in-flight requests on a single thread,
+  no per-request thread or pool.
+- **Verifiable on the wire** — route through a MITM proxy (e.g. powhttp/mitmproxy)
   with `client_add_ca_file`, keep verification on, and inspect exactly what you
-  send. holytls's fingerprint is unchanged by the proxy.
+  send; the fingerprint is unchanged by the proxy.
 - **Generated, not hardcoded, Chrome details** — e.g. the `sec-ch-ua` GREASE brand
-  list is produced by Chrome's own deterministic per-version algorithm, so a new
-  Chrome version is a one-line bump, not a guess.
+  list is produced by Chrome's deterministic per-version algorithm, so a new
+  Chrome version is a one-line bump.
 
 ## Quick start
 
@@ -91,7 +90,8 @@ static void handle_response(void *user, const Response *resp) {
 int main(void) {
   EventLoop loop; loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome149(), /*verify=*/1);   // Chrome 149 over H2
+  // Chrome 149 over H2 (NULL h3 + HttpVersion_H2 = TCP only); verify=1.
+  client_init(&c, &loop, profile_chrome149(), NULL, HttpVersion_H2, /*verify=*/1);
   client_get(&c, str8_lit("https://tls.peet.ws/api/all"), handle_response, 0);
   loop_run(&loop);                                             // drives the request
   client_cleanup(&c); loop_shutdown(&loop);
@@ -120,20 +120,21 @@ client_request(&c, &req, handle_response, 0);
 
 ---
 
-## Maximum-fidelity example
+## Full-configuration example
 
-Everything a real Chrome does, turned on at once — dual transport (H2→H3 upgrade),
-cert verification, real ECH, resumption + 0-RTT, a cookie jar, browser-faithful
-redirect following, and Chrome's complete navigation header set
-(`user-agent`, `sec-ch-ua`, `sec-fetch-*`, `accept`, …). See
-[`examples/stealth.c`](examples/stealth.c):
+A client with the browser-faithful behaviors enabled — dual transport (H2→H3
+upgrade), cert verification, real ECH, resumption + 0-RTT, a cookie jar, redirect
+following, and Chrome's navigation header set (`user-agent`, `sec-ch-ua`,
+`sec-fetch-*`, `accept`, …). See [`examples/stealth.c`](examples/stealth.c):
 
 ```c
 EventLoop loop; loop_init(&loop);
 
-// Chrome 149 over BOTH H2 and HTTP/3; verify the server cert (Chrome does).
+// Chrome 149 over BOTH H2 and HTTP/3 (HttpVersion_Auto = H2, upgrade to H3 on
+// alt-svc); verify the server cert (Chrome does).
 Client client;
-client_init_dual(&client, &loop, profile_chrome149(), profile_chrome149_h3(), 1);
+client_init(&client, &loop, profile_chrome149(), profile_chrome149_h3(),
+            HttpVersion_Auto, 1);
 
 // Behaviors a real Chrome exhibits (OFF by default so the default path is a
 // byte-exact FRESH handshake; turned on here for full real-browsing fidelity).
@@ -172,7 +173,7 @@ surface lives in [`src/core/client.h`](src/core/client.h).
 |------|--------------|-----------|
 | **Profiles** | Chrome 148/149 + Firefox 151, byte-exact across all four fingerprints; selectable by name | `profile_chrome149`, `profile_firefox151`, `profile_by_name` |
 | **Requests** | Async GET / POST, or full control via a `RequestParams` options struct (method, headers, body, Sec-Fetch, redirects, deadline), plus streaming response bodies | `client_get`, `client_post`, `client_request` (`.on_chunk`) |
-| **Transports** | HTTP/1.1, HTTP/2, HTTP/3 — pin one, or run H2 with automatic H2→H3 upgrade | `client_init`, `client_init_dual`, `client_set_http_version` |
+| **Transports** | HTTP/1.1, HTTP/2, HTTP/3 — pin one, or run H2 with automatic H2→H3 upgrade (the `HttpVersion` passed to `client_init`) | `client_init`, `client_set_http_version` |
 | **WebSocket** | RFC 6455 over the fingerprinted TLS connection — H1 Upgrade or H2 Extended CONNECT, permessage-deflate | `ws_conn_alloc`, `ws_conn_connect`, `ws_conn_send`, `ws_conn_recv` |
 | **TLS behaviors** | Real ECH (encrypted SNI), TLS 1.3 resumption, 0-RTT early data, mutual TLS (client certificate) | `client_set_ech_enabled`, `client_set_resumption_enabled`, `client_set_early_data_enabled`, `client_set_client_cert` |
 | **Sessions** | Lightweight per-task identity — cookie jar + redirect budget over one shared transport | `session_init`, `session_get` |
@@ -191,7 +192,7 @@ Route holytls through [powhttp](https://powhttp.com/) (or any MITM proxy) and in
 the exact bytes it sends — verification stays **on**, you just trust the proxy root:
 
 ```c
-client_init(&c, &loop, profile_chrome149(), /*verify=*/1);
+client_init(&c, &loop, profile_chrome149(), NULL, HttpVersion_H2, /*verify=*/1);
 client_add_ca_file(&c, "powhttp Root Certificate.pem");        // trust the MITM root
 client_set_proxy(&c, str8_lit("http://127.0.0.1:8888"), 0);    // route through it
 ```
