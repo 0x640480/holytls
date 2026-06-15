@@ -296,6 +296,16 @@ int holytls_client_add_ca_file(holytls_client *c, const char *path) {
   if (!c || !path) return 0;
   return client_add_ca_file(&c->client, path) ? 1 : 0;
 }
+int holytls_client_set_client_cert(holytls_client *c, const char *cert_path,
+                                   const char *key_path,
+                                   const char *passphrase) {
+  if (!c || !cert_path || !key_path) return 0;
+  return client_set_client_cert(
+             &c->client, str8_cstring(cert_path), str8_cstring(key_path),
+             passphrase ? str8_cstring(passphrase) : str8_zero())
+             ? 1
+             : 0;
+}
 int holytls_client_pin_certificate(holytls_client *c, const char *hostname,
                                    const char *sha256_b64,
                                    int include_subdomains) {

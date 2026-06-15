@@ -7,7 +7,9 @@
 #include <openssl/asn1.h>
 #include <openssl/evp.h>
 #include <openssl/nid.h>
+#include <openssl/pem.h>
 #include <openssl/x509.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -146,6 +148,7 @@ struct LbConn {
   BIO *rb, *wb;
   nghttp2_session *h2;
   B32 is_h2, inited, closing;
+  B32 has_client_cert;  // a client cert was presented (mTLS server)
   LbServer *server;
   LbStream
       *streams;  // live request streams (so withheld ones are freed on close)
@@ -566,6 +569,7 @@ static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
   req.body = st->body;
   req.body_len = st->body_len;
   req.is_h2 = 1;
+  req.client_cert = c->has_client_cert;
   LbResponse resp;
   MemoryZeroStruct(&resp);
   c->server->handler(&req, &resp, c->server->user);
@@ -688,6 +692,7 @@ static void lb_h1_feed(LbConn *c, const U8 *data, U64 len) {
   req.body = c->h1buf + hdr_end;
   req.body_len = clen;
   req.is_h2 = 0;
+  req.client_cert = c->has_client_cert;
   LbResponse resp;
   MemoryZeroStruct(&resp);
   c->server->handler(&req, &resp, c->server->user);
@@ -732,6 +737,9 @@ static void lb_conn_drive(LbConn *c) {
     unsigned al = 0;
     SSL_get0_alpn_selected(c->ssl, &ap, &al);
     c->is_h2 = (al == 2 && memcmp(ap, "h2", 2) == 0);
+    X509 *peer = SSL_get_peer_certificate(c->ssl);  // mTLS: did the client present one?
+    c->has_client_cert = peer != 0;
+    if (peer) X509_free(peer);
     if (c->is_h2) lb_h2_init(c);
     c->inited = 1;
   }
@@ -794,6 +802,55 @@ LbServer *lb_server_start(EventLoop *loop, LbAlpn alpn, LbHandler handler,
   U16 port = lb_listen(loop, &s->listener, lb_on_conn, s);
   if (out_port) *out_port = port;
   return s;
+}
+static int lb_accept_any_cert(int preverify, X509_STORE_CTX *ctx) {
+  (void)preverify;
+  (void)ctx;
+  return 1;  // accept any client cert: the test only checks presentation
+}
+LbServer *lb_mtls_server_start(EventLoop *loop, LbAlpn alpn, LbHandler handler,
+                               void *user, U16 *out_port) {
+  LbServer *s = lb_server_start(loop, alpn, handler, user, out_port);
+  // Request a client certificate (no FAIL_IF_NO_PEER_CERT: a client that sends
+  // none still completes; the handler sees client_cert=0).
+  SSL_CTX_set_verify(s->ctx, SSL_VERIFY_PEER, lb_accept_any_cert);
+  return s;
+}
+B32 lb_write_test_cert(const char *cert_path, const char *key_path,
+                       const char *passphrase) {
+  EVP_PKEY_CTX *pc = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, 0);
+  EVP_PKEY *pk = 0;
+  if (!pc || EVP_PKEY_keygen_init(pc) <= 0 ||
+      EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pc, NID_X9_62_prime256v1) <= 0 ||
+      EVP_PKEY_keygen(pc, &pk) <= 0) {
+    if (pc) EVP_PKEY_CTX_free(pc);
+    return 0;
+  }
+  EVP_PKEY_CTX_free(pc);
+  X509 *x = X509_new();
+  X509_set_version(x, 2);
+  ASN1_INTEGER_set(X509_get_serialNumber(x), 2);
+  X509_gmtime_adj(X509_getm_notBefore(x), 0);
+  X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 365);
+  X509_set_pubkey(x, pk);
+  X509_NAME *nm = X509_get_subject_name(x);
+  X509_NAME_add_entry_by_txt(nm, "CN", MBSTRING_ASC,
+                             (const unsigned char *)"holytls-test-client", -1,
+                             -1, 0);
+  X509_set_issuer_name(x, nm);
+  X509_sign(x, pk, EVP_sha256());
+  FILE *cf = fopen(cert_path, "wb");
+  FILE *kf = fopen(key_path, "wb");
+  const EVP_CIPHER *cipher = passphrase ? EVP_aes_256_cbc() : 0;
+  B32 ok = cf && kf && PEM_write_X509(cf, x) &&
+           PEM_write_PrivateKey(kf, pk, cipher,
+                                (unsigned char *)(uintptr_t)passphrase,
+                                passphrase ? (int)strlen(passphrase) : 0, 0, 0);
+  if (cf) fclose(cf);
+  if (kf) fclose(kf);
+  X509_free(x);
+  EVP_PKEY_free(pk);
+  return ok;
 }
 LbServer *lb_ws_echo_start(EventLoop *loop, U16 *out_port) {
   LbServer *s = (LbServer *)calloc(1, sizeof(LbServer));

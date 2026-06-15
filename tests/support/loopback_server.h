@@ -39,7 +39,8 @@ struct LbRequest {
   String8 authority;  // ":authority" / Host
   const U8 *body;  // fully accumulated request body (valid during the handler)
   U64 body_len;
-  B32 is_h2;  // the negotiated protocol
+  B32 is_h2;          // the negotiated protocol
+  B32 client_cert;    // a client certificate was presented (mTLS servers only)
 };
 
 typedef struct LbResponse LbResponse;
@@ -66,6 +67,20 @@ LbServer *lb_server_start(EventLoop *loop, LbAlpn alpn, LbHandler handler,
 // Close the listener + all live connections and free the server. Call before
 // loop_shutdown; the loop must still be able to run the close callbacks.
 void lb_server_stop(LbServer *s);
+
+// Like lb_server_start, but requests a client certificate (mutual TLS): the
+// handshake sends a CertificateRequest and accepts any cert the client presents
+// (no CA check — the test only needs to confirm presentation). LbRequest's
+// `client_cert` reports whether the connection presented one. A client that
+// sends no cert still completes the request (client_cert=0).
+LbServer *lb_mtls_server_start(EventLoop *loop, LbAlpn alpn, LbHandler handler,
+                               void *user, U16 *out_port);
+
+// Generate a self-signed P-256 cert + key and write them as PEM to the given
+// paths (for use as a test client certificate). If `passphrase` is non-NULL the
+// key is encrypted (AES-256-CBC) with it. Returns 1 on success.
+B32 lb_write_test_cert(const char *cert_path, const char *key_path,
+                       const char *passphrase);
 
 // Start an H2-only origin that speaks RFC 8441 Extended CONNECT: it advertises
 // SETTINGS_ENABLE_CONNECT_PROTOCOL, and for a `:method=CONNECT` + `:protocol`
