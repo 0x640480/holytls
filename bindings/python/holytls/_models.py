@@ -79,6 +79,8 @@ class Profile(enum.IntEnum):
     CHROME = 0  # newest Chrome (currently 149)
     CHROME_149 = 1
     CHROME_148 = 2
+    FIREFOX_151 = 3
+    FIREFOX = 3  # newest Firefox (currently 151)
 
     @classmethod
     def coerce(cls, value: Union["Profile", str, int]) -> "Profile":
@@ -91,6 +93,8 @@ class Profile(enum.IntEnum):
             "chrome": cls.CHROME,
             "chrome149": cls.CHROME_149,
             "chrome148": cls.CHROME_148,
+            "firefox": cls.FIREFOX,
+            "firefox151": cls.FIREFOX_151,
         }[key]
 
 

@@ -27,7 +27,8 @@
 #include "net/loop.c"
 #include "net/proxy.c"  // before connection.c: the proxy negotiation framing
 #include "net/quic_connection.c"
-#include "profile/chrome.c"  // browser families before profiles.c (the registry)
+#include "profile/chrome.c"   // browser families before profiles.c (the registry)
+#include "profile/firefox.c"
 #include "profile/profiles.c"
 #include "profile/sec_ch_ua.c"
 #include "tls/cert_compress.c"

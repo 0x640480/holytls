@@ -100,6 +100,7 @@ const Profile *profile_template(void) { return &k_template; }
 global const ProfileEntry k_profile_registry[] = {
     {149, "chrome149", profile_chrome149, profile_chrome149_h3},  // [0] default
     {148, "chrome148", profile_chrome148, profile_chrome148_h3},
+    {151, "firefox151", profile_firefox151, profile_firefox151_h3},
 };
 
 const ProfileEntry *profile_registry(U64 *count) {

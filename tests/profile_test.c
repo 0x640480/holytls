@@ -61,11 +61,39 @@ static void snap_h3(const QuicProfile *q) {
   CHECK(q->default_header_count == 14);
 }
 
+// Firefox 151 H2 + QUIC field values (captured; differ from Chrome).
+static void snap_firefox(void) {
+  const Profile *p = profile_firefox151();
+  CHECK(p->h2.settings_count == 4);
+  CHECK(p->h2.settings[2].id == H2Setting_InitialWindowSize &&
+        p->h2.settings[2].value == 131072);  // 131072, not Chrome's 6291456
+  CHECK(p->h2.settings[3].id == H2Setting_MaxFrameSize &&
+        p->h2.settings[3].value == 16384);
+  CHECK(p->h2.connection_window_increment == 12517377);
+  CHECK(p->h2.use_priority && p->h2.priority_weight == 42);
+  CHECK(p->h2.pseudo_order[1] == Pseudo_Path);  // H2: m,p,a,s
+  CHECK(p->default_header_count == 13);
+
+  const QuicProfile *q = profile_firefox151_h3();
+  CHECK(q->h3.initial_max_data == 25165824);
+  CHECK(q->h3.initial_max_stream_data_bidi_local == 12582912);
+  CHECK(q->h3.initial_max_stream_data_bidi_remote == 1048576);
+  CHECK(q->h3.max_datagram_frame_size == 65535);  // 65535, not Chrome's 65536
+  CHECK(q->h3.settings_count == 6);
+  CHECK(q->h3.settings[2].id == 727725890 && q->h3.settings[2].value == 0);
+  CHECK(q->h3.settings[3].id == 16765559 && q->h3.settings[3].value == 1);
+  CHECK(q->h3.pseudo_order[1] == Pseudo_Scheme);  // H3: m,s,a,p (differs from H2)
+  // No sec-ch-ua / client-hints.
+  CHECK(profile_sec_ch_ua(p).size == 0);
+  CHECK(str8_contains(profile_user_agent(p), str8_lit("Firefox/151.0")));
+}
+
 int main(void) {
   snap_h2(profile_chrome148());
   snap_h2(profile_chrome149());
   snap_h3(profile_chrome148_h3());
   snap_h3(profile_chrome149_h3());
+  snap_firefox();
 
   // UA / sec-ch-ua are the per-version deltas; confirm they carry the version.
   CHECK(str8_contains(profile_user_agent(profile_chrome148()),
@@ -78,12 +106,14 @@ int main(void) {
   // Registry + by-name resolution (the selection surface the capi/Python use).
   U64 n = 0;
   const ProfileEntry *reg = profile_registry(&n);
-  CHECK(n >= 2);
+  CHECK(n >= 3);
   CHECK(reg[0].h2() == profile_chrome149());  // entry 0 = default (newest)
   CHECK(profile_by_name(str8_lit("chrome148")) == profile_chrome148());
   CHECK(profile_by_name(str8_lit("CHROME149")) == profile_chrome149());  // ci
   CHECK(profile_quic_by_name(str8_lit("chrome148")) == profile_chrome148_h3());
-  CHECK(profile_by_name(str8_lit("firefox")) == 0);  // unknown -> 0
+  CHECK(profile_by_name(str8_lit("firefox151")) == profile_firefox151());
+  CHECK(profile_quic_by_name(str8_lit("Firefox151")) == profile_firefox151_h3());
+  CHECK(profile_by_name(str8_lit("safari")) == 0);  // unknown -> 0
   CHECK(profile_quic_by_name(str8_lit("nope")) == 0);
 
   fprintf(stderr, "[profile_test] %d checks, %d failures\n", g_checks, g_fails);

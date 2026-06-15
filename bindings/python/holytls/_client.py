@@ -37,6 +37,7 @@ _ENUM_TO_NAME = {
     Profile.CHROME: "",
     Profile.CHROME_149: "chrome149",
     Profile.CHROME_148: "chrome148",
+    Profile.FIREFOX_151: "firefox151",
 }
 
 

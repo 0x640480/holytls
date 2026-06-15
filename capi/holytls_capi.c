@@ -104,6 +104,7 @@ internal const char *profile_enum_name(holytls_profile_id id) {
   switch (id) {
     case HOLYTLS_PROFILE_CHROME_148: return "chrome148";
     case HOLYTLS_PROFILE_CHROME_149: return "chrome149";
+    case HOLYTLS_PROFILE_FIREFOX_151: return "firefox151";  // (== FIREFOX)
     case HOLYTLS_PROFILE_CHROME:
     default: return 0;  // 0 => registry default
   }

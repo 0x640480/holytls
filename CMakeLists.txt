@@ -98,11 +98,21 @@ FetchContent_Declare(yyjson
   GIT_TAG 0.12.0 GIT_SHALLOW TRUE)
 
 # BoringSSL — lexiforest fork (default) for exact JA4 parity. Needs Go + perl.
+# The fork is patched (cmake/patches) to add a force_tls13_legacy_ext knob:
+# Firefox emits extended_master_secret + renegotiation_info even in its TLS1.3-
+# only QUIC ClientHello, which stock BoringSSL (and the fork) suppress. The patch
+# is applied idempotently at populate time; stock google/boringssl is untouched.
 option(HOLYTLS_BORINGSSL_FORK "Use the lexiforest/boringssl impersonation fork" ON)
 if(HOLYTLS_BORINGSSL_FORK)
+  find_package(Git REQUIRED)
   FetchContent_Declare(boringssl
     GIT_REPOSITORY https://github.com/lexiforest/boringssl.git
-    GIT_TAG 77dc0ca663ad0bdc6fd5006cbd398bc27d0af4ab GIT_SHALLOW TRUE)
+    GIT_TAG 77dc0ca663ad0bdc6fd5006cbd398bc27d0af4ab GIT_SHALLOW TRUE
+    PATCH_COMMAND ${CMAKE_COMMAND}
+      -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+      -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/boringssl-firefox-tls13-legacy-ext.patch
+      -DSRC_DIR=<SOURCE_DIR>
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_boringssl_patch.cmake)
 else()
   FetchContent_Declare(boringssl
     GIT_REPOSITORY https://github.com/google/boringssl.git

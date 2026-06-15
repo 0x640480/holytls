@@ -140,6 +140,12 @@ int main(void) {
   CHECK(str8_match(
       tmpl, str8_lit("1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s")));
 
+  // Firefox 151 H2 (Akamai) — captured from real Firefox (peet).
+  String8 ff = akamai_text(a, &profile_firefox151()->h2);
+  fprintf(stderr, "firefox   akamai = %.*s\n", (int)ff.size, ff.str);
+  CHECK(str8_match(
+      ff, str8_lit("1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s")));
+
   arena_release(a);
   fprintf(stderr, "[h2_test] %d checks, %d failures\n", g_checks, g_fails);
   return g_fails ? 1 : 0;
