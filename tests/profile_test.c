@@ -30,7 +30,7 @@ static void snap_h2(const Profile *p) {
   CHECK(p->h2.settings[3].id == H2Setting_MaxHeaderListSize &&
         p->h2.settings[3].value == 262144);
   CHECK(p->h2.connection_window_increment == 15663105);
-  CHECK(p->h2.use_priority && p->h2.priority_weight == 220 &&
+  CHECK(p->h2.use_priority && p->h2.priority_weight == 256 &&
         p->h2.priority_exclusive && p->h2.priority_dep_stream == 0);
   CHECK(p->h2.pseudo_count == 4 && p->h2.pseudo_order[0] == Pseudo_Method &&
         p->h2.pseudo_order[1] == Pseudo_Authority &&

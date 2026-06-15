@@ -91,7 +91,7 @@ struct Http2Profile {
   U32 connection_window_increment;  // stream-0 WINDOW_UPDATE after preface
   B32 use_priority;                 // HEADERS-frame priority
   U32 priority_dep_stream;
-  U8 priority_weight;  // 1..256 (nghttp2 convention)
+  U16 priority_weight;  // 1..256 (nghttp2 convention; 256 doesn't fit a U8)
   B32 priority_exclusive;
   const PseudoId *pseudo_order;
   U8 pseudo_count;

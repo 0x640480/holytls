@@ -45,6 +45,10 @@ struct Cap {
   long wu;
   char pseudo[16];
   int pseudo_len;
+  int pri_flag;    // HEADERS frame carried the PRIORITY (0x20) flag
+  int pri_weight;  // RFC 7540 weight (1..256), depends_on, exclusive
+  int pri_dep;
+  int pri_excl;
 };
 internal nghttp2_ssize srv_send(nghttp2_session *s, const U8 *d, size_t n,
                                 int f, void *u) {
@@ -65,6 +69,11 @@ internal int srv_frame(nghttp2_session *s, const nghttp2_frame *f, void *u) {
     }
   } else if (f->hd.type == NGHTTP2_WINDOW_UPDATE && f->hd.stream_id == 0) {
     c->wu = f->window_update.window_size_increment;
+  } else if (f->hd.type == NGHTTP2_HEADERS) {
+    c->pri_flag = (f->hd.flags & NGHTTP2_FLAG_PRIORITY) ? 1 : 0;
+    c->pri_weight = f->headers.pri_spec.weight;  // nghttp2 reports 1..256
+    c->pri_dep = f->headers.pri_spec.stream_id;
+    c->pri_excl = f->headers.pri_spec.exclusive;
   }
   return 0;
 }
@@ -91,7 +100,11 @@ internal int srv_header(nghttp2_session *s, const nghttp2_frame *f,
   return 0;
 }
 
-internal String8 akamai_text(Arena *arena, const Http2Profile *prof) {
+// Run one request through a raw nghttp2 server, capturing the fingerprint
+// surface into `*cap` (settings/window/pseudo + the HEADERS-frame priority) and
+// returning the akamai text. The PRIORITY (0x20) flag + its {weight, dep, excl}
+// are the bit nghttp2 stopped emitting (RFC 9218) and our fork patch re-enables.
+internal String8 akamai_text(Arena *arena, const Http2Profile *prof, Cap *cap) {
   OutBuf out = {{0}, 0};
   H2Session *cli = h2_session_alloc(prof, out_sink, &out);
   h2_session_start(cli);
@@ -99,14 +112,15 @@ internal String8 akamai_text(Arena *arena, const Http2Profile *prof) {
                             str8_lit("tls.browserleaks.com"), str8_lit("/"), 0,
                             0, 0, 0, noop_resp, 0, /*on_chunk=*/0, 0);
 
-  Cap cap = {{0}, {0}, 0, -1, {0}, 0};
+  MemoryZeroStruct(cap);
+  cap->wu = -1;
   nghttp2_session_callbacks *cbs = 0;
   nghttp2_session_callbacks_new(&cbs);
   nghttp2_session_callbacks_set_send_callback2(cbs, srv_send);
   nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, srv_frame);
   nghttp2_session_callbacks_set_on_header_callback(cbs, srv_header);
   nghttp2_session *srv = 0;
-  nghttp2_session_server_new(&srv, cbs, &cap);
+  nghttp2_session_server_new(&srv, cbs, cap);
   nghttp2_session_callbacks_del(cbs);
   nghttp2_submit_settings(srv, NGHTTP2_FLAG_NONE, 0, 0);
   nghttp2_session_send(srv);
@@ -115,36 +129,52 @@ internal String8 akamai_text(Arena *arena, const Http2Profile *prof) {
   h2_session_release(cli);
 
   String8List sl = {0};
-  for (int i = 0; i < cap.s_count; ++i)
-    str8_list_pushf(arena, &sl, "%d:%u", cap.s_id[i], cap.s_val[i]);
+  for (int i = 0; i < cap->s_count; ++i)
+    str8_list_pushf(arena, &sl, "%d:%u", cap->s_id[i], cap->s_val[i]);
   String8 settings = str8_list_join(arena, &sl, str8_lit(";"));
   return push_str8f(arena, "%.*s|%ld|0|%.*s", (int)settings.size, settings.str,
-                    cap.wu, cap.pseudo_len, cap.pseudo);
+                    cap->wu, cap->pseudo_len, cap->pseudo);
 }
 
 int main(void) {
   Arena *a = arena_alloc();
 
-  String8 chrome = akamai_text(a, &profile_chrome148()->h2);
-  fprintf(stderr, "chrome148 akamai = %.*s\n", (int)chrome.size, chrome.str);
+  Cap cap;
+  String8 chrome = akamai_text(a, &profile_chrome148()->h2, &cap);
+  fprintf(stderr, "chrome148 akamai = %.*s  pri{flag=%d w=%d dep=%d excl=%d}\n",
+          (int)chrome.size, chrome.str, cap.pri_flag, cap.pri_weight,
+          cap.pri_dep, cap.pri_excl);
   CHECK(str8_match(
       chrome, str8_lit("1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p")));
+  // Chrome 149 sets the legacy RFC 7540 HEADERS priority {weight=256, dep=0,
+  // exclusive=1} (real-capture exact). nghttp2 stopped emitting this; the fork
+  // patch re-enables it. NOT hashed by Akamai/JA4 — only a raw-flag inspector
+  // sees it, so this is the regression lock for the fork patch.
+  CHECK(cap.pri_flag && cap.pri_weight == 256 && cap.pri_dep == 0 &&
+        cap.pri_excl == 1);
 
   // chrome149's H2 (Akamai) fingerprint is identical to chrome148's.
-  String8 chrome149 = akamai_text(a, &profile_chrome149()->h2);
+  String8 chrome149 = akamai_text(a, &profile_chrome149()->h2, &cap);
   CHECK(str8_match(
       chrome149, str8_lit("1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p")));
+  CHECK(cap.pri_flag && cap.pri_weight == 256 && cap.pri_dep == 0 &&
+        cap.pri_excl == 1);
 
-  String8 tmpl = akamai_text(a, &profile_template()->h2);
+  String8 tmpl = akamai_text(a, &profile_template()->h2, &cap);
   fprintf(stderr, "template  akamai = %.*s\n", (int)tmpl.size, tmpl.str);
   CHECK(str8_match(
       tmpl, str8_lit("1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s")));
 
-  // Firefox 151 H2 (Akamai) — captured from real Firefox (peet).
-  String8 ff = akamai_text(a, &profile_firefox151()->h2);
-  fprintf(stderr, "firefox   akamai = %.*s\n", (int)ff.size, ff.str);
+  // Firefox 151 H2 (Akamai + HEADERS priority {weight=42, dep=0, exclusive=0})
+  // — captured from real Firefox (peet).
+  String8 ff = akamai_text(a, &profile_firefox151()->h2, &cap);
+  fprintf(stderr, "firefox   akamai = %.*s  pri{flag=%d w=%d dep=%d excl=%d}\n",
+          (int)ff.size, ff.str, cap.pri_flag, cap.pri_weight, cap.pri_dep,
+          cap.pri_excl);
   CHECK(str8_match(
       ff, str8_lit("1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s")));
+  CHECK(cap.pri_flag && cap.pri_weight == 42 && cap.pri_dep == 0 &&
+        cap.pri_excl == 0);
 
   arena_release(a);
   fprintf(stderr, "[h2_test] %d checks, %d failures\n", g_checks, g_fails);
