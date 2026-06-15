@@ -101,7 +101,8 @@ int main(void) {
   snprintf(url, sizeof url, "https://127.0.0.1:%u/", port);
 
   Client c;
-  client_init(&c, &loop, profile_chrome149(), /*verify=*/0);
+  client_init(&c, &loop, profile_chrome149(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   client_set_timeout_ms(&c, 8000);
 
   // (1) No client cert: the request still completes; the server sees none.
@@ -135,7 +136,8 @@ int main(void) {
   // The WRONG passphrase fails to load (a throwaway client so the partial load
   // can't taint c).
   Client c2;
-  client_init(&c2, &loop, profile_chrome149(), /*verify=*/0);
+  client_init(&c2, &loop, profile_chrome149(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   CHECK(!client_set_client_cert(&c2, str8_cstring(encp), str8_cstring(enck),
                                 str8_lit("wrong-pw")));
   client_cleanup(&c2);

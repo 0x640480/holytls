@@ -54,7 +54,8 @@ int main(void) {
   defer { loop_shutdown(&loop); };
 
   Client client;
-  client_init(&client, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&client, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   defer { client_cleanup(&client); };
   CHECK(client_ok(&client));
   client_set_http_version(&client, HttpVersion_H1);  // deterministic H1 upgrade

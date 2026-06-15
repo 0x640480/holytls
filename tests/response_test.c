@@ -75,7 +75,8 @@ internal void test_get_proxy(Arena *a) {
   EventLoop loop;
   loop_init(&loop);
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
 
   CHECK(client_get_proxy(&c, a).size == 0);  // direct by default
 

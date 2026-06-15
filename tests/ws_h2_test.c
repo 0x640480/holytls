@@ -51,7 +51,8 @@ int main(void) {
   snprintf(url, sizeof url, "wss://127.0.0.1:%u/chat", port);
 
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/0);  // self-signed loopback
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);                    // self-signed loopback
   client_set_http_version(&c, HttpVersion_H2);  // opt into Extended CONNECT
   client_set_timeout_ms(&c, 8000);              // connect watchdog
 

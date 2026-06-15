@@ -48,7 +48,7 @@ internal void on_response(void *user, const Response *r) {
 internal void run_profile(EventLoop *loop, const Profile *prof,
                           const char *want_ja4, const char *want_akamai) {
   Client client;
-  client_init(&client, loop, prof, /*verify=*/1);
+  client_init(&client, loop, prof, NULL, HttpVersion_H2, /*verify=*/1);
   defer { client_cleanup(&client); };
   CHECK(client_ok(&client));
 

@@ -56,7 +56,8 @@ internal Ctx fetch_once(Client *c, EventLoop *loop, const char *url) {
 // data.
 internal B32 probe_origin(EventLoop *loop, const char *url) {
   Client c;
-  client_init(&c, loop, profile_chrome148(), /*verify=*/1);
+  client_init(&c, loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   client_set_early_data_enabled(&c, 1);  // implies resumption
   Ctx a = fetch_once(&c, loop, url);     // fresh; captures the ticket
   Ctx b = fetch_once(&c, loop, url);     // offers it as 0-RTT
@@ -94,7 +95,8 @@ int main(void) {
   // so a watchdog stops the loop and the test fails loudly instead of hanging.
   {
     Client big;
-    client_init(&big, &loop, profile_chrome148(), /*verify=*/1);
+    client_init(&big, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+                /*verify=*/1);
     client_set_early_data_enabled(&big, 1);
     fetch_once(&big, &loop,
                "https://cloudflare.com/");  // warm the 0-RTT ticket
@@ -136,7 +138,8 @@ int main(void) {
   // — checked under ASan): the connection now always has a handle to close.
   {
     Client dns;
-    client_init(&dns, &loop, profile_chrome148(), /*verify=*/1);
+    client_init(&dns, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+                /*verify=*/1);
     Ctx f;
     MemoryZeroStruct(&f);
     client_get(&dns, str8_lit("https://no-such-host.invalid.holytls/"), on_resp,
@@ -150,7 +153,8 @@ int main(void) {
 
   // Control: with 0-RTT OFF, early_data must never be reported (default path).
   Client off;
-  client_init(&off, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&off, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   client_set_resumption_enabled(&off,
                                 1);  // 1-RTT resumption, but NO early data
   Ctx c = fetch_once(&off, &loop, "https://cloudflare.com/");

@@ -55,7 +55,8 @@ static void run_session(EventLoop *loop, B32 ncto, const char *label) {
   snprintf(url, sizeof url, "wss://127.0.0.1:%u/", port);
 
   Client c;
-  client_init(&c, loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   client_set_http_version(&c, HttpVersion_H2);
   client_set_timeout_ms(&c, 8000);
 

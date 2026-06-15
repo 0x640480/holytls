@@ -76,7 +76,8 @@ internal B32 fetch_via(String8 proxy_url) {
   g_alpn[0] = 0;
 
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_set_proxy(&c, proxy_url, /*verify_proxy=*/0));
 
   uv_timer_t wd;
@@ -106,8 +107,8 @@ internal B32 fetch_via_h3(String8 proxy_url) {
   g_alpn[0] = 0;
 
   Client c;
-  client_init_dual(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
-                   /*verify=*/1);
+  client_init(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
+              HttpVersion_Auto, /*verify=*/1);
   CHECK(client_set_proxy(&c, proxy_url, /*verify_proxy=*/0));
   client_set_http_version(&c,
                           HttpVersion_H3);  // force QUIC (no alt-svc warmup)
@@ -149,7 +150,8 @@ internal void run_rotation(Arena *a, const String8 *proxies, U64 count) {
   loop_init(&loop);
   g_loop = &loop;
   Client c;
-  client_init(&c, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   uv_timer_t wd;
   uv_timer_init(loop_uv(&loop), &wd);
   uv_unref((uv_handle_t *)&wd);

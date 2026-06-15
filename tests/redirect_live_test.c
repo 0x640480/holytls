@@ -45,7 +45,8 @@ internal Ctx fetch(U64 max_redirects, const char *url) {
   loop_init(&loop);
   defer { loop_shutdown(&loop); };
   Client client;
-  client_init(&client, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&client, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   defer { client_cleanup(&client); };
   CHECK(client_ok(&client));
   client_set_max_redirects(&client, max_redirects);

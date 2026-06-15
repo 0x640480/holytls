@@ -66,8 +66,8 @@ int main(void) {
   //- 0-RTT ENABLED over H3
   //-----------------------------------------------------
   Client c;
-  client_init_dual(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
-                   /*verify=*/1);
+  client_init(&c, &loop, profile_chrome148(), profile_chrome148_h3(),
+              HttpVersion_Auto, /*verify=*/1);
   CHECK(client_ok(&c));
   client_set_early_data_enabled(&c, 1);  // implies resumption
 
@@ -92,8 +92,8 @@ int main(void) {
   //- control: H3 with 0-RTT OFF never reports early_data
   //------------------------
   Client off;
-  client_init_dual(&off, &loop, profile_chrome148(), profile_chrome148_h3(),
-                   /*verify=*/1);
+  client_init(&off, &loop, profile_chrome148(), profile_chrome148_h3(),
+              HttpVersion_Auto, /*verify=*/1);
   client_set_resumption_enabled(&off, 1);  // 1-RTT resumption, NO early data
   fetch_once(&off, &loop, url);            // #1 H2
   fetch_once(&off, &loop, url);            // #2 H3 fresh

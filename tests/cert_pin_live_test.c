@@ -72,7 +72,8 @@ int main(void) {
   //- pinned with the wrong SPKI -> the handshake must be rejected
   //--------------
   Client pinned;
-  client_init(&pinned, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&pinned, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&pinned));
   CHECK(client_pin_certificate(&pinned, host, bogus, /*subdomains=*/0));
   Ctx r1 = fetch_once(&pinned, &loop, url);
@@ -85,7 +86,8 @@ int main(void) {
   //- control: no pin -> normal verification succeeds
   //---------------------------
   Client ctrl;
-  client_init(&ctrl, &loop, profile_chrome148(), /*verify=*/1);
+  client_init(&ctrl, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   CHECK(client_ok(&ctrl));
   Ctx r2 = fetch_once(&ctrl, &loop, url);
   fprintf(stderr, "  control:       done=%d ok=%d status=%d\n", r2.done, r2.ok,

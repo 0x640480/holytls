@@ -100,7 +100,7 @@ int main(void) {
   // 1) Non-pooled hung request -> times out once, ~within the budget.
   {
     Client c;
-    client_init(&c, &loop, profile_chrome148(), 0);
+    client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2, 0);
     client_set_http_version(&c, HttpVersion_H2);
     client_set_timeout_ms(&c, 400);
     RC rc = do_get(&loop, &g_wd, &c, g_slow_url);
@@ -115,7 +115,7 @@ int main(void) {
   // 2) Fast request with a generous timeout -> success, no spurious timeout.
   {
     Client c;
-    client_init(&c, &loop, profile_chrome148(), 0);
+    client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2, 0);
     client_set_http_version(&c, HttpVersion_H2);
     client_set_timeout_ms(&c, 3000);
     RC rc = do_get(&loop, &g_wd, &c, fast);
@@ -129,7 +129,7 @@ int main(void) {
   //    survives, so a later request reuses it (only one conn ever created).
   {
     Client c;
-    client_init(&c, &loop, profile_chrome148(), 0);
+    client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2, 0);
     client_set_http_version(&c, HttpVersion_H2);
     client_set_max_conns_per_origin(&c, 1);
     client_set_timeout_ms(&c, 400);
@@ -150,7 +150,7 @@ int main(void) {
   // 4) The timeout spans a redirect: /redir -> 302 -> /slow still times out.
   {
     Client c;
-    client_init(&c, &loop, profile_chrome148(), 0);
+    client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2, 0);
     client_set_http_version(&c, HttpVersion_H2);
     client_set_max_redirects(&c, 5);
     client_set_timeout_ms(&c, 500);

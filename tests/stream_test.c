@@ -82,7 +82,8 @@ static void run(EventLoop *loop, LbAlpn alpn, HttpVersion ver, const char *label
   snprintf(url, sizeof url, "https://127.0.0.1:%u/", port);
 
   Client c;
-  client_init(&c, loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   client_set_http_version(&c, ver);
 
   Sink sink = {(U8 *)malloc(g_body_len + 64), 0, g_body_len + 64, 0};
@@ -129,7 +130,8 @@ static void run_cancel(EventLoop *loop) {
   snprintf(url, sizeof url, "https://127.0.0.1:%u/stall", port);
 
   Client c;
-  client_init(&c, loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   client_set_http_version(&c, HttpVersion_H2);
   client_set_timeout_ms(&c, 400);  // abort: the server never sends fin
 

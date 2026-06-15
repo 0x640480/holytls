@@ -50,10 +50,12 @@ int main(int argc, char **argv) {
   loop_init(&loop);
 
   // The fingerprint lives on the Client: this one impersonates Chrome 149 over
-  // HTTP/2. verify=1 validates the server certificate, exactly as a browser
-  // does. (client_init_dual(.., profile_chrome149_h3(), ..) would add HTTP/3.)
+  // HTTP/2 (NULL h3 + HttpVersion_H2). verify=1 validates the server
+  // certificate, exactly as a browser does. (Pass profile_chrome149_h3() +
+  // HttpVersion_Auto instead to add the H2->H3 upgrade.)
   Client client;
-  client_init(&client, &loop, profile_chrome149(), /*verify=*/1);
+  client_init(&client, &loop, profile_chrome149(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   client_set_timeout_ms(&client, 30000);  // give up after 30s
 
   Ctx cx = {0};

@@ -239,17 +239,14 @@ internal int client_loop_init(EventLoop *loop, Client *client,
                               const Profile *h2, const QuicProfile *h3,
                               holytls_http_version mode, int verify) {
   HttpVersion hv = map_http_version(mode);
-  // The QUIC transport is built iff the mode can ever use H3 — so "dual" is a
-  // derived fact, not a separate knob. AUTO upgrades to H3 via alt-svc; H3
-  // forces it. H2/H1 stay on TCP and skip QUIC entirely.
-  int dual = (hv == HttpVersion_Auto) || (hv == HttpVersion_H3);
-  if (!h2 || (dual && !h3)) return 0;  // unknown profile name / no h3 variant
+  // client_init derives the QUIC build from (hv, h3). Reject a QUIC-needing
+  // mode with no h3 variant up front so the FFI caller gets a NULL rather than
+  // a silent H2 client.
+  int needs_h3 = (hv == HttpVersion_Auto) || (hv == HttpVersion_H3);
+  if (!h2 || (needs_h3 && !h3))
+    return 0;  // unknown profile name / no h3 variant
   loop_init(loop);
-  if (dual)
-    client_init_dual(client, loop, h2, h3, verify ? 1 : 0);
-  else
-    client_init(client, loop, h2, verify ? 1 : 0);
-  client_set_http_version(client, hv);  // preset the policy at construction
+  client_init(client, loop, h2, h3, hv, verify ? 1 : 0);
   return 1;
 }
 

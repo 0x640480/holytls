@@ -63,7 +63,8 @@ int main(void) {
   // session's requests reuse one multiplexed connection (Chrome-like: 1 per
   // origin).
   Client client;
-  client_init(&client, &loop, profile_chrome149(), /*verify=*/1);
+  client_init(&client, &loop, profile_chrome149(), NULL, HttpVersion_H2,
+              /*verify=*/1);
   client_set_max_conns_per_origin(&client, 1);
   client_set_timeout_ms(&client, 30000);
 

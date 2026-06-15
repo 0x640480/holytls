@@ -94,7 +94,8 @@ static void run_suite(EventLoop *loop, LbAlpn alpn, HttpVersion ver,
   snprintf(url, sizeof url, "https://127.0.0.1:%u/", port);
 
   Client c;
-  client_init(&c, loop, profile_chrome148(), /*verify=*/0);
+  client_init(&c, loop, profile_chrome148(), NULL, HttpVersion_H2,
+              /*verify=*/0);
   client_set_http_version(&c, ver);
 
   // 1) Every method reaches the wire with the right method (bodyless).
