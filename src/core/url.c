@@ -1,5 +1,19 @@
 #include "core/url.h"
 
+// Parse a TCP port from the digits in [b, e). Returns 0..65535, -1 on a
+// non-digit or on overflow (>65535), or `def` when the range is empty ("host:"
+// -> the scheme default, as browsers treat a bare trailing colon).
+internal S32 url_parse_port(const char *b, const char *e, U16 def) {
+  if (b >= e) return (S32)def;
+  U32 port = 0;
+  for (const char *c = b; c < e; ++c) {
+    if (*c < '0' || *c > '9') return -1;  // non-digit -> reject (don't skip)
+    port = port * 10 + (U32)(*c - '0');
+    if (port > 65535) return -1;  // overflow -> reject (don't wrap)
+  }
+  return (S32)port;
+}
+
 ParsedUrl url_parse(String8 u) {
   ParsedUrl r;
   MemoryZeroStruct(&r);
@@ -33,10 +47,22 @@ ParsedUrl url_parse(String8 u) {
   const char *auth = sep + 3;
   const char *ae = auth;  // authority ends at '/', '?' or end
   while (ae < end && *ae != '/' && *ae != '?') ++ae;
+
+  // Reject control chars / spaces in the authority and CR/LF/NUL in the path.
+  // A host or request-target with these is malformed; rejecting fails closed
+  // against Host-header / request-line injection via a crafted URL (e.g. a
+  // redirect Location). Browsers strip CR/LF/TAB; failing the parse is safer.
+  for (const char *c = auth; c < ae; ++c)
+    if ((U8)*c <= 0x20 || (U8)*c == 0x7f) return r;
+  for (const char *c = ae; c < end; ++c)
+    if (*c == '\r' || *c == '\n' || *c == '\0') return r;
+
   String8 authority = str8((U8 *)auth, (U64)(ae - auth));
 
-  // strip userinfo
-  for (const char *c = auth; c < ae; ++c)
+  // Strip userinfo at the LAST '@' — '@' is not valid unescaped in a host, so
+  // the rightmost one delimits userinfo from the host (what browsers use; the
+  // first '@' would mis-host `a@b@evil.com`).
+  for (const char *c = ae; c-- > auth;)
     if (*c == '@') {
       authority = str8((U8 *)(c + 1), (U64)(ae - (c + 1)));
       break;
@@ -45,7 +71,7 @@ ParsedUrl url_parse(String8 u) {
 
   // split host:port (handle IPv6 [..]:port)
   String8 host = authority;
-  U16 port = r.https ? 443 : 80;
+  S32 port = r.https ? 443 : 80;
   const char *abeg = (const char *)authority.str;
   const char *aend = abeg + authority.size;
   if (authority.size && abeg[0] == '[') {
@@ -55,13 +81,11 @@ ParsedUrl url_parse(String8 u) {
         rb = c;
         break;
       }
-    if (rb) {
-      host = str8((U8 *)(abeg + 1), (U64)(rb - (abeg + 1)));
-      if (rb + 1 < aend && rb[1] == ':') {
-        port = 0;
-        for (const char *c = rb + 2; c < aend; ++c)
-          if (*c >= '0' && *c <= '9') port = (U16)(port * 10 + (*c - '0'));
-      }
+    if (!rb) return r;  // unterminated IPv6 literal
+    host = str8((U8 *)(abeg + 1), (U64)(rb - (abeg + 1)));
+    if (rb + 1 < aend) {
+      if (rb[1] != ':') return r;  // garbage between ']' and the port
+      port = url_parse_port(rb + 2, aend, (U16)port);
     }
   } else {
     const char *colon = 0;
@@ -69,13 +93,12 @@ ParsedUrl url_parse(String8 u) {
       if (*c == ':') colon = c;
     if (colon) {
       host = str8((U8 *)abeg, (U64)(colon - abeg));
-      port = 0;
-      for (const char *c = colon + 1; c < aend; ++c)
-        if (*c >= '0' && *c <= '9') port = (U16)(port * 10 + (*c - '0'));
+      port = url_parse_port(colon + 1, aend, (U16)port);
     }
   }
+  if (port < 0 || host.size == 0) return r;  // invalid port / empty host
   r.host = host;
-  r.port = port;
+  r.port = (U16)port;
 
   r.path = (ae < end) ? str8((U8 *)ae, (U64)(end - ae)) : str8_lit("/");
   if (r.path.size == 0) r.path = str8_lit("/");
