@@ -39,7 +39,13 @@ from holytls._models import (
 
 # Importing the client pulls in the native extension; keep it last so the pure
 # value types above are importable even when diagnosing a missing build.
-from holytls._client import Client, Session, WebSocket, version
+from holytls._client import (
+    Client,
+    Session,
+    WebSocket,
+    available_profiles,
+    version,
+)
 
 __all__ = [
     "Client",
@@ -57,6 +63,7 @@ __all__ = [
     "StatusError",
     "WebSocketError",
     "ConnectionClosed",
+    "available_profiles",
     "version",
 ]
 
