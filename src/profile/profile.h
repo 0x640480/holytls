@@ -52,6 +52,10 @@ struct TlsProfile {
   U8 key_shares_limit;
   const char
       *extension_order;  // dash-separated decimal ext IDs (NULL = default)
+  // Emit the legacy extended_master_secret(0x17) + renegotiation_info(0xff01)
+  // extensions even in a TLS1.3-only ClientHello (Firefox does this in QUIC,
+  // where TLS1.2 can't be offered). BoringSSL suppresses both otherwise.
+  B32 force_tls13_legacy_ext;
 };
 
 //- HTTP/2 -------------------------------------------------------------------
@@ -171,6 +175,9 @@ const Profile *profile_chrome148(void);
 const QuicProfile *profile_chrome148_h3(void);
 const Profile *profile_chrome149(void);
 const QuicProfile *profile_chrome149_h3(void);
+// Firefox — defined in src/profile/firefox.c.
+const Profile *profile_firefox151(void);
+const QuicProfile *profile_firefox151_h3(void);
 
 //- profile registry ---------------------------------------------------------
 // The single source of truth for which browser profiles exist. Each entry pairs

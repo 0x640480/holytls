@@ -109,7 +109,8 @@ internal void on_ready(void *user, B32 ok, const char *err) {
   }
 }
 
-internal void run_profile(const QuicProfile *prof, const char *ua) {
+internal void run_profile(const QuicProfile *prof, const char *ua,
+                          const char *want_ja4, const char *want_h3hash) {
   CtxResult cr = build_ctx(&prof->tls, /*verify=*/1);
   CHECK(ctx_ok(&cr));
   if (!ctx_ok(&cr)) {
@@ -138,12 +139,12 @@ internal void run_profile(const QuicProfile *prof, const char *ua) {
   if (cr.ctx) SSL_CTX_free(cr.ctx);
 
   CHECK(cx.got);
-  fprintf(stderr, "  %-12s ja4     = %s\n", prof->name, cx.ja4);
-  fprintf(stderr, "  %-12s h3_hash = %s\n", prof->name, cx.h3hash);
-  CHECK(str8_match(str8_cstring(cx.ja4),
-                   str8_lit("q13d0311h3_55b375c5d22e_653d80c3fe9d")));
-  CHECK(str8_match(str8_cstring(cx.h3hash),
-                   str8_lit("ba909fc3dc419ea5c5b26c6323ac1879")));
+  fprintf(stderr, "  %-12s ja4     = %s  (want %s)\n", prof->name, cx.ja4,
+          want_ja4);
+  fprintf(stderr, "  %-12s h3_hash = %s  (want %s)\n", prof->name, cx.h3hash,
+          want_h3hash);
+  CHECK(str8_match(str8_cstring(cx.ja4), str8_cstring(want_ja4)));
+  CHECK(str8_match(str8_cstring(cx.h3hash), str8_cstring(want_h3hash)));
 }
 
 int main(void) {
@@ -155,10 +156,19 @@ int main(void) {
   // 148 and 149 share identical QUIC/H3 tables -> identical fresh fingerprint.
   run_profile(profile_chrome148_h3(),
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36");
+              "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+              "q13d0311h3_55b375c5d22e_653d80c3fe9d",
+              "ba909fc3dc419ea5c5b26c6323ac1879");
   run_profile(profile_chrome149_h3(),
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36");
+              "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+              "q13d0311h3_55b375c5d22e_653d80c3fe9d",
+              "ba909fc3dc419ea5c5b26c6323ac1879");
+  run_profile(profile_firefox151_h3(),
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) "
+              "Gecko/20100101 Firefox/151.0",
+              "q13d0315h3_55b375c5d22e_dc5437974b47",
+              "d50d4e585c22bb92b6c86b592aa2d586");
 
   fprintf(stderr, "[fingerprint_h3_test] %d checks, %d failures\n", g_checks,
           g_fails);

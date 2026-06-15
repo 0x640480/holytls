@@ -72,6 +72,8 @@ typedef enum holytls_profile_id {
   HOLYTLS_PROFILE_CHROME = 0,     // newest Chrome (currently 149)
   HOLYTLS_PROFILE_CHROME_149 = 1,
   HOLYTLS_PROFILE_CHROME_148 = 2,
+  HOLYTLS_PROFILE_FIREFOX_151 = 3,
+  HOLYTLS_PROFILE_FIREFOX = 3,    // newest Firefox (currently 151)
 } holytls_profile_id;
 
 // ---------------------------------------------------------------------------

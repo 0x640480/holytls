@@ -68,9 +68,11 @@ CtxResult build_ctx(const TlsProfile *p, B32 verify) {
   if (p->key_shares_limit) SSL_CTX_set_key_shares_limit(c, p->key_shares_limit);
   if (p->extension_order)
     SSL_CTX_set_extension_order(c, (char *)p->extension_order);
+  if (p->force_tls13_legacy_ext) SSL_CTX_set_force_tls13_legacy_ext(c, 1);
 #else
   if (p->record_size_limit) warn(&r, "record_size_limit unsupported");
   if (p->delegated_credentials) warn(&r, "delegated_credential unsupported");
+  if (p->force_tls13_legacy_ext) warn(&r, "force_tls13_legacy_ext unsupported");
 #endif
 
   if (verify) {

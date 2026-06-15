@@ -610,7 +610,12 @@ internal B32 quic_init_ngtcp2(QuicConnection *c) {
   params.initial_max_streams_bidi = c->h3->initial_max_streams_bidi;
   params.initial_max_streams_uni = c->h3->initial_max_streams_uni;
   params.max_idle_timeout = c->h3->max_idle_timeout_ms * NGTCP2_MILLISECONDS;
-  params.max_udp_payload_size = c->h3->max_udp_payload_size;
+  // Only override ngtcp2's (valid) default when the profile specifies it: a
+  // profile that omits max_udp_payload_size (e.g. Firefox, which sends none)
+  // must not force it to 0, which is below the QUIC minimum (1200) and makes the
+  // server reject the transport params (CONNECTION_CLOSE -> draining).
+  if (c->h3->max_udp_payload_size)
+    params.max_udp_payload_size = c->h3->max_udp_payload_size;
   // Required when we advertise SETTINGS_H3_DATAGRAM=1 (Chrome does); without it
   // a strict server (e.g. cloudflare) closes with H3_SETTINGS_ERROR.
   params.max_datagram_frame_size = c->h3->max_datagram_frame_size;
