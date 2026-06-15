@@ -130,6 +130,11 @@ int main(void) {
   CHECK(str8_match(
       chrome, str8_lit("1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p")));
 
+  // chrome149's H2 (Akamai) fingerprint is identical to chrome148's.
+  String8 chrome149 = akamai_text(a, &profile_chrome149()->h2);
+  CHECK(str8_match(
+      chrome149, str8_lit("1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p")));
+
   String8 tmpl = akamai_text(a, &profile_template()->h2);
   fprintf(stderr, "template  akamai = %.*s\n", (int)tmpl.size, tmpl.str);
   CHECK(str8_match(

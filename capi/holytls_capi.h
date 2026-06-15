@@ -145,6 +145,20 @@ typedef struct holytls_client holytls_client;
 // Returns NULL only on allocation failure.
 holytls_client *holytls_client_new(holytls_profile_id profile, int dual,
                                    int verify);
+
+// Create a client by profile NAME, resolved from the profile registry (e.g.
+// "chrome149", "chrome148"; NULL/"" = the newest). This is the forward-looking
+// selector — a profile added to the native registry is usable here with no enum
+// change. Returns NULL on allocation failure OR an unknown name.
+holytls_client *holytls_client_new_named(const char *profile_name, int dual,
+                                         int verify);
+
+// Enumerate the registered profiles (index 0 = the default/newest).
+// holytls_profile_name returns a static string (do not free) or NULL if out of
+// range.
+size_t holytls_profile_count(void);
+const char *holytls_profile_name(size_t index);
+
 void holytls_client_free(holytls_client *c);
 
 // Configuration (thin pass-throughs to the native client_set_* functions; see

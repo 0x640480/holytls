@@ -32,6 +32,36 @@ from holytls._models import (
 )
 from holytls._native import ffi, lib
 
+# Known Profile-enum members -> registry name ("" = the registry default/newest).
+_ENUM_TO_NAME = {
+    Profile.CHROME: "",
+    Profile.CHROME_149: "chrome149",
+    Profile.CHROME_148: "chrome148",
+}
+
+
+def _profile_name(profile) -> str:
+    """Resolve a Profile enum / int / name to a native registry name string
+    ("" = the newest). Unknown name strings (e.g. a profile added natively but not
+    in the Python enum, like "firefox") pass straight through."""
+    if profile is None:
+        return ""
+    if isinstance(profile, Profile):
+        return _ENUM_TO_NAME[profile]
+    if isinstance(profile, int):
+        return _ENUM_TO_NAME.get(Profile(profile), "")
+    s = str(profile).strip()
+    try:  # canonicalize a known alias ("chrome", "chrome149"); else pass through
+        return _ENUM_TO_NAME[Profile.coerce(s)]
+    except (KeyError, ValueError):
+        return s
+
+
+def available_profiles() -> List[str]:
+    """The emulation profiles the native registry exposes, newest first."""
+    n = lib.holytls_profile_count()
+    return [ffi.string(lib.holytls_profile_name(i)).decode("utf-8") for i in range(n)]
+
 
 def _normalize_headers(headers: HeaderInput) -> List[Tuple[str, str]]:
     if headers is None:
@@ -302,14 +332,19 @@ class Client:
         ca_file: Optional[str] = None,
         key_log_file: Optional[str] = None,
     ):
-        prof = Profile.coerce(profile)
+        name = _profile_name(profile)
         version = HttpVersion.coerce(http_version) if http_version is not None else None
         # Forcing HTTP/3 requires a dual-transport client; enable it implicitly.
         if version == HttpVersion.HTTP_3:
             dual = True
 
-        self._c = lib.holytls_client_new(int(prof), 1 if dual else 0, 1 if verify else 0)
+        self._c = lib.holytls_client_new_named(
+            name.encode("utf-8"), 1 if dual else 0, 1 if verify else 0
+        )
         if self._c == ffi.NULL:
+            avail = available_profiles()
+            if name and name not in avail:
+                raise HolyTLSError(f"unknown profile {profile!r}; available: {avail}")
             raise HolyTLSError("failed to create native client (out of memory)")
         self._closed = False
 

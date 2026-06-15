@@ -84,19 +84,28 @@ internal HttpVersion map_http_version(holytls_http_version v) {
   }
 }
 
-internal const Profile *pick_profile(holytls_profile_id id) {
-  switch (id) {
-    case HOLYTLS_PROFILE_CHROME_148: return profile_chrome148();
-    case HOLYTLS_PROFILE_CHROME_149:
-    case HOLYTLS_PROFILE_CHROME:
-    default: return profile_chrome149();
-  }
+// Resolve a profile by name from the central registry; ""/NULL => the registry
+// default (newest). Returns 0 if the name is unknown.
+internal const Profile *pick_profile_named(const char *name) {
+  if (name && *name) return profile_by_name(str8_cstring(name));
+  U64 n = 0;
+  const ProfileEntry *r = profile_registry(&n);
+  return n ? r[0].h2() : 0;
 }
-
-internal const QuicProfile *pick_quic_profile(holytls_profile_id id) {
+internal const QuicProfile *pick_quic_named(const char *name) {
+  if (name && *name) return profile_quic_by_name(str8_cstring(name));
+  U64 n = 0;
+  const ProfileEntry *r = profile_registry(&n);
+  return n ? r[0].h3() : 0;
+}
+// Legacy enum -> registry name (ABI compat). CHROME (the default alias) maps to
+// the registry default; specific versions map to their canonical names.
+internal const char *profile_enum_name(holytls_profile_id id) {
   switch (id) {
-    case HOLYTLS_PROFILE_CHROME_148: return profile_chrome148_h3();
-    default: return profile_chrome149_h3();
+    case HOLYTLS_PROFILE_CHROME_148: return "chrome148";
+    case HOLYTLS_PROFILE_CHROME_149: return "chrome149";
+    case HOLYTLS_PROFILE_CHROME:
+    default: return 0;  // 0 => registry default
   }
 }
 
@@ -221,19 +230,42 @@ internal void build_params(Arena *a, const holytls_request *req,
 // Client lifecycle + configuration.
 // ---------------------------------------------------------------------------
 
-holytls_client *holytls_client_new(holytls_profile_id pid, int dual,
-                                   int verify) {
+internal holytls_client *client_new_from(const Profile *h2,
+                                         const QuicProfile *h3, int dual,
+                                         int verify) {
+  if (!h2 || (dual && !h3)) return 0;  // unknown profile name
   holytls_client *hc = (holytls_client *)calloc(1, sizeof *hc);
   if (!hc) return 0;
   loop_init(&hc->loop);
-  const Profile *h2 = pick_profile(pid);
-  if (dual) {
-    client_init_dual(&hc->client, &hc->loop, h2, pick_quic_profile(pid),
-                     verify ? 1 : 0);
-  } else {
+  if (dual)
+    client_init_dual(&hc->client, &hc->loop, h2, h3, verify ? 1 : 0);
+  else
     client_init(&hc->client, &hc->loop, h2, verify ? 1 : 0);
-  }
   return hc;
+}
+
+holytls_client *holytls_client_new(holytls_profile_id pid, int dual,
+                                   int verify) {
+  const char *name = profile_enum_name(pid);
+  return client_new_from(pick_profile_named(name), pick_quic_named(name), dual,
+                         verify);
+}
+
+holytls_client *holytls_client_new_named(const char *profile_name, int dual,
+                                         int verify) {
+  return client_new_from(pick_profile_named(profile_name),
+                         pick_quic_named(profile_name), dual, verify);
+}
+
+size_t holytls_profile_count(void) {
+  U64 n = 0;
+  profile_registry(&n);
+  return (size_t)n;
+}
+const char *holytls_profile_name(size_t index) {
+  U64 n = 0;
+  const ProfileEntry *r = profile_registry(&n);
+  return index < n ? r[index].name : 0;
 }
 
 void holytls_client_free(holytls_client *hc) {

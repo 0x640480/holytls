@@ -1,6 +1,15 @@
 #include "profile/profile.h"
 
-//- wreq template TLS lists (from wreq emulate.rs tls_options_template) --------
+// Profile core: the cross-family registry (the single source of truth for which
+// browser profiles exist), the wreq `template` profile that doubles as the
+// new-browser scaffold, and the shared default-header accessors. Each browser
+// FAMILY lives in its own self-contained file (chrome.c, future firefox.c …)
+// #included into the unity build; this file just lists them in the registry.
+
+//- the template profile (and the scaffold for a new browser family) ----------
+// Every field a new family must consider is shown here in designated form; copy
+// this shape into <family>.c and fill in the captured fingerprint values. (The
+// values below are wreq's generic template, not a real browser.)
 
 global const char k_cipher_list[] =
     "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:"
@@ -17,29 +26,21 @@ global const char k_cipher_list[] =
     "TLS_RSA_WITH_AES_256_GCM_SHA384:"
     "TLS_RSA_WITH_AES_128_CBC_SHA:"
     "TLS_RSA_WITH_AES_256_CBC_SHA";
-
 global const char k_curves_list[] = "X25519MLKEM768:X25519:P-256:P-384:P-521";
-
 global const char k_sigalgs_list[] =
     "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:"
     "rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:"
     "rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:ecdsa_sha1:"
     "rsa_pkcs1_sha1";
-
-// ALPN wire form for [h2, http/1.1].
 global const U8 k_alpn_wire[] = {2,   'h', '2', 8,   'h', 't',
                                  't', 'p', '/', '1', '.', '1'};
-
 global const U16 k_cert_compress[] = {CertCompress_Zlib, CertCompress_Brotli,
                                       CertCompress_Zstd};
-
 global const char k_delegated_creds[] =
     "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:"
     "ecdsa_sha1";
-
 global const char k_extension_order[] =
     "0-23-65281-10-11-35-16-5-34-18-51-43-13-45-28-27-65037";
-
 global const H2Setting k_h2_settings[] = {
     {H2Setting_HeaderTableSize, 65536},
     {H2Setting_EnablePush, 0},
@@ -51,403 +52,72 @@ global const PseudoId k_pseudo_order[] = {Pseudo_Method, Pseudo_Path,
                                           Pseudo_Authority, Pseudo_Scheme};
 
 global const Profile k_template = {
-    "wreq-template",
-    1,
-    {
-        k_cipher_list,
-        k_curves_list,
-        k_sigalgs_list,
-        TlsVersion_1_2,
-        TlsVersion_1_3,
-        k_alpn_wire,
-        sizeof(k_alpn_wire),
-        0 /*alps*/,
-        0,
-        0,
-        k_cert_compress,
-        3,
-        1 /*grease*/,
-        0 /*permute*/,
-        1 /*ocsp*/,
-        1 /*sct*/,
-        1 /*ech_grease*/,
-        1 /*tickets*/,
-        1 /*aes_hw*/,
-        1,
-        1 /*rand_aes*/,
-        0x4001 /*record_size_limit*/,
-        k_delegated_creds,
-        3 /*key_shares*/,
-        k_extension_order,
-    },
-    {
-        k_h2_settings,
-        4,
-        12517377,
-        1 /*priority*/,
-        0,
-        41,
-        0 /*non-excl*/,
-        k_pseudo_order,
-        4,
-    },
-    0,
-    0,
-    0 /*fetch_order*/,
-    0 /*fetch_order_count*/,
-};
-
-//- Chrome 148 shared TLS lists ----------------------------------------------
-
-global const char k_quic_curves[] = "X25519MLKEM768:X25519:P-256:P-384";
-global const char k_quic_sigalgs[] =
-    "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:"
-    "ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:"
-    "rsa_pss_rsae_sha512:rsa_pkcs1_sha512:rsa_pkcs1_sha1";
-global const U8 k_alpn_wire_h3[] = {2, 'h', '3'};
-global const char *const k_alps_h3[] = {"h3"};
-global const char *const k_alps_h2[] = {"h2"};
-global const U16 k_quic_cert_compress[] = {CertCompress_Brotli};  // brotli only
-
-//- Chrome 148 HTTP/3 (QUIC) -------------------------------------------------
-
-global const H3Setting k_quic_h3_settings[] = {
-    {0x01, 65536},   // QPACK_MAX_TABLE_CAPACITY
-    {0x06, 262144},  // MAX_FIELD_SECTION_SIZE
-    {0x07, 100},     // QPACK_BLOCKED_STREAMS
-    {0x33, 1},       // H3_DATAGRAM
-};
-global const PseudoId k_quic_pseudo_order[] = {Pseudo_Method, Pseudo_Authority,
-                                               Pseudo_Scheme, Pseudo_Path};
-
-// Chrome 148 default request headers, navigation order (from
-// fingerprints/browserleaks-*.json). "cookie" is an order-only placeholder.
-// The 3rd field is the exact HTTP/1.1 wire casing (mirrors wreq's per-header
-// original-case preservation): Chrome sends the sec-ch-ua* client hints
-// lowercase but the rest Title-Case. h2/h3 ignore it and use the lowercase
-// `name`.
-global const DefaultHeader k_chrome148_headers[] = {
-    {"sec-ch-ua",
-     "\"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", "
-     "\"Not/A)Brand\";v=\"99\"",
-     "sec-ch-ua"},
-    {"sec-ch-ua-mobile", "?0", "sec-ch-ua-mobile"},
-    {"sec-ch-ua-platform", "\"Windows\"", "sec-ch-ua-platform"},
-    {"upgrade-insecure-requests", "1", "Upgrade-Insecure-Requests"},
-    {"user-agent",
-     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, "
-     "like Gecko) Chrome/148.0.0.0 Safari/537.36",
-     "User-Agent"},
-    {"accept",
-     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/"
-     "webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-     "Accept"},
-    {"sec-fetch-site", "none", "Sec-Fetch-Site"},
-    {"sec-fetch-mode", "navigate", "Sec-Fetch-Mode"},
-    {"sec-fetch-user", "?1", "Sec-Fetch-User"},
-    {"sec-fetch-dest", "document", "Sec-Fetch-Dest"},
-    {"accept-encoding", "gzip, deflate, br, zstd", "Accept-Encoding"},
-    {"accept-language", "en-US,en;q=0.9", "Accept-Language"},
-    {"cookie", "", "Cookie"},
-    {"priority", "u=0, i", "Priority"},
-};
-#define K_CHROME148_HEADER_COUNT ArrayCount(k_chrome148_headers)
-
-// Chrome's header order for fetch/XHR (non-navigation) requests. Differs from
-// the navigation order above: the client-hint block is reordered (platform, UA,
-// ua, mobile), content-length leads, origin sits after accept and referer after
-// sec-fetch-dest, and Upgrade-Insecure-Requests / Sec-Fetch-User are absent.
-// Shared by all Chrome profiles (stable across versions). reorder_headers
-// applies it to non-navigate requests; names not present in a given request are
-// skipped.
-global const char *const k_chrome_fetch_order[] = {
-    "content-length",   "sec-ch-ua-platform",
-    "user-agent",       "sec-ch-ua",
-    "sec-ch-ua-mobile", "accept",
-    "origin",           "sec-fetch-site",
-    "sec-fetch-mode",   "sec-fetch-dest",
-    "referer",          "accept-encoding",
-    "accept-language",  "cookie",
-    "priority",
-};
-#define K_CHROME_FETCH_ORDER_COUNT ArrayCount(k_chrome_fetch_order)
-
-global const QuicProfile k_chrome148_h3 = {
-    "chrome148-h3",
-    148,
-    {
-        0 /*cipher_list: TLS1.3-only*/,
-        k_quic_curves,
-        k_quic_sigalgs,
-        TlsVersion_1_3,
-        TlsVersion_1_3,
-        k_alpn_wire_h3,
-        sizeof(k_alpn_wire_h3),
-        k_alps_h3,
-        1,
-        1 /*alps_new*/,
-        k_quic_cert_compress,
-        1,
-        1 /*grease*/,
-        0 /*permute*/,
-        0 /*ocsp*/,
-        0 /*sct*/,
-        1 /*ech_grease*/,
-        1 /*tickets*/,
-        0,
-        0,
-        0,
-        0 /*record_size_limit*/,
-        0 /*delegated*/,
-        2 /*key_shares*/,
-        0 /*ext_order*/,
-    },
-    {
-        15728640,
-        6291456,
-        6291456,
-        6291456,
-        100,
-        103,
-        30000,
-        1472,
-        65536,
-        k_quic_h3_settings,
-        4,
-        1 /*settings_grease*/,
-        1 /*grease_frame*/,
-        1 /*priority_update*/,
-        k_quic_pseudo_order,
-        4,
-    },
-    k_chrome148_headers,
-    K_CHROME148_HEADER_COUNT,
-    k_chrome_fetch_order,
-    K_CHROME_FETCH_ORDER_COUNT,
-};
-
-//- Chrome 148 HTTP/2 (TCP) --------------------------------------------------
-
-global const char k_chrome_cipher_list[] =  // 12 TLS1.2 suites (capture order)
-    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:"
-    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:"
-    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:"
-    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:"
-    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:"
-    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:"
-    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:"
-    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:"
-    "TLS_RSA_WITH_AES_128_GCM_SHA256:"
-    "TLS_RSA_WITH_AES_256_GCM_SHA384:"
-    "TLS_RSA_WITH_AES_128_CBC_SHA:"
-    "TLS_RSA_WITH_AES_256_CBC_SHA";
-global const char k_chrome_sigalgs[] =  // 8 (no rsa_pkcs1_sha1)
-    "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:"
-    "ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:"
-    "rsa_pss_rsae_sha512:rsa_pkcs1_sha512";
-
-global const H2Setting k_chrome_h2_settings[] = {
-    {H2Setting_HeaderTableSize, 65536},
-    {H2Setting_EnablePush, 0},
-    {H2Setting_InitialWindowSize, 6291456},
-    {H2Setting_MaxHeaderListSize, 262144},
-};
-
-global const Profile k_chrome148 = {
-    "chrome148",
-    148,
-    {
-        k_chrome_cipher_list,
-        k_quic_curves /*shared*/,
-        k_chrome_sigalgs,
-        TlsVersion_1_2,
-        TlsVersion_1_3,
-        k_alpn_wire,
-        sizeof(k_alpn_wire),
-        k_alps_h2,
-        1,
-        1 /*alps_new*/,
-        k_quic_cert_compress /*brotli*/,
-        1,
-        1 /*grease*/,
-        1 /*permute*/,
-        1 /*ocsp*/,
-        1 /*sct*/,
-        1 /*ech_grease*/,
-        1 /*tickets*/,
-        0,
-        0,
-        0,
-        0 /*record_size_limit*/,
-        0 /*delegated*/,
-        2 /*key_shares*/,
-        0 /*ext_order*/,
-    },
-    {
-        k_chrome_h2_settings,
-        4,
-        15663105,
-        1 /*priority*/,
-        0,
-        220,
-        1 /*exclusive*/,
-        k_quic_pseudo_order /*m,a,s,p*/,
-        4,
-    },
-    k_chrome148_headers,
-    K_CHROME148_HEADER_COUNT,
-    k_chrome_fetch_order,
-    K_CHROME_FETCH_ORDER_COUNT,
-};
-
-//- Chrome 149 -------------------------------------------------------------
-// Live-verified (2026-06-10) byte-identical to Chrome 148 on every wire field
-// across BOTH transports: TCP/H2 ClientHello (powhttp raw capture) and QUIC/H3
-// ClientHello + transport params + H3 SETTINGS (browserleaks). The ONLY delta
-// is the version strings, so 149 reuses every 148 TLS/H2/H3 constant and only
-// swaps the header table. NOTE the sec-ch-ua change is NOT a plain 148->149
-// bump: Chrome rotated the GREASE brand token ("Not/A)Brand";v="99" ->
-// "Not)A;Brand";v="24") and flipped the brand order — copied verbatim from the
-// 149 capture. (The two Google-only QUIC transport params Chrome 149 also
-// sends, google_connection_options + initial_rtt, are not modeled — they are
-// invisible to JA4/Akamai/h3_hash/QUIC-JA4, which do not hash transport-param
-// contents.)
-
-global const DefaultHeader k_chrome149_headers[] = {
-    {"sec-ch-ua",
-     "\"Google Chrome\";v=\"149\", \"Chromium\";v=\"149\", "
-     "\"Not)A;Brand\";v=\"24\"",
-     "sec-ch-ua"},
-    {"sec-ch-ua-mobile", "?0", "sec-ch-ua-mobile"},
-    {"sec-ch-ua-platform", "\"Windows\"", "sec-ch-ua-platform"},
-    {"upgrade-insecure-requests", "1", "Upgrade-Insecure-Requests"},
-    {"user-agent",
-     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, "
-     "like Gecko) Chrome/149.0.0.0 Safari/537.36",
-     "User-Agent"},
-    {"accept",
-     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/"
-     "webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-     "Accept"},
-    {"sec-fetch-site", "none", "Sec-Fetch-Site"},
-    {"sec-fetch-mode", "navigate", "Sec-Fetch-Mode"},
-    {"sec-fetch-user", "?1", "Sec-Fetch-User"},
-    {"sec-fetch-dest", "document", "Sec-Fetch-Dest"},
-    {"accept-encoding", "gzip, deflate, br, zstd", "Accept-Encoding"},
-    {"accept-language", "en-US,en;q=0.9", "Accept-Language"},
-    {"cookie", "", "Cookie"},
-    {"priority", "u=0, i", "Priority"},
-};
-#define K_CHROME149_HEADER_COUNT ArrayCount(k_chrome149_headers)
-
-// QUIC/H3 — identical TLS+H3 tables to chrome148_h3, only the headers differ.
-global const QuicProfile k_chrome149_h3 = {
-    "chrome149-h3",
-    149,
-    {
-        0 /*cipher_list: TLS1.3-only*/,
-        k_quic_curves,
-        k_quic_sigalgs,
-        TlsVersion_1_3,
-        TlsVersion_1_3,
-        k_alpn_wire_h3,
-        sizeof(k_alpn_wire_h3),
-        k_alps_h3,
-        1,
-        1 /*alps_new*/,
-        k_quic_cert_compress,
-        1,
-        1 /*grease*/,
-        0 /*permute*/,
-        0 /*ocsp*/,
-        0 /*sct*/,
-        1 /*ech_grease*/,
-        1 /*tickets*/,
-        0,
-        0,
-        0,
-        0 /*record_size_limit*/,
-        0 /*delegated*/,
-        2 /*key_shares*/,
-        0 /*ext_order*/,
-    },
-    {
-        15728640,
-        6291456,
-        6291456,
-        6291456,
-        100,
-        103,
-        30000,
-        1472,
-        65536,
-        k_quic_h3_settings,
-        4,
-        1 /*settings_grease*/,
-        1 /*grease_frame*/,
-        1 /*priority_update*/,
-        k_quic_pseudo_order,
-        4,
-    },
-    k_chrome149_headers,
-    K_CHROME149_HEADER_COUNT,
-    k_chrome_fetch_order,
-    K_CHROME_FETCH_ORDER_COUNT,
-};
-
-// TCP/H2 — identical TLS+H2 tables to chrome148, only the headers differ.
-global const Profile k_chrome149 = {
-    "chrome149",
-    149,
-    {
-        k_chrome_cipher_list,
-        k_quic_curves /*shared*/,
-        k_chrome_sigalgs,
-        TlsVersion_1_2,
-        TlsVersion_1_3,
-        k_alpn_wire,
-        sizeof(k_alpn_wire),
-        k_alps_h2,
-        1,
-        1 /*alps_new*/,
-        k_quic_cert_compress /*brotli*/,
-        1,
-        1 /*grease*/,
-        1 /*permute*/,
-        1 /*ocsp*/,
-        1 /*sct*/,
-        1 /*ech_grease*/,
-        1 /*tickets*/,
-        0,
-        0,
-        0,
-        0 /*record_size_limit*/,
-        0 /*delegated*/,
-        2 /*key_shares*/,
-        0 /*ext_order*/,
-    },
-    {
-        k_chrome_h2_settings,
-        4,
-        15663105,
-        1 /*priority*/,
-        0,
-        220,
-        1 /*exclusive*/,
-        k_quic_pseudo_order /*m,a,s,p*/,
-        4,
-    },
-    k_chrome149_headers,
-    K_CHROME149_HEADER_COUNT,
-    k_chrome_fetch_order,
-    K_CHROME_FETCH_ORDER_COUNT,
+    .name = "wreq-template",
+    .id = 1,
+    .tls =
+        {
+            .cipher_list = k_cipher_list,
+            .curves_list = k_curves_list,
+            .sigalgs_list = k_sigalgs_list,
+            .min_version = TlsVersion_1_2,
+            .max_version = TlsVersion_1_3,
+            .alpn_wire = k_alpn_wire,
+            .alpn_wire_len = sizeof k_alpn_wire,
+            .cert_compress_algs = k_cert_compress,
+            .cert_compress_count = 3,
+            .grease = 1,
+            .enable_ocsp_stapling = 1,
+            .enable_signed_cert_timestamps = 1,
+            .enable_ech_grease = 1,
+            .session_tickets = 1,
+            .aes_hw_override = 1,
+            .aes_hw_override_value = 1,
+            .random_aes_hw_override = 1,
+            .record_size_limit = 0x4001,
+            .delegated_credentials = k_delegated_creds,
+            .key_shares_limit = 3,
+            .extension_order = k_extension_order,
+        },
+    .h2 =
+        {
+            .settings = k_h2_settings,
+            .settings_count = 4,
+            .connection_window_increment = 12517377,
+            .use_priority = 1,
+            .priority_weight = 41,
+            .pseudo_order = k_pseudo_order,
+            .pseudo_count = 4,
+        },
+    // No default_headers/fetch_order — the template ships none.
 };
 
 const Profile *profile_template(void) { return &k_template; }
-const Profile *profile_chrome148(void) { return &k_chrome148; }
-const QuicProfile *profile_chrome148_h3(void) { return &k_chrome148_h3; }
-const Profile *profile_chrome149(void) { return &k_chrome149; }
-const QuicProfile *profile_chrome149_h3(void) { return &k_chrome149_h3; }
+
+//- registry: every browser profile that exists ------------------------------
+// entry[0] is the default ("newest"). Add a browser family here (one row) after
+// dropping its <family>.c data file in and #including it from src/holytls.c.
+
+global const ProfileEntry k_profile_registry[] = {
+    {149, "chrome149", profile_chrome149, profile_chrome149_h3},  // [0] default
+    {148, "chrome148", profile_chrome148, profile_chrome148_h3},
+};
+
+const ProfileEntry *profile_registry(U64 *count) {
+  if (count) *count = ArrayCount(k_profile_registry);
+  return k_profile_registry;
+}
+const Profile *profile_by_name(String8 name) {
+  for (U64 i = 0; i < ArrayCount(k_profile_registry); ++i)
+    if (str8_match_ci(name, str8_cstring(k_profile_registry[i].name)))
+      return k_profile_registry[i].h2();
+  return 0;
+}
+const QuicProfile *profile_quic_by_name(String8 name) {
+  for (U64 i = 0; i < ArrayCount(k_profile_registry); ++i)
+    if (str8_match_ci(name, str8_cstring(k_profile_registry[i].name)))
+      return k_profile_registry[i].h3();
+  return 0;
+}
 
 //- default-header accessors --------------------------------------------------
 

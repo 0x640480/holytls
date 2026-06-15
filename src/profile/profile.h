@@ -164,13 +164,29 @@ struct QuicProfile {
   U8 fetch_order_count;
 };
 
-const Profile *profile_chrome148(void);
 const Profile *profile_template(void);
+// Chrome — defined in src/profile/chrome.c. 149 is wire-identical to 148 except
+// the version strings (live-verified byte-exact JA4/Akamai/h3_hash/QUIC-JA4).
+const Profile *profile_chrome148(void);
 const QuicProfile *profile_chrome148_h3(void);
-// Chrome 149 — wire-identical to 148 except the version strings (live-verified
-// byte-exact on JA4/Akamai/h3_hash/QUIC-JA4 for both TCP/H2 and QUIC/H3).
 const Profile *profile_chrome149(void);
 const QuicProfile *profile_chrome149_h3(void);
+
+//- profile registry ---------------------------------------------------------
+// The single source of truth for which browser profiles exist. Each entry pairs
+// a stable name + id with the TCP/H2 and QUIC/H3 accessors; entry[0] is the
+// default ("newest"). Adding a browser = one new row (in src/profile/profiles.c)
+// + its data file. Selection is by name (the capi / Python layers resolve here).
+typedef struct ProfileEntry ProfileEntry;
+struct ProfileEntry {
+  U32 id;
+  const char *name;                // canonical, e.g. "chrome149"
+  const Profile *(*h2)(void);      // TCP/H2 accessor
+  const QuicProfile *(*h3)(void);  // QUIC/H3 accessor
+};
+const ProfileEntry *profile_registry(U64 *count);       // entry[0] = default
+const Profile *profile_by_name(String8 name);           // 0 if unknown
+const QuicProfile *profile_quic_by_name(String8 name);  // 0 if unknown
 
 //- default-header accessors -------------------------------------------------
 // First-class access to a profile's static request-header values (the bytes the

@@ -21,9 +21,8 @@ global int g_fails = 0;
     fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
   })
 
-internal ClientHelloInfo capture_client_hello(const Profile *prof,
-                                              CtxResult *cr) {
-  *cr = build_ctx(&prof->tls, 0);
+internal ClientHelloInfo capture_tls(const TlsProfile *tls, CtxResult *cr) {
+  *cr = build_ctx(tls, 0);
   ClientHelloInfo info;
   MemoryZeroStruct(&info);
   if (!ctx_ok(cr)) return info;
@@ -33,7 +32,7 @@ internal ClientHelloInfo capture_client_hello(const Profile *prof,
   BIO *wbio = BIO_new(BIO_s_mem());
   SSL_set_bio(ssl, rbio, wbio);  // takes ownership of both
   SSL_set_connect_state(ssl);
-  configure_ssl(ssl, &prof->tls, "tls.browserleaks.com", 0, 0, 0, 0);
+  configure_ssl(ssl, tls, "tls.browserleaks.com", 0, 0, 0, 0);
   SSL_do_handshake(ssl);  // emits ClientHello into wbio, then WANT_READ
 
   const U8 *data = 0;
@@ -42,6 +41,10 @@ internal ClientHelloInfo capture_client_hello(const Profile *prof,
   if (data && len) info = ja4_parse_record(data, len);
   SSL_free(ssl);  // frees rbio/wbio
   return info;
+}
+internal ClientHelloInfo capture_client_hello(const Profile *prof,
+                                              CtxResult *cr) {
+  return capture_tls(&prof->tls, cr);
 }
 
 //- Part A: validate the JA4 implementation with independent vectors.
@@ -95,6 +98,24 @@ internal void test_profile(Arena *a, const Profile *prof, const char *golden) {
   if (cr.ctx) SSL_CTX_free(cr.ctx);
 }
 
+// Capture the TLS half of a QUIC/H3 profile's ClientHello (h3 ALPN, TLS1.3-only,
+// h3 sig-algs) and assert its JA4. Locks every h3 TlsProfile field offline (the
+// QUIC transport params ride QUIC separately and are value-locked in profile_test).
+internal void test_quic_profile(Arena *a, const QuicProfile *prof,
+                                const char *golden) {
+  CtxResult cr;
+  ClientHelloInfo info = capture_tls(&prof->tls, &cr);
+  CHECK(ctx_ok(&cr));
+  CHECK(info.ok);
+  if (info.ok) {
+    Fingerprints fp = ja4_compute(a, &info);
+    fprintf(stderr, "  %-13s JA4 = %.*s  golden = %s\n", prof->name,
+            (int)fp.ja4.size, fp.ja4.str, golden);
+    CHECK(str8_match(fp.ja4, str8_cstring(golden)));
+  }
+  if (cr.ctx) SSL_CTX_free(cr.ctx);
+}
+
 int main(void) {
   Arena *a = arena_alloc();
   test_ja4_impl(a);
@@ -121,6 +142,12 @@ int main(void) {
     ws.tls.alps_count = 0;
     test_profile(a, &ws, "t13d1515h1_8daaf6152771_0a20fe35d3a5");
   }
+
+  // HTTP/3 (QUIC) profiles — the TLS half of the ClientHello. Both 148/149 h3
+  // are wire-identical; locks the h3 TlsProfile fields offline.
+  test_quic_profile(a, profile_chrome148_h3(), "t13d0310h3_55b375c5d22e_7e133008cbfb");
+  test_quic_profile(a, profile_chrome149_h3(), "t13d0310h3_55b375c5d22e_7e133008cbfb");
+
   arena_release(a);
   fprintf(stderr, "[ja4_test] %d checks, %d failures\n", g_checks, g_fails);
   return g_fails ? 1 : 0;
