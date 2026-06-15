@@ -3,8 +3,9 @@
 **A C TLS-impersonation HTTP client that reproduces a real browser byte-for-byte —
 across TLS, HTTP/2, *and* HTTP/3.**
 
-holytls makes requests that are indistinguishable from Chrome on the wire. Not
-just the TLS ClientHello (JA3/JA4) like most impersonation clients — also the
+holytls makes requests that are indistinguishable from a real browser (Chrome or
+Firefox) on the wire. Not just the TLS ClientHello (JA3/JA4) like most
+impersonation clients — also the
 HTTP/2 SETTINGS/WINDOW_UPDATE/priority shape (Akamai), and the full HTTP/3 + QUIC
 fingerprint (h3 settings hash, QUIC-JA4). All four are **live-verified byte-exact**
 against `tls.peet.ws`, `browserleaks.com`, and a fingerprint-preserving MITM proxy:
@@ -15,6 +16,13 @@ against `tls.peet.ws`, `browserleaks.com`, and a fingerprint-preserving MITM pro
 | HTTP/2 — **Akamai** | `1:65536;2:0;4:6291456;6:262144\|15663105\|0\|m,a,s,p` |
 | HTTP/3 — **QUIC-JA4** | `q13d0311h3_55b375c5d22e_653d80c3fe9d` |
 | HTTP/3 — **h3 settings hash** | `ba909fc3dc419ea5c5b26c6323ac1879` |
+
+All four are byte-exact for **Firefox 151** too — the first non-Chrome family
+(Firefox's own cipher order, FFDHE groups, fixed extension order, and even the
+legacy `extended_master_secret`/`renegotiation_info` it uniquely sends in a
+TLS1.3-only QUIC ClientHello). Profiles are selectable by name, and adding one is
+a small data file + a registry row.
+
 ---
 
 ## What sets it apart
@@ -24,7 +32,13 @@ way down the stack and across all three transports, with the behaviors a real
 browser actually performs:
 
 - **Byte-exact across TLS + HTTP/2 + HTTP/3** — not just JA3/JA4. The H2 Akamai
-  fingerprint and the H3/QUIC fingerprints match Chrome exactly too.
+  fingerprint and the H3/QUIC fingerprints match the target browser exactly too.
+- **Multiple browsers, registry-driven** — Chrome 148/149 and Firefox 151 ship
+  today, each byte-exact across all four fingerprints; pick one by name. A new
+  browser/version is a self-contained profile file + one registry row.
+- **WebSocket over the fingerprinted connection** — RFC 6455 with the H1 Upgrade
+  or H2 Extended CONNECT path, permessage-deflate, and the browser's WS
+  ClientHello — so the TLS fingerprint holds for WS too.
 - **First-class HTTP/3 / QUIC**, with Chrome's real transport behavior: H2 first,
   then **upgrade to HTTP/3 once an origin advertises `alt-svc: h3`** — Chrome never
   cold-starts H3, and neither do we.
@@ -151,16 +165,18 @@ only reconnects resume / send 0-RTT — exactly like a browser.
 
 ## Features
 
-Browser-grade HTTP with the knobs a real Chrome needs. Most are opt-in — the full
+Browser-grade HTTP with the knobs a real browser needs. Most are opt-in — the full
 surface lives in [`src/core/client.h`](src/core/client.h).
 
 | Area | What you get | Key calls |
 |------|--------------|-----------|
-| **Requests** | Async GET / POST, or full control via a `RequestParams` options struct (method, headers, body, Sec-Fetch, redirects, deadline) | `client_get`, `client_post`, `client_request` |
+| **Profiles** | Chrome 148/149 + Firefox 151, byte-exact across all four fingerprints; selectable by name | `profile_chrome149`, `profile_firefox151`, `profile_by_name` |
+| **Requests** | Async GET / POST, or full control via a `RequestParams` options struct (method, headers, body, Sec-Fetch, redirects, deadline), plus streaming response bodies | `client_get`, `client_post`, `client_request` (`.on_chunk`) |
 | **Transports** | HTTP/1.1, HTTP/2, HTTP/3 — pin one, or run H2 with automatic H2→H3 upgrade | `client_init`, `client_init_dual`, `client_set_http_version` |
-| **TLS behaviors** | Real ECH (encrypted SNI), TLS 1.3 resumption, 0-RTT early data | `client_set_ech_enabled`, `client_set_resumption_enabled`, `client_set_early_data_enabled` |
+| **WebSocket** | RFC 6455 over the fingerprinted TLS connection — H1 Upgrade or H2 Extended CONNECT, permessage-deflate | `ws_conn_alloc`, `ws_conn_connect`, `ws_conn_send`, `ws_conn_recv` |
+| **TLS behaviors** | Real ECH (encrypted SNI), TLS 1.3 resumption, 0-RTT early data, mutual TLS (client certificate) | `client_set_ech_enabled`, `client_set_resumption_enabled`, `client_set_early_data_enabled`, `client_set_client_cert` |
 | **Sessions** | Lightweight per-task identity — cookie jar + redirect budget over one shared transport | `session_init`, `session_get` |
-| **Proxies** | HTTP / HTTPS / SOCKS5 (incl. HTTP/3 over SOCKS5), runtime switching, custom CA for MITM | `client_set_proxy`, `client_add_ca_file` |
+| **Proxies** | HTTP / HTTPS / SOCKS5 (incl. HTTP/3 over SOCKS5), a rotation pool, runtime switching, source-IP binding, custom CA for MITM | `client_set_proxy`, `client_add_proxy`, `client_set_local_address`, `client_add_ca_file` |
 | **Headers** | Full Chrome set by default, or caller-controlled headers with explicit wire order | `client_override_default_headers`, `client_set_header_order` |
 | **Pooling** | Opt-in H2 / H3 connection keep-alive | `client_set_max_conns_per_origin` |
 | **Reliability** | Whole-operation timeout, browser-faithful redirects, DNS caching | `client_set_timeout_ms`, `client_set_max_redirects`, `client_set_dns_cache_ttl_ms` |
@@ -248,6 +264,20 @@ with holytls.Client(http_version="auto") as client:  # H2, then H3 via alt-svc
         print(resp.status_code, resp.url)
 ```
 
+…or asyncio — `AsyncClient` mirrors the same surface, and `asyncio.gather` runs
+every request concurrently on the one native loop:
+
+```python
+import asyncio, holytls
+
+async def main():
+    async with holytls.AsyncClient(http_version="auto") as client:
+        r = await client.get("https://example.com")
+        results = await asyncio.gather(*(client.get(u) for u in urls))
+
+asyncio.run(main())
+```
+
 ```sh
 cmake -B build-capi -G Ninja -DHOLYTLS_BUILD_CAPI=ON \
     -DHOLYTLS_BUILD_TESTS=OFF -DHOLYTLS_BUILD_EXAMPLES=OFF
@@ -255,8 +285,10 @@ cmake --build build-capi --target holytls_capi
 pip install ./bindings/python
 ```
 
-See [`bindings/python/README.md`](bindings/python/README.md) for the full API
-(Client, Session, concurrent batches, proxies, ECH/resumption, the response model).
+See [`bindings/python/README.md`](bindings/python/README.md) for the full API —
+`Client` / `AsyncClient`, `Session`, `WebSocket`, profile selection
+(`profile="firefox151"`), concurrent batches, multipart/form bodies, streaming,
+proxies, mTLS, ECH/resumption, and the response model.
 
 ---
 
