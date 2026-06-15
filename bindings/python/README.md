@@ -9,7 +9,7 @@ real ABI header, so it can't silently drift.
 ```python
 import holytls
 
-with holytls.Client(dual=True) as client:
+with holytls.Client(http_version="auto") as client:  # H2, then H3 via alt-svc
     r = client.get("https://tls.peet.ws/api/all")
     print(r.status_code, r.alpn)              # 200 h2
     print(r.json()["tls"]["ja4"])             # t13d1516h2_8daaf6152771_d8a2da3f94cd
@@ -57,12 +57,13 @@ The transport. Owns a libuv loop; **not thread-safe** (one Client per thread).
 
 ```python
 client = holytls.Client(
-    profile="chrome",     # "chrome" | "chrome149" | "chrome148"
-    dual=False,           # True adds HTTP/3 (H2 first, QUIC after alt-svc)
+    profile="chrome",     # "chrome" | "chrome149" | "chrome148" | "firefox151"
     verify=True,          # validate server certificates
     timeout_ms=30000,     # whole-operation timeout (covers the redirect chain)
     max_redirects=0,      # follow up to N 3xx redirects (browser-faithful)
-    http_version=None,    # None=auto | "h1" | "h2" | "h3" (h3 implies dual)
+    http_version=None,    # the HTTP/3 knob: None/"h2"=H2-only (default) |
+                          # "auto"=Chrome H2->H3 via alt-svc | "h3" | "h1".
+                          # QUIC is built automatically for "auto"/"h3".
     proxy=None,           # "http://", "https://", "socks5://[user:pass@]host:port"
     proxies=None,         # a list of proxy URLs to round-robin (rotation pool)
     ech=False,            # real Encrypted Client Hello

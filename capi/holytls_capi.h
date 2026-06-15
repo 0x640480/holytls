@@ -48,13 +48,17 @@ typedef enum holytls_method {
   HOLYTLS_OPTIONS,
 } holytls_method;
 
-// Wire-protocol selection (see holytls_client_set_http_version). Auto is the
-// Chrome-faithful default (H2, then H3 once an origin advertises alt-svc: h3).
+// Wire-protocol selection. This is the single knob for HTTP/3: the client builds
+// the QUIC transport automatically iff the chosen mode can use H3 (AUTO or H3).
+// Passed to holytls_client_new[_named] at construction and to
+// holytls_client_set_http_version at runtime (the latter can only narrow within
+// the capability the constructor built — it can't add QUIC after the fact).
 typedef enum holytls_http_version {
-  HOLYTLS_HTTP_AUTO = 0,
-  HOLYTLS_HTTP_1,
-  HOLYTLS_HTTP_2,
-  HOLYTLS_HTTP_3,  // requires a dual client (holytls_client_new(.., dual=1, ..))
+  HOLYTLS_HTTP_AUTO = 0,  // Chrome-faithful: H2, then H3 once an origin
+                          // advertises alt-svc: h3 (builds QUIC).
+  HOLYTLS_HTTP_1,         // force HTTP/1.1 (changes the ALPN/fingerprint).
+  HOLYTLS_HTTP_2,         // force HTTP/2 over TCP, never H3 (no QUIC built).
+  HOLYTLS_HTTP_3,         // force HTTP/3/QUIC on the first request (builds QUIC).
 } holytls_http_version;
 
 // Fetch Metadata context. DEFAULT keeps the profile's static navigation
@@ -141,19 +145,23 @@ typedef struct holytls_response {
 
 typedef struct holytls_client holytls_client;
 
-// Create a client impersonating `profile`. dual=1 builds a Chrome-style
-// dual-transport client (H2 first, QUIC/H3 after alt-svc discovery; required to
-// force HTTP/3). verify=1 validates server certificates as a browser does.
-// Returns NULL only on allocation failure.
-holytls_client *holytls_client_new(holytls_profile_id profile, int dual,
-                                   int verify);
+// Create a client impersonating `profile`. `mode` is the wire protocol (see
+// holytls_http_version): HOLYTLS_HTTP_2 is H2-only; HOLYTLS_HTTP_AUTO is the
+// Chrome-faithful H2->H3 path; both AUTO and HOLYTLS_HTTP_3 build the QUIC
+// transport automatically. verify=1 validates server certificates as a browser
+// does. Returns NULL only on allocation failure.
+// NOTE: `mode` replaced the old `int dual`; the numeric value 0 now means
+// HOLYTLS_HTTP_AUTO (builds QUIC), not the old dual=0 (H2-only).
+holytls_client *holytls_client_new(holytls_profile_id profile,
+                                   holytls_http_version mode, int verify);
 
 // Create a client by profile NAME, resolved from the profile registry (e.g.
-// "chrome149", "chrome148"; NULL/"" = the newest). This is the forward-looking
-// selector — a profile added to the native registry is usable here with no enum
-// change. Returns NULL on allocation failure OR an unknown name.
-holytls_client *holytls_client_new_named(const char *profile_name, int dual,
-                                         int verify);
+// "chrome149", "chrome148", "firefox151"; NULL/"" = the newest). This is the
+// forward-looking selector — a profile added to the native registry is usable
+// here with no enum change. `mode` as in holytls_client_new. Returns NULL on
+// allocation failure OR an unknown name.
+holytls_client *holytls_client_new_named(const char *profile_name,
+                                         holytls_http_version mode, int verify);
 
 // Enumerate the registered profiles (index 0 = the default/newest).
 // holytls_profile_name returns a static string (do not free) or NULL if out of
@@ -167,6 +175,10 @@ void holytls_client_free(holytls_client *c);
 // core/client.h for the full contract of each). Call before issuing requests.
 void holytls_client_set_max_redirects(holytls_client *c, uint64_t max);
 void holytls_client_set_timeout_ms(holytls_client *c, uint64_t ms);
+// Override the wire protocol at runtime. Can only narrow within the capability
+// the constructor built: switching to HOLYTLS_HTTP_3 only works if the client
+// was created with a mode that built QUIC (AUTO or HTTP_3); otherwise forced-H3
+// requests fail. Construct with the right `mode` to decide whether QUIC exists.
 void holytls_client_set_http_version(holytls_client *c, holytls_http_version v);
 void holytls_client_set_ech_enabled(holytls_client *c, int on);
 void holytls_client_set_resumption_enabled(holytls_client *c, int on);

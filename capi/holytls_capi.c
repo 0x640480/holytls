@@ -232,9 +232,14 @@ internal void build_params(Arena *a, const holytls_request *req,
 // ---------------------------------------------------------------------------
 
 internal holytls_client *client_new_from(const Profile *h2,
-                                         const QuicProfile *h3, int dual,
-                                         int verify) {
-  if (!h2 || (dual && !h3)) return 0;  // unknown profile name
+                                         const QuicProfile *h3,
+                                         holytls_http_version mode, int verify) {
+  HttpVersion hv = map_http_version(mode);
+  // The QUIC transport is built iff the mode can ever use H3 — so "dual" is a
+  // derived fact, not a separate knob. AUTO upgrades to H3 via alt-svc; H3
+  // forces it. H2/H1 stay on TCP and skip QUIC entirely.
+  int dual = (hv == HttpVersion_Auto) || (hv == HttpVersion_H3);
+  if (!h2 || (dual && !h3)) return 0;  // unknown profile name / no h3 variant
   holytls_client *hc = (holytls_client *)calloc(1, sizeof *hc);
   if (!hc) return 0;
   loop_init(&hc->loop);
@@ -242,20 +247,21 @@ internal holytls_client *client_new_from(const Profile *h2,
     client_init_dual(&hc->client, &hc->loop, h2, h3, verify ? 1 : 0);
   else
     client_init(&hc->client, &hc->loop, h2, verify ? 1 : 0);
+  client_set_http_version(&hc->client, hv);  // preset the policy at construction
   return hc;
 }
 
-holytls_client *holytls_client_new(holytls_profile_id pid, int dual,
-                                   int verify) {
+holytls_client *holytls_client_new(holytls_profile_id pid,
+                                   holytls_http_version mode, int verify) {
   const char *name = profile_enum_name(pid);
-  return client_new_from(pick_profile_named(name), pick_quic_named(name), dual,
+  return client_new_from(pick_profile_named(name), pick_quic_named(name), mode,
                          verify);
 }
 
-holytls_client *holytls_client_new_named(const char *profile_name, int dual,
-                                         int verify) {
+holytls_client *holytls_client_new_named(const char *profile_name,
+                                         holytls_http_version mode, int verify) {
   return client_new_from(pick_profile_named(profile_name),
-                         pick_quic_named(profile_name), dual, verify);
+                         pick_quic_named(profile_name), mode, verify);
 }
 
 size_t holytls_profile_count(void) {

@@ -33,12 +33,18 @@ class Method(enum.IntEnum):
 
 
 class HttpVersion(enum.IntEnum):
-    """Wire-protocol selection (matches holytls_http_version)."""
+    """Wire-protocol selection (matches holytls_http_version).
 
-    AUTO = 0  # Chrome-faithful: H2, then H3 once an origin advertises alt-svc
-    HTTP_1 = 1
-    HTTP_2 = 2
-    HTTP_3 = 3  # requires a dual-transport client
+    This is the single HTTP/3 knob: the client builds the QUIC transport
+    automatically when the mode can use H3 (AUTO or HTTP_3). The default for a
+    Client is HTTP_2 (lean, no QUIC); pass AUTO for the Chrome-faithful path.
+    """
+
+    AUTO = 0    # Chrome-faithful: H2, then H3 once an origin advertises
+                # alt-svc: h3 (builds QUIC). The opt-in, not the default.
+    HTTP_1 = 1  # force HTTP/1.1 (changes the ALPN/fingerprint)
+    HTTP_2 = 2  # force HTTP/2 over TCP, never H3 (no QUIC) — the Client default
+    HTTP_3 = 3  # force HTTP/3/QUIC on the first request (builds QUIC)
 
     @classmethod
     def coerce(cls, value: Union["HttpVersion", str, int]) -> "HttpVersion":
