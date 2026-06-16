@@ -340,6 +340,52 @@ void holytls_async_stop(holytls_async_client *ac);
 void holytls_async_client_free(holytls_async_client *ac);
 
 // ---------------------------------------------------------------------------
+// Off-GIL completion queue (optional fast path). By default each completion
+// fires the holytls_async_complete_fn on the loop thread — which, for a foreign
+// runtime like CPython, costs one GIL acquire PER completion (N hops per batch).
+// The completion-queue path moves the enqueue into pure C: the loop thread parks
+// each finished response on an internal mutex-guarded FIFO (no foreign-runtime
+// call, no GIL) and signals an fd once per empty->non-empty transition; the
+// foreign thread watches that fd (e.g. asyncio loop.add_reader) and DRAINS the
+// FIFO in batches, paying the GIL once per batch instead of once per completion.
+//
+// Opt in from the foreign side: get the fd, register a readable-watch on it, and
+// THEN call holytls_async_use_completion_queue(ac, 1) (before the loop thread is
+// started, or before any completion can fire). If the fd can't be created (e.g.
+// Windows, or a runtime whose loop can't watch a raw fd), leave the queue off —
+// the holytls_async_complete_fn path is the unchanged fallback.
+
+// One drained completion: the echoed req_id and the OWNED response (free it with
+// holytls_response_free after marshalling). `resp` may be NULL only on a
+// catastrophic OOM while copying — treat it as a failure for that req_id.
+typedef struct holytls_completion {
+  uint64_t req_id;
+  holytls_response *resp;
+} holytls_completion;
+
+// Return a readable fd that becomes ready when completions are waiting (a
+// self-pipe; coalesced — at most one unread byte). Created on first call and
+// owned by the client (closed in holytls_async_client_free; never close it
+// yourself). Call once, before the loop thread starts. Returns -1 if no fd could
+// be created (Windows / unsupported) — in which case stay on the callback path.
+int holytls_async_completion_fd(holytls_async_client *ac);
+
+// Enable (on=1) or disable (on=0) the completion-queue path. When enabled, the
+// loop thread enqueues completions + signals the fd instead of calling the
+// holytls_async_complete_fn. Set it AFTER registering the fd watch and BEFORE
+// any completion can fire (e.g. before the loop thread starts); the flag is read
+// atomically on the loop thread.
+void holytls_async_use_completion_queue(holytls_async_client *ac, int on);
+
+// Drain up to `max` waiting completions into `out` (caller-provided array of at
+// least `max` entries); returns the number written. Each out[i].resp ownership
+// transfers to the caller. Call from the foreign thread when the fd is readable
+// (drain the fd first, then loop this until it returns < max). Thread-safe vs
+// the loop-thread producer.
+size_t holytls_async_drain(holytls_async_client *ac, holytls_completion *out,
+                           size_t max);
+
+// ---------------------------------------------------------------------------
 // Session — a cookie jar + per-hop redirect identity layered on a client. The
 // transport (and its fingerprint) is the passed-in client; the session adds
 // matching cookies per request, absorbs Set-Cookie, and follows redirects with
