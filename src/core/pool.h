@@ -58,6 +58,8 @@ struct PoolReq {
   Header *caller_headers;
   U64 caller_header_count;
   String8 caller_body;
+  String8
+      header_order;  // arena-copied per-request wire order CSV (empty = none)
 
   // Parsed origin/target.
   String8 host, scheme, authority, path, origin;
@@ -150,9 +152,11 @@ void pool_drain(ConnPool *p);  // begin closing all conns + the sweep timer
 void pool_evict_all(ConnPool *p);
 
 // Dispatch a request through the pool (acquire/reuse a conn, multiplex a
-// stream).
+// stream). `header_order` is the per-request wire-order CSV (empty = use the
+// client-level order); it is copied and applied at submit time.
 void pool_dispatch(Client *c, PoolProto proto, Method m, String8 url,
                    const Header *headers, U64 header_count, const U8 *body,
-                   U64 body_len, ResponseFn cb, void *user, U64 deadline_ns);
+                   U64 body_len, ResponseFn cb, void *user, U64 deadline_ns,
+                   String8 header_order);
 
 #endif  // HOLYTLS_POOL_H

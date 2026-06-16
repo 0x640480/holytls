@@ -9,6 +9,8 @@ void session_config_default(SessionConfig *cfg) {
   MemoryZeroStruct(cfg);
   cfg->preset = "chrome-latest";
   cfg->cookies_enabled = 1;
+  cfg->follow_redirects = 1;
+  cfg->has_follow_redirects = 1;
   cfg->max_redirects = 10;
 }
 
@@ -17,7 +19,12 @@ internal void session_init_fields(Session *s, Arena *a,
   s->arena = a;
   cookie_jar_init(&s->jar, a);
   s->cookies_enabled = cfg ? cfg->cookies_enabled : 1;
-  s->max_redirects = (cfg && cfg->max_redirects) ? cfg->max_redirects : 10;
+  // has_follow_redirects lets a zeroed config still default to "follow" (so an
+  // old caller that only set cookies/budget keeps following); max_redirects is
+  // honored verbatim now — an explicit 0 means "don't follow", no silent ?:10.
+  s->follow_redirects =
+      (cfg && cfg->has_follow_redirects) ? cfg->follow_redirects : 1;
+  s->max_redirects = cfg ? cfg->max_redirects : 10;
 }
 
 B32 session_init(Session *s, const SessionConfig *cfg) {
@@ -65,6 +72,7 @@ struct SessionReq {
   BodyChunkFn on_chunk;  // streaming sink (0 = buffer); when set, the session
                          // streams the single hop and does NOT follow redirects
   void *chunk_user;
+  String8 header_order;  // per-request wire order CSV (own arena), every hop
 };
 
 internal void session_hop_cb(void *user, const Response *r);
@@ -101,7 +109,8 @@ internal void session_dispatch_hop(SessionReq *req) {
                           .deadline_ns = req->deadline_ns,
                           .proxy = req->proxy,
                           .on_chunk = req->on_chunk,
-                          .chunk_user = req->chunk_user};
+                          .chunk_user = req->chunk_user,
+                          .header_order = req->header_order};
   client_request(req->client, &params, session_hop_cb, req);
 }
 
@@ -127,7 +136,7 @@ internal void session_hop_cb(void *user, const Response *r) {
   //    hop). A streaming request is terminal (its body already went to the
   //    sink), so it never follows a redirect — mirroring client_request.
   RedirectHop hop;
-  if (!req->on_chunk && req->left > 0 &&
+  if (s->follow_redirects && !req->on_chunk && req->left > 0 &&
       redirect_prepare_hop(req->arena, req->cur_url, req->method,
                            &req->caller_headers, r, &hop)) {
     req->caller_headers = hop.headers;
@@ -202,6 +211,8 @@ void session_request(Session *s, Client *client, const RequestParams *p,
           push_str8_copy(a, p->headers[i].value), p->headers[i].flags);
   }
   req->body = p->body.size ? push_str8_copy(a, p->body) : str8_zero();
+  req->header_order =
+      p->header_order.size ? push_str8_copy(a, p->header_order) : str8_zero();
   session_dispatch_hop(req);
 }
 

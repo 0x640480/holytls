@@ -119,9 +119,45 @@ internal void test_round_trip(Arena *a) {
   loop_shutdown(&loop);
 }
 
+// Bug #2: a Session must be able to express "0 redirects / don't follow". The
+// follow policy is decoupled from the budget, so an explicit max_redirects=0 is
+// honored (no silent ?:10) and follow_redirects gates following independently.
+internal void test_follow_redirects(void) {
+  SessionConfig cfg;
+  session_config_default(&cfg);
+  CHECK(cfg.max_redirects == 10 && cfg.follow_redirects == 1 &&
+        cfg.has_follow_redirects == 1);
+
+  // The default config: follow, budget 10.
+  Session s;
+  session_init(&s, &cfg);
+  CHECK(s.follow_redirects == 1 && s.max_redirects == 10);
+  session_cleanup(&s);
+
+  // Explicit max_redirects=0 survives (was silently coerced to 10 before).
+  cfg.max_redirects = 0;
+  session_init(&s, &cfg);
+  CHECK(s.max_redirects == 0);
+  session_cleanup(&s);
+
+  // follow_redirects=0 disables following independent of the budget.
+  session_config_default(&cfg);
+  cfg.follow_redirects = 0;
+  session_init(&s, &cfg);
+  CHECK(s.follow_redirects == 0 && s.max_redirects == 10);
+  session_cleanup(&s);
+
+  // A NULL config still defaults to follow + 10 (back-compat for the test
+  // sessions that pass 0).
+  session_init(&s, 0);
+  CHECK(s.follow_redirects == 1 && s.max_redirects == 10);
+  session_cleanup(&s);
+}
+
 int main(void) {
   Arena *a = arena_alloc();
   test_round_trip(a);
+  test_follow_redirects();
   arena_release(a);
   fprintf(stderr, "[session_serial_test] %d checks, %d failures\n", g_checks,
           g_fails);

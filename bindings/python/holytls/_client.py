@@ -213,7 +213,7 @@ def _encode_body(
 
 
 def _fill_request(c_req, *, method, url, headers, body, fetch_mode, no_redirects,
-                  keep, proxy=None):
+                  keep, proxy=None, header_order=None):
     """Populate a `holytls_request *` cdata; append every owned buffer to `keep`
     so it outlives the C call."""
     c_req.method = int(method)
@@ -251,6 +251,13 @@ def _fill_request(c_req, *, method, url, headers, body, fetch_mode, no_redirects
         c_req.proxy = pb
     else:
         c_req.proxy = ffi.NULL
+    if header_order:
+        csv = header_order if isinstance(header_order, str) else ",".join(header_order)
+        ob = ffi.new("char[]", csv.encode("utf-8"))
+        keep.append(ob)
+        c_req.header_order = ob
+    else:
+        c_req.header_order = ffi.NULL
 
 
 def _response_from_c(c_resp) -> Response:
@@ -523,6 +530,7 @@ class Client:
         on_chunk=None,
         fetch_mode: FetchMode = FetchMode.DEFAULT,
         allow_redirects: bool = True,
+        header_order: Optional[Union[str, Sequence[str]]] = None,
     ) -> Response:
         self._check()
         hdrs = _normalize_headers(headers)
@@ -540,6 +548,7 @@ class Client:
             no_redirects=not allow_redirects,
             keep=keep,
             proxy=proxy,
+            header_order=header_order,
         )
         if on_chunk is not None:
             # Stream the (decoded) body to on_chunk as it arrives; the returned
@@ -605,7 +614,8 @@ class Client:
         """Perform many requests CONCURRENTLY on the client's single loop and
         return their responses in order. Each item is a dict with the same keys
         as ``request`` (``method``, ``url``, ``headers``, ``data``/``json``,
-        ``fetch_mode``, ``allow_redirects``); ``url`` is required.
+        ``fetch_mode``, ``allow_redirects``, ``header_order``); ``url`` is
+        required.
 
         This is the native event-loop concurrency — true network parallelism in
         one thread, with the GIL held for the whole batch (no Python runs while
@@ -636,6 +646,7 @@ class Client:
                 no_redirects=not item.get("allow_redirects", True),
                 keep=keep,
                 proxy=item.get("proxy"),
+                header_order=item.get("header_order"),
             )
         out = ffi.new("holytls_response *[]", n)
         written = lib.holytls_perform_many(self._c, c_reqs, n, out)
@@ -699,9 +710,22 @@ class Session:
     identities, create many Sessions on a shared Client.
     """
 
-    def __init__(self, client: Client, *, cookies: bool = True, max_redirects: int = 10):
+    def __init__(
+        self,
+        client: Client,
+        *,
+        cookies: bool = True,
+        follow_redirects: bool = True,
+        max_redirects: int = 10,
+    ):
         self._client = client
-        self._s = lib.holytls_session_new(1 if cookies else 0, int(max_redirects))
+        # follow_redirects=False (or max_redirects=0) yields single-hop requests;
+        # the two are decoupled, so an explicit 0 budget is honored (not 10).
+        self._s = lib.holytls_session_new(
+            1 if cookies else 0,
+            1 if follow_redirects else 0,
+            int(max_redirects),
+        )
         if self._s == ffi.NULL:
             raise HolyTLSError("failed to create native session")
         self._closed = False
@@ -718,6 +742,7 @@ class Session:
         files=None,
         proxy: Optional[str] = None,
         fetch_mode: FetchMode = FetchMode.DEFAULT,
+        header_order: Optional[Union[str, Sequence[str]]] = None,
     ) -> Response:
         if self._closed:
             raise HolyTLSError("session is closed")
@@ -737,6 +762,7 @@ class Session:
             no_redirects=None,  # the session always runs its own redirect loop
             keep=keep,
             proxy=proxy,
+            header_order=header_order,
         )
         c_resp = lib.holytls_session_perform(self._s, self._client._c, c_req)
         if c_resp == ffi.NULL:

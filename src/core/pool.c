@@ -314,7 +314,8 @@ internal void pool_acquire(ConnPool *p, PoolProto proto, PoolReq *r) {
 
 void pool_dispatch(Client *c, PoolProto proto, Method m, String8 url,
                    const Header *headers, U64 header_count, const U8 *body,
-                   U64 body_len, ResponseFn cb, void *user, U64 deadline_ns) {
+                   U64 body_len, ResponseFn cb, void *user, U64 deadline_ns,
+                   String8 header_order) {
   Arena *a = arena_acquire();
   PoolReq *r = push_struct(a, PoolReq);
   r->arena = a;
@@ -327,6 +328,11 @@ void pool_dispatch(Client *c, PoolProto proto, Method m, String8 url,
   r->method_enum = m;
   r->retries_left = POOL_MAX_RETRIES;
   r->url = push_str8_copy(a, url);
+  // Per-request wire order survives the async yield to submit time, so copy it
+  // into the request arena (like url/body) — empty = use the client-level
+  // order.
+  r->header_order =
+      header_order.size ? push_str8_copy(a, header_order) : str8_zero();
 
   ParsedUrl pu = url_parse(r->url);
   if (!pu.ok || !pu.https) {
@@ -409,6 +415,8 @@ internal void pool_h2_submit(PoolConn *pc, PoolReq *r) {
       r->caller_body.size, c->override_default_headers, r->method_enum,
       &r->req_headers);
   client_run_pre_hook(c, r->method_enum, r->url, &r->req_headers);
+  apply_header_order(c, r->arena, &r->req_headers, r->header_order,
+                     c->profile->fetch_order, c->profile->fetch_order_count);
   S32 sid = h2_session_submit_request(
       pc->h2, method_str(r->method_enum), r->scheme, r->authority, r->path,
       r->req_headers.v, r->req_headers.count, r->body.str, r->body.size,
@@ -439,8 +447,8 @@ internal void pool_conn_fallback_legacy(PoolConn *pc) {
     PoolReq *next = r->queue_next;
     h2req_start(pc->client, r->method_enum, r->url, r->caller_headers,
                 r->caller_header_count, r->caller_body.str, r->caller_body.size,
-                r->cb, r->user, r->deadline_ns,
-                /*proxy=*/0, /*on_chunk=*/0, 0);  // pool: single proxy, no stream
+                r->cb, r->user, r->deadline_ns, /*proxy=*/0, /*on_chunk=*/0, 0,
+                r->header_order);  // pool: single proxy, no stream
     pool_req_done(r);  // disarm the pooled timer; h2req_start armed its own
     r = next;
   }
@@ -708,6 +716,9 @@ internal void pool_h3_submit(PoolConn *pc, PoolReq *r) {
       r->caller_header_count, r->caller_body.str, r->caller_body.size,
       c->override_default_headers, r->method_enum, &r->req_headers);
   client_run_pre_hook(c, r->method_enum, r->url, &r->req_headers);
+  apply_header_order(c, r->arena, &r->req_headers, r->header_order,
+                     c->h3_profile->fetch_order,
+                     c->h3_profile->fetch_order_count);
 
   if (quic_open_bidi_stream(qc, &r->h3_stream_id) != 0) {
     pool_req_retry_or_fail(r, "h3 open stream failed");

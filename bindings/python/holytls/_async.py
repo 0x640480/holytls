@@ -179,6 +179,7 @@ class AsyncClient:
         proxy: Optional[str] = None,
         fetch_mode: FetchMode = FetchMode.DEFAULT,
         allow_redirects: bool = True,
+        header_order: Optional[Union[str, Sequence[str]]] = None,
     ) -> Response:
         self._check()
         loop = asyncio.get_running_loop()
@@ -198,6 +199,7 @@ class AsyncClient:
             no_redirects=not allow_redirects,
             keep=keep,
             proxy=proxy,
+            header_order=header_order,
         )
         fut = loop.create_future()
         req_id = next(self._next_id)

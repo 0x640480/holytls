@@ -116,6 +116,8 @@ typedef struct LbStream {
   U64 path_len;
   char authority[256];
   U64 authority_len;
+  char hdr_buf[32][64];  // received regular (non-pseudo) header names, in order
+  U64 hdr_count;
   U8 *body;
   U64 body_len, body_cap;
   U8 *resp_body;  // copied at submit time; drained by the data provider
@@ -263,6 +265,10 @@ static int lb_h2_header(nghttp2_session *s, const nghttp2_frame *frame,
     lb_copy(st->req_ext, sizeof st->req_ext, value, valuelen);
     st->req_ext_len = strlen(st->req_ext);
   }
+  // Record every regular (non-pseudo) header NAME in receive order, for the
+  // header-order tests (the pseudo headers above are captured separately).
+  if (namelen && name[0] != ':' && st->hdr_count < ArrayCount(st->hdr_buf))
+    lb_copy(st->hdr_buf[st->hdr_count++], sizeof st->hdr_buf[0], name, namelen);
   return 0;
 }
 // Deferred provider for a WS CONNECT stream: emit re-framed (unmasked) server
@@ -561,6 +567,11 @@ static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
   if (!st) return 0;
   if (!c->server->handler) return 0;  // WS-echo origin: no plain-request handler
 
+  // Received header names in wire order (views into st->hdr_buf, valid for the
+  // handler call below).
+  const char *names[ArrayCount(st->hdr_buf)];
+  for (U64 i = 0; i < st->hdr_count; ++i) names[i] = st->hdr_buf[i];
+
   LbRequest req;
   MemoryZeroStruct(&req);
   req.method = str8((U8 *)st->method, st->method_len);
@@ -570,6 +581,8 @@ static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
   req.body_len = st->body_len;
   req.is_h2 = 1;
   req.client_cert = c->has_client_cert;
+  req.header_names = names;
+  req.header_name_count = st->hdr_count;
   LbResponse resp;
   MemoryZeroStruct(&resp);
   c->server->handler(&req, &resp, c->server->user);

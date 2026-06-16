@@ -205,7 +205,8 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                                     const U8 *body, U64 body_len, ResponseFn cb,
                                     void *user, U64 deadline_ns,
                                     const ProxyConfig *proxy,
-                                    BodyChunkFn on_chunk, void *chunk_user);
+                                    BodyChunkFn on_chunk, void *chunk_user,
+                                    String8 header_order);
 
 // Build the ordered request headers (+ default accept-encoding /
 // content-length) for a request into `out` (initialised on `arena`). Returns
@@ -262,6 +263,52 @@ internal void apply_fetch_order(Arena *arena, HeaderList *h,
   String8 *names = push_array_no_zero(arena, String8, count);
   for (U8 i = 0; i < count; ++i) names[i] = str8_cstring(order[i]);
   reorder_headers(arena, h, names, count);
+}
+
+// Split a comma/whitespace-separated header-name list into `out` (views into
+// `csv`'s bytes — the caller must keep `csv` alive while the views are used).
+// Returns the count, clamped to `cap`; empty/whitespace-only => 0. Shared by
+// the client-level setter and the per-request header_order parse.
+internal U64 parse_header_order_csv(String8 csv, String8 *out, U64 cap) {
+  U64 n = 0, i = 0;
+  while (i < csv.size && n < cap) {
+    while (i < csv.size &&
+           (csv.str[i] == ',' || csv.str[i] == ' ' || csv.str[i] == '\t'))
+      i++;  // skip delimiters
+    U64 start = i;
+    while (i < csv.size && csv.str[i] != ',' && csv.str[i] != ' ' &&
+           csv.str[i] != '\t')
+      i++;
+    if (i > start) out[n++] = str8(csv.str + start, i - start);
+  }
+  return n;
+}
+
+// The one place a request's final wire order is chosen, shared by the pooled
+// and non-pooled submit paths (the pooled path used to skip it ->
+// set_header_order was a silent no-op when pooling). Precedence: a non-empty
+// per-request order
+// (`req_order_csv`, a comma/whitespace name list) REPLACES the client-level
+// order, which overrides the profile's fetch_order auto-pick. `fetch_order`/
+// `fo_count` are the active profile's (h2 vs h3) fetch order. No-op when none
+// applies (default fingerprint intact). The CSV's bytes need only outlive this
+// call (reorder_headers moves entries, it does not retain the name views).
+internal void apply_header_order(Client *c, Arena *arena, HeaderList *list,
+                                 String8 req_order_csv,
+                                 const char *const *fetch_order, U8 fo_count) {
+  if (req_order_csv.size) {
+    String8 names[CLIENT_HEADER_ORDER_MAX];
+    U64 n =
+        parse_header_order_csv(req_order_csv, names, CLIENT_HEADER_ORDER_MAX);
+    if (n) {
+      reorder_headers(arena, list, names, n);
+      return;
+    }
+  }
+  if (c->header_order_count)
+    reorder_headers(arena, list, c->header_order, c->header_order_count);
+  else if (!c->override_default_headers && headers_are_fetch(list))
+    apply_fetch_order(arena, list, fetch_order, fo_count);
 }
 
 // --- request/response hooks (opt-in middleware) ----------------------------
@@ -677,9 +724,9 @@ internal void h2req_connect(H2Request *req, B32 allow_early) {
 internal void h2req_start(Client *c, Method m, String8 url,
                           const Header *headers, U64 header_count,
                           const U8 *body, U64 body_len, ResponseFn cb,
-                          void *user, U64 deadline_ns,
-                          const ProxyConfig *proxy, BodyChunkFn on_chunk,
-                          void *chunk_user) {
+                          void *user, U64 deadline_ns, const ProxyConfig *proxy,
+                          BodyChunkFn on_chunk, void *chunk_user,
+                          String8 header_order) {
   Arena *arena = arena_acquire();
   H2Request *req = push_array(arena, H2Request, 1);
   req->arena = arena;
@@ -718,13 +765,8 @@ internal void h2req_start(Client *c, Method m, String8 url,
       headers, header_count, body, body_len, c->override_default_headers, m,
       &req->req_headers);
   client_run_pre_hook(c, m, u, &req->req_headers);
-  if (c->header_order_count)  // custom wire order (after hooks); composes with
-                              // raw
-    reorder_headers(arena, &req->req_headers, c->header_order,
-                    c->header_order_count);
-  else if (!c->override_default_headers && headers_are_fetch(&req->req_headers))
-    apply_fetch_order(arena, &req->req_headers, c->profile->fetch_order,
-                      c->profile->fetch_order_count);
+  apply_header_order(c, arena, &req->req_headers, header_order,
+                     c->profile->fetch_order, c->profile->fetch_order_count);
 
   req->timeout = req_timer_arm(c->loop, deadline_ns, h2req_on_timeout, req);
   h2req_connect(req, /*allow_early=*/1);
@@ -951,7 +993,7 @@ internal void quicreq_start(Client *c, Method m, String8 url,
                             const U8 *body, U64 body_len, ResponseFn cb,
                             void *user, U64 deadline_ns,
                             const ProxyConfig *proxy, BodyChunkFn on_chunk,
-                            void *chunk_user) {
+                            void *chunk_user, String8 header_order) {
   Arena *arena = arena_acquire();
   QuicRequest *req = push_array(arena, QuicRequest, 1);
   req->arena = arena;
@@ -989,13 +1031,9 @@ internal void quicreq_start(Client *c, Method m, String8 url,
       c->h3_profile->default_header_count, headers, header_count, body,
       body_len, c->override_default_headers, m, &req->req_headers);
   client_run_pre_hook(c, m, u, &req->req_headers);
-  if (c->header_order_count)  // custom wire order (after hooks); composes with
-                              // raw
-    reorder_headers(arena, &req->req_headers, c->header_order,
-                    c->header_order_count);
-  else if (!c->override_default_headers && headers_are_fetch(&req->req_headers))
-    apply_fetch_order(arena, &req->req_headers, c->h3_profile->fetch_order,
-                      c->h3_profile->fetch_order_count);
+  apply_header_order(c, arena, &req->req_headers, header_order,
+                     c->h3_profile->fetch_order,
+                     c->h3_profile->fetch_order_count);
 
   req->timeout = req_timer_arm(c->loop, deadline_ns, quicreq_on_timeout, req);
   quicreq_connect(req, /*allow_early=*/1);
@@ -1098,7 +1136,8 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                                     const U8 *body, U64 body_len, ResponseFn cb,
                                     void *user, U64 deadline_ns,
                                     const ProxyConfig *proxy,
-                                    BodyChunkFn on_chunk, void *chunk_user) {
+                                    BodyChunkFn on_chunk, void *chunk_user,
+                                    String8 header_order) {
   if (!client_ok(c)) {
     Response r;
     MemoryZeroStruct(&r);
@@ -1147,10 +1186,10 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
     }
     if (use_pool)
       pool_dispatch(c, PoolProto_H3, m, url, headers, header_count, body,
-                    body_len, cb, user, deadline_ns);
+                    body_len, cb, user, deadline_ns, header_order);
     else
       quicreq_start(c, m, url, headers, header_count, body, body_len, cb, user,
-                    deadline_ns, proxy, on_chunk, chunk_user);
+                    deadline_ns, proxy, on_chunk, chunk_user, header_order);
     return;
   }
 
@@ -1158,7 +1197,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
   // h2); h2req_connect swaps in c->h1_tls so the server negotiates http/1.1.
   if (hv == HttpVersion_H1) {
     h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-                deadline_ns, proxy, on_chunk, chunk_user);
+                deadline_ns, proxy, on_chunk, chunk_user, header_order);
     return;
   }
 
@@ -1176,21 +1215,22 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
       if (avail) {
         if (use_pool)  // opt-in pooling (H3/QUIC)
           pool_dispatch(c, PoolProto_H3, m, url, headers, header_count, body,
-                        body_len, cb, user, deadline_ns);
+                        body_len, cb, user, deadline_ns, header_order);
         else
           quicreq_start(c, m, url, headers, header_count, body, body_len, cb,
-                        user, deadline_ns, proxy, on_chunk, chunk_user);
+                        user, deadline_ns, proxy, on_chunk, chunk_user,
+                        header_order);
         return;
       }
     }
   }
   if (use_pool) {  // opt-in pooling (H2/TCP)
     pool_dispatch(c, PoolProto_H2, m, url, headers, header_count, body,
-                  body_len, cb, user, deadline_ns);
+                  body_len, cb, user, deadline_ns, header_order);
     return;
   }
   h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-              deadline_ns, proxy, on_chunk, chunk_user);
+              deadline_ns, proxy, on_chunk, chunk_user, header_order);
 }
 
 //- real ECH: per-origin ECHConfigList cache + DoH prefetch gate -------------
@@ -1253,6 +1293,7 @@ struct EchPrefetch {
   B32 has_proxy;     // 1 => use proxy on replay; 0 => the client's single proxy
   BodyChunkFn on_chunk;  // streaming sink (carried across the DoH)
   void *chunk_user;
+  String8 header_order;  // per-request wire order CSV, carried across the DoH
 };
 
 internal void client_ech_doh_cb(void *user, const Response *r) {
@@ -1267,7 +1308,7 @@ internal void client_ech_doh_cb(void *user, const Response *r) {
                         pf->headers.count, pf->body.str, pf->body.size, pf->cb,
                         pf->user, pf->deadline_ns,
                         pf->has_proxy ? &pf->proxy : 0, pf->on_chunk,
-                        pf->chunk_user);
+                        pf->chunk_user, pf->header_order);
   arena_release(pf->arena);
 }
 
@@ -1276,8 +1317,9 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
                                   const Header *headers, U64 header_count,
                                   const U8 *body, U64 body_len, ResponseFn cb,
                                   void *user, ParsedUrl pu, U64 deadline_ns,
-                                  const ProxyConfig *proxy, BodyChunkFn on_chunk,
-                                  void *chunk_user) {
+                                  const ProxyConfig *proxy,
+                                  BodyChunkFn on_chunk, void *chunk_user,
+                                  String8 header_order) {
   Arena *a = arena_alloc();
   EchPrefetch *pf = push_struct(a, EchPrefetch);
   pf->arena = a;
@@ -1298,27 +1340,30 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
                      push_str8_copy(a, headers[i].value), headers[i].flags);
   pf->body =
       body_len ? push_str8_copy(a, str8((U8 *)body, body_len)) : str8_zero();
+  pf->header_order =
+      header_order.size ? push_str8_copy(a, header_order) : str8_zero();
   pf->cb = cb;
   pf->user = user;
   String8 doh = push_str8f(a, "https://dns.google/resolve?name=%.*s&type=HTTPS",
                            (int)pu.host.size, pu.host.str);
   // The DoH lookup itself goes via the client's single proxy (NULL = c->proxy),
-  // independent of the original request's rotation/override choice, and is never
-  // streamed (0,0).
+  // independent of the original request's rotation/override choice, is never
+  // streamed (0,0), and carries no custom header order (str8_zero).
   client_dispatch_inner(c, Method_GET, doh, 0, 0, 0, 0, client_ech_doh_cb, pf,
-                        deadline_ns, 0, 0, 0);
+                        deadline_ns, 0, 0, 0, str8_zero());
 }
 
 // The dispatch gate: when ECH is on and the target's config isn't cached yet,
 // fetch it first (DoH) and replay; otherwise dispatch normally. `proxy` is the
 // request's resolved proxy (0 = the client's single proxy); `on_chunk` streams
-// the body (0 = buffer).
+// the body (0 = buffer); `header_order` is the per-request wire-order CSV
+// (empty = the client-level order).
 internal void client_dispatch(Client *c, Method m, String8 url,
                               const Header *headers, U64 header_count,
                               const U8 *body, U64 body_len, ResponseFn cb,
                               void *user, U64 deadline_ns,
                               const ProxyConfig *proxy, BodyChunkFn on_chunk,
-                              void *chunk_user) {
+                              void *chunk_user, String8 header_order) {
   if (c->ech_enabled) {
     ParsedUrl pu = url_parse(url);
     if (pu.ok && pu.https) {
@@ -1330,13 +1375,14 @@ internal void client_dispatch(Client *c, Method m, String8 url,
       if (prefetch) {
         client_ech_prefetch(c, m, url, headers, header_count, body, body_len,
                             cb, user, pu, deadline_ns, proxy, on_chunk,
-                            chunk_user);
+                            chunk_user, header_order);
         return;
       }
     }
   }
   client_dispatch_inner(c, m, url, headers, header_count, body, body_len, cb,
-                        user, deadline_ns, proxy, on_chunk, chunk_user);
+                        user, deadline_ns, proxy, on_chunk, chunk_user,
+                        header_order);
 }
 
 // The absolute deadline (uv_hrtime ns) for a new operation from the client's
@@ -1437,6 +1483,7 @@ struct RedirectState {
                        // hops
   ProxyConfig proxy;   // resolved proxy, sticky across the whole chain
   B32 has_proxy;       // 1 => use proxy; 0 => the client's single proxy
+  String8 header_order;  // per-request wire order CSV (own arena), every hop
 };
 
 internal void client_redirect_cb(void *user, const Response *r) {
@@ -1449,10 +1496,10 @@ internal void client_redirect_cb(void *user, const Response *r) {
     if (hop.drop_body) st->body = str8_zero();
     st->cur_url = hop.next_url;
     st->left--;
-    client_dispatch(st->client, st->method, st->cur_url, st->headers.v,
-                    st->headers.count, st->body.str, st->body.size,
-                    client_redirect_cb, st, st->deadline_ns,
-                    st->has_proxy ? &st->proxy : 0, /*on_chunk=*/0, 0);
+    client_dispatch(
+        st->client, st->method, st->cur_url, st->headers.v, st->headers.count,
+        st->body.str, st->body.size, client_redirect_cb, st, st->deadline_ns,
+        st->has_proxy ? &st->proxy : 0, /*on_chunk=*/0, 0, st->header_order);
     return;
   }
   // Final response (or no Location / budget exhausted / error): deliver + free.
@@ -1539,7 +1586,7 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
   if (p->no_redirects || c->max_redirects == 0 || p->on_chunk) {
     client_dispatch(c, p->method, p->url, headers, header_count, p->body.str,
                     p->body.size, cb, user, deadline, px, p->on_chunk,
-                    p->chunk_user);
+                    p->chunk_user, p->header_order);
     if (fetch_arena) arena_release(fetch_arena);
     return;
   }
@@ -1564,9 +1611,13 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
     header_list_push(&st->headers, push_str8_copy(arena, headers[i].name),
                      push_str8_copy(arena, headers[i].value), headers[i].flags);
   st->body = p->body.size ? push_str8_copy(arena, p->body) : str8_zero();
+  st->header_order = p->header_order.size
+                         ? push_str8_copy(arena, p->header_order)
+                         : str8_zero();
   client_dispatch(c, p->method, st->cur_url, st->headers.v, st->headers.count,
                   st->body.str, st->body.size, client_redirect_cb, st,
-                  st->deadline_ns, px, /*on_chunk=*/0, 0);  // redirects never stream
+                  st->deadline_ns, px, /*on_chunk=*/0, 0,
+                  st->header_order);  // redirects never stream
   if (fetch_arena) arena_release(fetch_arena);
 }
 
@@ -1717,21 +1768,10 @@ B32 client_set_header_order(Client *c, const String8 *names, U64 count) {
 B32 client_set_header_order_str(Client *c, const char *names) {
   // Split on commas and/or whitespace, so "accept, accept-language, user-agent"
   // and "accept accept-language user-agent" both work. An empty string resets.
-  String8 s = str8_cstring(names);
+  // Names past CLIENT_HEADER_ORDER_MAX are dropped (Chrome sends ~15).
   String8 list[CLIENT_HEADER_ORDER_MAX];
-  U64 n = 0, i = 0;
-  while (i < s.size) {
-    while (i < s.size &&
-           (s.str[i] == ',' || s.str[i] == ' ' || s.str[i] == '\t'))
-      i++;  // skip delimiters
-    U64 start = i;
-    while (i < s.size && s.str[i] != ',' && s.str[i] != ' ' && s.str[i] != '\t')
-      i++;
-    if (i > start) {
-      if (n >= CLIENT_HEADER_ORDER_MAX) return 0;  // too many names
-      list[n++] = str8(s.str + start, i - start);
-    }
-  }
+  U64 n = parse_header_order_csv(str8_cstring(names), list,
+                                 CLIENT_HEADER_ORDER_MAX);
   return client_set_header_order(c, list, n);  // copies the views
 }
 
