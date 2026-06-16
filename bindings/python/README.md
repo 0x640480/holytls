@@ -79,7 +79,7 @@ client = holytls.Client(
                           # "auto"=Chrome H2->H3 via alt-svc | "h3" | "h1".
                           # QUIC is built automatically for "auto"/"h3".
     proxy=None,           # "http://", "https://", "socks5://[user:pass@]host:port"
-    proxies=None,         # a list of proxy URLs to round-robin (rotation pool)
+    proxy_pool=None,      # a list of proxy URLs to round-robin (rotation pool)
     ech=False,            # real Encrypted Client Hello
     resumption=False,     # TLS 1.3 session resumption (1-RTT)
     early_data=False,     # 0-RTT early data for idempotent requests
@@ -115,7 +115,7 @@ Body kinds (pass exactly one of `data` / `json` / `form`; `files` may carry
 
 ```python
 # rotation pool: each request round-robins; a per-request proxy= overrides it
-client = holytls.Client(proxies=["http://p1:8080", "socks5://p2:1080"])
+client = holytls.Client(proxy_pool=["http://p1:8080", "socks5://p2:1080"])
 client.add_proxy("http://p3:8080")                  # add more at runtime
 client.get(url, proxy="http://specific:8080")       # override for one request
 
