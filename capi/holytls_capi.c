@@ -726,6 +726,55 @@ int holytls_async_submit(holytls_async_client *ac, const holytls_request *req,
   return 1;
 }
 
+int holytls_async_submit_many(holytls_async_client *ac,
+                              const holytls_request *reqs, size_t count,
+                              const uint64_t *req_ids,
+                              holytls_async_complete_fn cb, void *user) {
+  if (!ac || !cb) return 0;
+  if (count == 0) return 1;  // no-op; the caller has no futures to submit
+  if (!reqs || !req_ids) return 0;
+
+  // Phase 1: deep-copy all N off the loop thread into a local sub-list (no
+  // lock; async_submit_copy only touches its own mallocs). All-or-nothing: any
+  // failure frees the partial list and returns 0, so cb fires for NONE (same
+  // contract as holytls_async_submit) and the caller fails all N awaiters.
+  AsyncSubmit *head = 0, *tail = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (!reqs[i].url) goto fail;
+    AsyncSubmit *s = async_submit_copy(&reqs[i], req_ids[i], cb, user);
+    if (!s) goto fail;
+    s->next = 0;  // keep the spliced list well-terminated (qtail = tail below)
+    if (tail)
+      tail->next = s;
+    else
+      head = s;
+    tail = s;
+  }
+
+  // Phase 2: splice the WHOLE sub-list onto the queue under ONE lock, one send.
+  uv_mutex_lock(&ac->qlock);
+  if (ac->stopping) {
+    uv_mutex_unlock(&ac->qlock);
+    goto fail;
+  }
+  if (ac->qtail)
+    ac->qtail->next = head;
+  else
+    ac->qhead = head;
+  ac->qtail = tail;
+  uv_mutex_unlock(&ac->qlock);
+  uv_async_send(&ac->async);  // ONE wakeup for the whole batch
+  return 1;
+
+fail:
+  for (AsyncSubmit *s = head; s;) {
+    AsyncSubmit *next = s->next;
+    async_submit_free(s);
+    s = next;
+  }
+  return 0;
+}
+
 void holytls_async_run(holytls_async_client *ac) {
   if (!ac) return;
   uv_run(loop_uv(&ac->base.loop), UV_RUN_DEFAULT);
