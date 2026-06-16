@@ -120,6 +120,18 @@ class AsyncClient:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._inflight: dict = {}  # req_id -> asyncio.Future
         self._next_id = itertools.count(1)
+        # Submit batching: request() parks marshalled requests here and schedules
+        # ONE _flush per event-loop tick, so an asyncio.gather of N becomes one
+        # holytls_async_submit_many (one FFI call + one lock + one uv_async_send)
+        # instead of N. Touched only on the asyncio thread.
+        self._pending: list = []  # [(c_req, keep, req_id, fut), ...]
+        self._flush_scheduled = False
+        # Completion batching: _on_complete (loop thread) parks finished responses
+        # here and schedules ONE _drain, collapsing N call_soon_threadsafe into ~1.
+        # Single-producer (loop thread) / single-consumer (asyncio thread); see
+        # _drain for the lock-free ordering + its GIL-atomicity assumption.
+        self._completions: list = []  # [(req_id, c_resp), ...]
+        self._drain_scheduled = False
         # ONE lifetime cffi callback dispatches every completion by req_id.
         self._cb = ffi.callback(
             "void(void *, uint64_t, holytls_response *)", self._on_complete
@@ -138,31 +150,47 @@ class AsyncClient:
     # -- completion plumbing -------------------------------------------------
 
     def _on_complete(self, user, req_id, c_resp):
-        # Runs on the libuv LOOP THREAD. Do the minimum: hop to the asyncio loop;
-        # all marshalling + freeing happens there. Never raise (cffi swallows it).
+        # Runs on the libuv LOOP THREAD. Do the minimum: park the response and
+        # schedule ONE _drain (collapsing N call_soon_threadsafe -> ~1 for a batch
+        # of completions). Never raise (cffi swallows it).
         loop = self._loop
         if loop is None or loop.is_closed():
             lib.holytls_response_free(c_resp)  # nobody to deliver to -> free
             return
-        try:
-            loop.call_soon_threadsafe(self._deliver, int(req_id), c_resp)
-        except RuntimeError:  # loop already closed/closing between the checks
-            lib.holytls_response_free(c_resp)
+        # list.append is GIL-atomic; the loop thread is the sole producer.
+        self._completions.append((int(req_id), c_resp))
+        if not self._drain_scheduled:
+            self._drain_scheduled = True
+            try:
+                loop.call_soon_threadsafe(self._drain)
+            except RuntimeError:  # loop closed/closing between the checks
+                self._drain_scheduled = False
+                # The response stays in _completions; aclose frees leftovers.
 
-    def _deliver(self, req_id, c_resp):
-        # Runs on the ASYNCIO THREAD.
-        fut = self._inflight.pop(req_id, None)
-        if fut is None or fut.cancelled():
-            lib.holytls_response_free(c_resp)  # awaiter gone -> free
-            return
-        try:
-            resp = _response_from_c(c_resp)  # marshals AND frees c_resp (finally)
-        except BaseException as e:  # noqa: BLE001 - surfaced on the future
+    def _drain(self):
+        # Runs on the ASYNCIO THREAD (sole consumer). Clear the flag BEFORE
+        # swapping the batch out: a completion appended after the swap then sees
+        # _drain_scheduled False and schedules a fresh _drain — so no completion is
+        # ever stranded with no drain pending (swap-then-clear would silently lose
+        # a wakeup and hang an awaiter). Relies on CPython GIL-atomicity of the
+        # list rebind + bool store; for a no-GIL build, guard (append+schedule) and
+        # (clear+swap) with a threading.Lock.
+        self._drain_scheduled = False
+        batch = self._completions
+        self._completions = []
+        for req_id, c_resp in batch:
+            fut = self._inflight.pop(req_id, None)
+            if fut is None or fut.cancelled():
+                lib.holytls_response_free(c_resp)  # awaiter gone -> free
+                continue
+            try:
+                resp = _response_from_c(c_resp)  # marshals AND frees c_resp (finally)
+            except BaseException as e:  # noqa: BLE001 - surfaced on the future
+                if not fut.done():
+                    fut.set_exception(e)
+                continue
             if not fut.done():
-                fut.set_exception(e)
-            return
-        if not fut.done():
-            fut.set_result(resp)
+                fut.set_result(resp)
 
     # -- requests ------------------------------------------------------------
 
@@ -204,18 +232,55 @@ class AsyncClient:
         fut = loop.create_future()
         req_id = next(self._next_id)
         self._inflight[req_id] = fut  # register BEFORE submit -> no lost wakeup
-        ok = lib.holytls_async_submit(self._ac, c_req, req_id, self._cb, ffi.NULL)
-        # holytls_async_submit deep-copied the request synchronously, so `keep`
-        # (and c_req) need not outlive this call.
-        if not ok:
-            self._inflight.pop(req_id, None)
-            raise HolyTLSError("async client is closed")
+        # Defer the submit: park it and schedule ONE _flush this tick. A gather's
+        # N coroutines all append before _flush fires -> one submit_many for all N.
+        # `keep` (and c_req) must outlive _flush's submit_many, so hold them here.
+        self._pending.append((c_req, keep, req_id, fut))
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            loop.call_soon(self._flush)
         try:
             return await fut
         except asyncio.CancelledError:
-            # Drop our registration; if a response still lands, _deliver frees it.
+            # Drop our registration; _flush skips already-cancelled futures, and if
+            # one was already submitted a late response is freed by _drain.
             self._inflight.pop(req_id, None)
             raise
+
+    def _flush(self):
+        # Runs on the ASYNCIO THREAD; MUST be sync (no await). Coalesce every
+        # request parked since the last tick into ONE holytls_async_submit_many.
+        self._flush_scheduled = False
+        pending = self._pending
+        self._pending = []
+        # Skip cancelled/done futures: avoids a wasted request AND never submits a
+        # req_id whose _inflight entry request() already popped. Build BOTH the
+        # reqs[] and req_ids[] arrays from this one `live` list so they never
+        # desync (reqs[i] <-> ids[i] is always the same request).
+        live = [e for e in pending if not e[3].done()]
+        if not live:
+            return
+        if self._closed:  # aclose ran between append and _flush (same thread)
+            for _c, _k, rid, fut in live:
+                self._inflight.pop(rid, None)
+                if not fut.done():
+                    fut.set_exception(HolyTLSError("async client closed"))
+            return
+        n = len(live)
+        reqs = ffi.new("holytls_request[]", n)
+        ids = ffi.new("uint64_t[]", n)
+        keeps = []  # pin every per-request keep across the C call
+        for i, (c_req, keep, rid, _fut) in enumerate(live):
+            reqs[i] = c_req[0]  # struct-copy: pointer fields keep referencing keep
+            ids[i] = rid
+            keeps.append(keep)
+        ok = lib.holytls_async_submit_many(self._ac, reqs, n, ids, self._cb, ffi.NULL)
+        # submit_many deep-copied synchronously; reqs/ids/keeps may drop now.
+        if not ok:
+            for _c, _k, rid, fut in live:
+                self._inflight.pop(rid, None)
+                if not fut.done():
+                    fut.set_exception(HolyTLSError("async client is closed"))
 
     async def get(self, url: str, **kwargs) -> Response:
         return await self.request(Method.GET, url, **kwargs)
@@ -247,12 +312,28 @@ class AsyncClient:
     async def aclose(self) -> None:
         if self._closed:
             return
-        self._closed = True
+        self._closed = True  # a _flush queued during the join below sees this + bails
         lib.holytls_async_stop(self._ac)  # reject new submits, wake loop to stop
-        # Join the loop thread WITHOUT blocking the event loop.
+        # Join the loop thread WITHOUT blocking the event loop. After this returns,
+        # no producer remains (no _on_complete can fire, no native completion).
         await asyncio.get_running_loop().run_in_executor(None, self._thread.join)
-        # Fail any futures still unresolved (their submits were cancelled in C or
-        # their in-flight requests were abandoned at stop).
+        # Fail any requests parked but never submitted (nothing was sent past stop,
+        # so there is no native memory to free for these — just their futures).
+        for _c, _k, rid, fut in self._pending:
+            self._inflight.pop(rid, None)
+            if not fut.done():
+                fut.set_exception(HolyTLSError("async client closed"))
+        self._pending = []
+        self._flush_scheduled = False
+        # Free any completions parked but never drained (loop died before _drain):
+        # these are owned native responses Python must free (the C free path below
+        # doesn't know about them).
+        for _rid, c_resp in self._completions:
+            lib.holytls_response_free(c_resp)
+        self._completions = []
+        self._drain_scheduled = False
+        # Fail any futures still unresolved (in-flight at stop, or registered but
+        # never flushed).
         for fut in list(self._inflight.values()):
             if not fut.done():
                 fut.set_exception(HolyTLSError("async client closed"))

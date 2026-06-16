@@ -73,6 +73,72 @@ def test_unknown_profile_raises():
 
 
 # --------------------------------------------------------------------------- #
+# Offline batching (no network): exercise the batched submit (one              #
+# submit_many per gather) + batched completion drain end to end. A closed      #
+# loopback port resolves fast as a connection-refused (ok=0) Response, never   #
+# an exception or a hang — so every future must resolve, proving the bridge    #
+# correlates req_id->future correctly across the batch.                        #
+# --------------------------------------------------------------------------- #
+
+_DEAD = "https://127.0.0.1:1/"  # port 1: refused -> fast ok=0 completion
+
+
+def _is_response(x):
+    return not isinstance(x, BaseException) and hasattr(x, "ok")
+
+
+def test_gather_batched_offline():
+    async def run():
+        async with AsyncClient(timeout_ms=3000) as c:
+            rs = await asyncio.gather(*[c.get(_DEAD) for _ in range(64)])
+            assert len(rs) == 64  # none lost or duplicated
+            assert all(_is_response(r) and not r.ok and r.error for r in rs)
+    asyncio.run(run())
+
+
+def test_lone_request_offline():
+    # N=1: the request still flows through the deferred-_flush path (one tick).
+    async def run():
+        async with AsyncClient(timeout_ms=3000) as c:
+            r = await c.get(_DEAD)
+            assert _is_response(r) and not r.ok and r.error
+    asyncio.run(run())
+
+
+def test_cancel_within_gather_offline():
+    # Cancel half the batch after it's submitted; survivors must still complete
+    # and the whole thing tears down cleanly (no hang, no stray exception type).
+    async def run():
+        async with AsyncClient(timeout_ms=3000) as c:
+            tasks = [asyncio.ensure_future(c.get(_DEAD)) for _ in range(16)]
+            await asyncio.sleep(0.02)  # let them park, _flush, and start in-flight
+            for t in tasks[:8]:
+                t.cancel()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            assert len(results) == 16
+            for r in results:
+                assert _is_response(r) or isinstance(r, asyncio.CancelledError)
+    asyncio.run(run())
+
+
+def test_close_during_inflight_offline():
+    # aclose() while a batch is in flight: every future resolves (completed,
+    # failed-closed, or cancelled) — never hangs, never leaks an awaiter.
+    async def run():
+        c = AsyncClient(timeout_ms=5000)
+        tasks = [asyncio.ensure_future(c.get(_DEAD)) for _ in range(16)]
+        await asyncio.sleep(0)  # park + _flush (submit the whole batch)
+        await c.aclose()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert len(results) == 16
+        for r in results:
+            assert _is_response(r) or isinstance(
+                r, (HolyTLSError, asyncio.CancelledError)
+            )
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
 # Live (network-gated)                                                         #
 # --------------------------------------------------------------------------- #
 
@@ -99,14 +165,14 @@ def test_live_await_get():
 def test_live_gather_is_concurrent():
     async def run():
         async with AsyncClient(timeout_ms=30000) as c:
-            urls = [H2_URL] * 8
+            urls = [H2_URL] * 32  # one batched submit_many for the whole gather
             t0 = time.monotonic()
             rs = await asyncio.gather(*[c.get(u) for u in urls])
             dt = time.monotonic() - t0
-            assert len(rs) == 8 and all(r.ok and r.status_code == 200 for r in rs)
-            # 8 concurrent requests on one loop must be far faster than 8 serial
+            assert len(rs) == 32 and all(r.ok and r.status_code == 200 for r in rs)
+            # 32 concurrent requests on one loop must be far faster than 32 serial
             # round-trips; a generous bound that still proves overlap.
-            assert dt < 8.0, f"gather took {dt:.1f}s — not concurrent?"
+            assert dt < 12.0, f"gather took {dt:.1f}s — not concurrent?"
     asyncio.run(run())
 
 

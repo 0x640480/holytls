@@ -303,6 +303,20 @@ int holytls_async_submit(holytls_async_client *ac, const holytls_request *req,
                          uint64_t req_id, holytls_async_complete_fn cb,
                          void *user);
 
+// Submit N requests as ONE batch WITHOUT blocking. Thread-safe. Deep-copies
+// each request synchronously (like holytls_async_submit), splices the whole
+// batch onto the queue under ONE lock, and issues ONE uv_async_send —
+// collapsing the N per-request FFI/lock/wakeup costs of an asyncio.gather.
+// `reqs` is `count` flat requests; `req_ids[i]` correlates reqs[i]'s
+// completion; all share `cb`/`user`. All-or-nothing: returns 1 iff ALL N were
+// queued (cb fires for each); returns 0 and queues NOTHING (cb fires for none)
+// if the client is stopping or any copy fails — the caller must then fail all N
+// awaiters. count==0 returns 1 (no-op).
+int holytls_async_submit_many(holytls_async_client *ac,
+                              const holytls_request *reqs, size_t count,
+                              const uint64_t *req_ids,
+                              holytls_async_complete_fn cb, void *user);
+
 // Run the loop until holytls_async_stop is observed. BLOCKS — call it on a
 // dedicated thread. A persistent uv_async keeps the loop alive across idle
 // periods (no requests in flight), so this does not return prematurely. All
