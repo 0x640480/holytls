@@ -138,6 +138,32 @@ def test_close_during_inflight_offline():
     asyncio.run(run())
 
 
+def test_lazy_content_type_and_cache_offline():
+    # The async drain delivers a LAZY body: `.content` is materialized on access,
+    # stays `bytes` (no API change), and is cached (same object on re-access).
+    # `repr` must NOT force materialization (uses the stored length).
+    async def run():
+        async with AsyncClient(timeout_ms=3000) as c:
+            r = await c.get(_DEAD)  # refused -> ok=0, empty body
+            repr(r)  # must not raise / must not need the body
+            assert isinstance(r.content, bytes)  # type unchanged
+            assert r.content == b""              # refused -> empty
+            assert r.content is r.content        # materialized once, cached
+            assert r.text == ""                  # decode path works on lazy body
+    asyncio.run(run())
+
+
+def test_bounded_drain_large_burst_offline():
+    # A burst larger than _DRAIN_MAX (128) exercises the bounded-drain carry +
+    # reschedule: every one of the N futures must still resolve (nothing stranded).
+    async def run():
+        async with AsyncClient(timeout_ms=4000) as c:
+            rs = await asyncio.gather(*[c.get(_DEAD) for _ in range(200)])
+            assert len(rs) == 200
+            assert all(_is_response(r) for r in rs)
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # Live (network-gated)                                                         #
 # --------------------------------------------------------------------------- #
@@ -183,4 +209,22 @@ def test_live_forced_h3():
             r = await c.get(H3_URL)
             assert r.ok, r.error
             assert r.alpn == "h3"
+    asyncio.run(run())
+
+
+@_LIVE
+def test_live_lazy_content_correct():
+    # The lazy body materializes correctly for a REAL (non-empty) response: a
+    # gather of N where each coroutine reads .content gets the right bytes back
+    # per future (the lazy provider + ffi.gc lifetime is exercised end to end).
+    async def run():
+        async with AsyncClient(timeout_ms=30000) as c:
+            rs = await asyncio.gather(*[c.get(H2_URL) for _ in range(16)])
+            for r in rs:
+                assert r.ok and r.status_code == 200
+                body = r.content
+                assert isinstance(body, bytes) and len(body) > 0
+                assert r.content is body          # cached after first access
+                assert r.text == body.decode("utf-8", "replace")
+                assert r.json()["tls"]            # decoded JSON body is usable
     asyncio.run(run())

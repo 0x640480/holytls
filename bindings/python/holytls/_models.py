@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import enum
 import json as _json
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 HeaderInput = Union[Dict[str, str], Iterable[Tuple[str, str]], None]
 
@@ -215,7 +215,9 @@ class Response:
         "status_code",
         "error",
         "headers",
-        "content",
+        "_content",
+        "_body_provider",
+        "_body_len",
         "url",
         "alpn",
         "resumed",
@@ -230,23 +232,49 @@ class Response:
         status_code: int,
         error: Optional[str],
         headers: Headers,
-        content: bytes,
         url: str,
         alpn: str,
         resumed: bool,
         early_data: bool,
         timing: Timing,
+        content: Optional[bytes] = None,
+        body_provider: Optional[Callable[[], bytes]] = None,
+        body_len: int = 0,
     ):
+        # Body delivery is EITHER eager (`content=` bytes, the sync path) OR lazy
+        # (`body_provider=` a zero-arg callable returning bytes — the async path,
+        # so the completion drain never copies the body under the GIL). `content`
+        # is materialized at most once and cached.
         self.ok = ok
         self.status_code = status_code
         self.error = error
         self.headers = headers
-        self.content = content
+        if body_provider is not None:
+            self._body_provider = body_provider
+            self._content: Optional[bytes] = None  # None = not yet materialized
+            self._body_len = body_len
+        else:
+            self._body_provider = None
+            self._content = content if content is not None else b""
+            self._body_len = len(self._content)
         self.url = url
         self.alpn = alpn
         self.resumed = resumed
         self.early_data = early_data
         self.timing = timing
+
+    @property
+    def content(self) -> bytes:
+        """The response body as ``bytes``. Materialized lazily on first access
+        (then cached); a response whose body is never read costs no body copy."""
+        if self._content is None:
+            prov = self._body_provider
+            if prov is not None:
+                self._content = prov()
+                self._body_provider = None  # release the closure -> frees the C resp
+            else:
+                self._content = b""
+        return self._content
 
     @property
     def text(self) -> str:
@@ -285,7 +313,9 @@ class Response:
     def __repr__(self) -> str:
         if not self.ok:
             return f"<Response error={self.error!r}>"
+        # Use the stored length, not len(self.content) — repr must not force a
+        # lazy body to materialize (a needless copy of a possibly-large body).
         return (
             f"<Response [{self.status_code}] {self.alpn or '?'} "
-            f"{len(self.content)} bytes>"
+            f"{self._body_len} bytes>"
         )

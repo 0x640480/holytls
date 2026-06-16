@@ -260,47 +260,77 @@ def _fill_request(c_req, *, method, url, headers, body, fetch_mode, no_redirects
         c_req.header_order = ffi.NULL
 
 
+def _build_response(c_resp, *, content=None, body_provider=None, body_len=0) -> Response:
+    """Decode the cheap meta (status / error / url / alpn / headers — all small
+    string decodes) from a `holytls_response *` into a Response. Body delivery is
+    the caller's choice: eager `content=` bytes, or lazy `body_provider=` (a
+    zero-arg callable that returns the bytes on demand)."""
+    error = (
+        ffi.string(c_resp.error).decode("utf-8", "replace")
+        if c_resp.error != ffi.NULL
+        else None
+    )
+    url = ffi.string(c_resp.final_url).decode("utf-8", "replace") if c_resp.final_url != ffi.NULL else ""
+    alpn = ffi.string(c_resp.alpn).decode("utf-8", "replace") if c_resp.alpn != ffi.NULL else ""
+    pairs: List[Tuple[str, str]] = []
+    for i in range(c_resp.header_count):
+        h = c_resp.headers[i]
+        name = ffi.string(h.name).decode("utf-8", "replace") if h.name != ffi.NULL else ""
+        value = ffi.string(h.value).decode("utf-8", "replace") if h.value != ffi.NULL else ""
+        pairs.append((name, value))
+    return Response(
+        ok=bool(c_resp.ok),
+        status_code=int(c_resp.status),
+        error=error,
+        headers=Headers(pairs),
+        url=url,
+        alpn=alpn,
+        resumed=bool(c_resp.resumed),
+        early_data=bool(c_resp.early_data),
+        timing=Timing(
+            int(c_resp.dns_ms),
+            int(c_resp.tcp_ms),
+            int(c_resp.tls_ms),
+            int(c_resp.total_ms),
+        ),
+        content=content,
+        body_provider=body_provider,
+        body_len=body_len,
+    )
+
+
 def _response_from_c(c_resp) -> Response:
-    """Copy a `holytls_response *` into a Python Response, then free it."""
+    """EAGER copy a `holytls_response *` into a Response, then free it. Used by the
+    SYNC paths (perform / perform_many / session) — the body is copied on the
+    calling thread (no other thread to starve), so eager is simplest + correct."""
     try:
-        ok = bool(c_resp.ok)
-        status = int(c_resp.status)
-        error = (
-            ffi.string(c_resp.error).decode("utf-8", "replace")
-            if c_resp.error != ffi.NULL
-            else None
-        )
         if c_resp.body != ffi.NULL and c_resp.body_len:
             content = bytes(ffi.buffer(c_resp.body, c_resp.body_len))
         else:
             content = b""
-        url = ffi.string(c_resp.final_url).decode("utf-8", "replace") if c_resp.final_url != ffi.NULL else ""
-        alpn = ffi.string(c_resp.alpn).decode("utf-8", "replace") if c_resp.alpn != ffi.NULL else ""
-        pairs: List[Tuple[str, str]] = []
-        for i in range(c_resp.header_count):
-            h = c_resp.headers[i]
-            name = ffi.string(h.name).decode("utf-8", "replace") if h.name != ffi.NULL else ""
-            value = ffi.string(h.value).decode("utf-8", "replace") if h.value != ffi.NULL else ""
-            pairs.append((name, value))
-        return Response(
-            ok=ok,
-            status_code=status,
-            error=error,
-            headers=Headers(pairs),
-            content=content,
-            url=url,
-            alpn=alpn,
-            resumed=bool(c_resp.resumed),
-            early_data=bool(c_resp.early_data),
-            timing=Timing(
-                int(c_resp.dns_ms),
-                int(c_resp.tcp_ms),
-                int(c_resp.tls_ms),
-                int(c_resp.total_ms),
-            ),
-        )
+        return _build_response(c_resp, content=content)
     finally:
         lib.holytls_response_free(c_resp)
+
+
+def _response_from_c_lazy(c_resp) -> Response:
+    """LAZY variant for the ASYNC completion drain: decode the cheap meta now, but
+    DEFER the body copy to first `.content` access — so draining N completions
+    never memcpys N bodies under the GIL (which would starve the libuv loop
+    thread). The Response owns `c_resp` via ffi.gc and frees it exactly once: when
+    the body materializes (the provider drops its only ref) or on Response GC if
+    the body is never read. ffi.gc must wrap c_resp BEFORE any field access that
+    could raise, so a failure still frees it (on collection) — no leak."""
+    gc = ffi.gc(c_resp, lib.holytls_response_free)
+
+    def _provider(_r=gc):
+        return (
+            bytes(ffi.buffer(_r.body, _r.body_len))
+            if (_r.body != ffi.NULL and _r.body_len)
+            else b""
+        )
+
+    return _build_response(gc, body_provider=_provider, body_len=int(gc.body_len))
 
 
 def _apply_config(
