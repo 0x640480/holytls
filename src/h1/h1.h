@@ -19,6 +19,11 @@ struct H1Response {
   U8 *body;             // arena-owned (transfer-decoded), valid until release
   U64 body_len;
   B32 ok;  // false on parse error / premature close before headers complete
+  B32 keep_alive;  // the connection is reusable for the next request: HTTP/1.1
+                   // (or HTTP/1.0 + keep-alive) AND no `Connection: close` AND
+                   // a length-delimited body (Content-Length/chunked, not EOF).
+                   // Used by the H1 connection pool to retain vs close the
+                   // conn.
 };
 
 typedef void (*H1SendFn)(void *user, const U8 *data, U64 len);

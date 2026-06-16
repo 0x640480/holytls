@@ -18,7 +18,10 @@
 #include "net/connection.h"
 #include "net/quic_connection.h"
 
-typedef enum PoolProto { PoolProto_H2, PoolProto_H3 } PoolProto;
+// H1 is pooled too (keep-alive), but unlike H2/H3 it does NOT multiplex: a
+// PoolConn serves one request at a time, so a concurrent burst fans out to up
+// to max_conns_per_origin sockets (see pool_acquire) instead of coalescing.
+typedef enum PoolProto { PoolProto_H2, PoolProto_H3, PoolProto_H1 } PoolProto;
 
 typedef enum PoolConnState {
   PoolConnState_Handshaking,  // connect/handshake in flight; queue requests
@@ -29,6 +32,7 @@ typedef enum PoolConnState {
 typedef struct PoolReq PoolReq;
 typedef struct PoolConn PoolConn;
 typedef struct H3Conn H3Conn;
+typedef struct H1Session H1Session;  // src/h1/h1.h (per-request H1 session)
 
 // Server-initiated uni stream (control + QPACK enc/dec) type tracking — a tiny
 // fixed set scanned linearly (mirrors h3_session.c's H3Uni; named distinctly to
@@ -70,6 +74,7 @@ struct PoolReq {
   HeaderList resp_headers;  // filtered view when the body is decoded
   String8 body;             // dup'd body for the submit
   S32 h2_stream_id;         // H2 routing
+  H1Session *h1;  // proto == PoolProto_H1: per-request session (freed per req)
   int retries_left;  // retry on a fresh conn (stale reuse / GOAWAY refusal)
   B32 responded;
   U64 deadline_ns;    // whole-operation timeout deadline (0 = none)

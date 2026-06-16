@@ -2,6 +2,7 @@
 
 #include "core/decompress.h"
 #include "core/url.h"
+#include "h1/h1.h"
 #include "h3/h3_control.h"
 #include "h3/h3_nv.h"
 
@@ -32,6 +33,12 @@ internal void pool_h2_on_closed(void *user, const char *e);
 internal void pool_h2_on_fully_closed(void *user);
 internal void pool_h2_drain(void *user);
 internal void pool_h2_on_response(void *user, const H2Response *hr);
+internal void pool_h1_submit(PoolConn *pc, PoolReq *r);
+internal void pool_h1_on_ready(void *user, B32 ok, const char *err);
+internal void pool_h1_on_closed(void *user, const char *e);
+internal void pool_h1_on_fully_closed(void *user);
+internal void pool_h1_drain(void *user);
+internal void pool_h1_on_response(void *user, const H1Response *hr);
 internal void pool_h3_on_ready(void *user, B32 ok, const char *err);
 internal void pool_h3_on_closed(void *user, const char *e);
 internal void pool_h3_on_fully_closed(void *user);
@@ -91,7 +98,7 @@ internal void pool_waiting_remove(PoolConn *pc, PoolReq *r) {
 
 //- loop liveness: an idle pooled conn must not keep loop_run alive -----------
 internal void pool_conn_ref(PoolConn *pc) {
-  if (pc->proto == PoolProto_H2) {
+  if (pc->proto != PoolProto_H3) {  // H1 and H2 both ride the TCP Connection
     if (pc->h2_conn.tcp_inited) uv_ref((uv_handle_t *)&pc->h2_conn.tcp);
   } else {
     if (pc->h3_conn.udp_inited) uv_ref((uv_handle_t *)&pc->h3_conn.udp);
@@ -99,7 +106,7 @@ internal void pool_conn_ref(PoolConn *pc) {
   }
 }
 internal void pool_conn_unref(PoolConn *pc) {
-  if (pc->proto == PoolProto_H2) {
+  if (pc->proto != PoolProto_H3) {  // H1 and H2 both ride the TCP Connection
     if (pc->h2_conn.tcp_inited) uv_unref((uv_handle_t *)&pc->h2_conn.tcp);
   } else {
     if (pc->h3_conn.udp_inited) uv_unref((uv_handle_t *)&pc->h3_conn.udp);
@@ -111,6 +118,10 @@ internal void pool_conn_unref(PoolConn *pc) {
 // Final teardown of a request: disarm its deadline timer (its memory outlives
 // the arena, freed in its own close cb) then free the request's arena.
 internal void pool_req_done(PoolReq *r) {
+  if (r->h1) {  // H1: the per-request session owns its own arena
+    h1_session_release(r->h1);
+    r->h1 = 0;
+  }
   req_timer_disarm(r->timeout);
   r->timeout = 0;
   arena_recycle(r->arena);  // recycle the per-request arena (clear + reuse)
@@ -134,6 +145,10 @@ internal void pool_req_retry_or_fail(PoolReq *r, const char *err) {
     r->retries_left--;
     r->pc = 0;
     r->h2_stream_id = 0;
+    if (r->h1) {  // drop the dead session; the retry submit allocs a fresh one
+      h1_session_release(r->h1);
+      r->h1 = 0;
+    }
     pool_acquire(r->client->pool, r->proto, r);  // broken conn is skipped
     return;
   }
@@ -169,6 +184,8 @@ internal void pool_remove_conn(ConnPool *p, PoolConn *pc) {
 
 internal B32 pool_conn_has_capacity(PoolConn *pc) {
   if (pc->state != PoolConnState_Ready || pc->broken) return 0;
+  if (pc->proto == PoolProto_H1)
+    return pc->inflight < 1;  // one request at a time
   if (pc->proto == PoolProto_H2) {
     if (!pc->h2 || h2_session_goaway_received(pc->h2)) return 0;
     return pc->inflight < h2_session_max_concurrent_streams(pc->h2);
@@ -192,10 +209,18 @@ internal PoolConn *pool_conn_open(ConnPool *p, PoolProto proto, PoolReq *r) {
   pc->origin[n] = 0;
 
   Client *c = p->client;
-  if (proto == PoolProto_H2) {
-    conn_init(&pc->h2_conn, c->loop, c->ctx.ctx, &c->profile->tls);
-    conn_on_fully_closed(&pc->h2_conn, pool_h2_on_fully_closed, pc);
-    conn_on_closed(&pc->h2_conn, pool_h2_on_closed, pc);
+  B32 is_h1 = (proto == PoolProto_H1);
+  if (proto != PoolProto_H3) {  // H1 + H2 share the TCP Connection
+    // H1 uses the http/1.1-only ALPN profile (same as the non-pooled forced-H1
+    // path, client.c:692) so the server negotiates http/1.1 with a
+    // byte-identical ClientHello; H2 uses the full profile.
+    conn_init(&pc->h2_conn, c->loop, c->ctx.ctx,
+              is_h1 ? &c->h1_tls : &c->profile->tls);
+    conn_on_fully_closed(
+        &pc->h2_conn, is_h1 ? pool_h1_on_fully_closed : pool_h2_on_fully_closed,
+        pc);
+    conn_on_closed(&pc->h2_conn, is_h1 ? pool_h1_on_closed : pool_h2_on_closed,
+                   pc);
     conn_set_dns_cache(&pc->h2_conn, &c->dns_cache);
     if (c->has_local_address)  // bind the chosen egress source IP
       conn_set_local_address(&pc->h2_conn, str8_cstring(c->local_address));
@@ -221,7 +246,7 @@ internal PoolConn *pool_conn_open(ConnPool *p, PoolProto proto, PoolReq *r) {
   if (c->ech_enabled) {  // offer real ECH if the origin's config is cached
     EchConfigEntry *e = ech_cache_get(c, r->origin);
     if (e && e->config_len) {
-      if (proto == PoolProto_H2)
+      if (proto != PoolProto_H3)
         conn_set_ech(&pc->h2_conn, e->config, e->config_len);
       else
         quic_set_ech(&pc->h3_conn, e->config, e->config_len);
@@ -230,14 +255,14 @@ internal PoolConn *pool_conn_open(ConnPool *p, PoolProto proto, PoolReq *r) {
   if (c->resume_enabled) {  // offer a cached ticket + capture new ones
     void *rc = client_resume_ctx_make(c, a, r->origin);
     SSL_SESSION *sess = resume_cache_get(c, r->origin);
-    if (proto == PoolProto_H2)
+    if (proto != PoolProto_H3)
       conn_set_resume(&pc->h2_conn, sess, rc);
     else
       quic_set_resume(&pc->h3_conn, sess, rc);
   }
-  if (proto == PoolProto_H2)
+  if (proto != PoolProto_H3)
     conn_connect(&pc->h2_conn, push_str8_cstr(a, r->host), r->port,
-                 pool_h2_on_ready, pc);
+                 is_h1 ? pool_h1_on_ready : pool_h2_on_ready, pc);
   else
     quic_conn_connect(&pc->h3_conn, push_str8_cstr(a, r->host), r->port,
                       pool_h3_on_ready, pc);
@@ -247,8 +272,8 @@ internal PoolConn *pool_conn_open(ConnPool *p, PoolProto proto, PoolReq *r) {
 internal void pool_close_conn(PoolConn *pc) {
   if (pc->state == PoolConnState_Closing) return;
   pc->state = PoolConnState_Closing;
-  if (pc->proto == PoolProto_H2)
-    conn_close(&pc->h2_conn);  // -> pool_h2_on_fully_closed
+  if (pc->proto != PoolProto_H3)  // H1 + H2 ride the TCP Connection
+    conn_close(&pc->h2_conn);     // -> pool_h{1,2}_on_fully_closed
   else
     quic_conn_close(&pc->h3_conn);  // -> pool_h3_on_fully_closed
 }
@@ -262,12 +287,15 @@ internal void pool_h2_on_fully_closed(void *user) {
 }
 
 //- request acquire / dispatch ----------------------------------------------
-// Match a usable conn for (origin, proto). Prefer a Ready conn with stream
-// capacity (reuse); else queue on a handshaking conn; else open a new conn if
-// the origin is under max_conns_per_origin; else submit on any Ready conn
-// (nghttp2 queues beyond the concurrency limit).
+// Match a usable conn for (origin, proto). Prefer a Ready conn with capacity
+// (reuse). Then the protos diverge: H2/H3 MULTIPLEX, so a burst COALESCES onto
+// one handshaking conn (it will serve them all as streams); H1 cannot
+// multiplex, so a burst FANS OUT to up to max_conns_per_origin sockets (open a
+// new conn rather than pile onto one), and only parks on a busy conn once at
+// the cap.
 internal void pool_acquire(ConnPool *p, PoolProto proto, PoolReq *r) {
   Client *c = p->client;
+  B32 coalesce = (proto != PoolProto_H1);
   PoolConn *reusable = 0, *reusable_any = 0, *handshaking = 0;
   int origin_count = 0;
   for (int i = 0; i < p->count; ++i) {
@@ -275,7 +303,7 @@ internal void pool_acquire(ConnPool *p, PoolProto proto, PoolReq *r) {
     if (pc->proto != proto || pc->broken || pc->state == PoolConnState_Closing)
       continue;
     if (!str8_match(r->origin, str8_cstring(pc->origin))) continue;
-    origin_count++;
+    origin_count++;  // Handshaking + Ready conns both count toward the cap
     if (pc->state == PoolConnState_Handshaking) {
       if (!handshaking) handshaking = pc;
     } else if (pc->state == PoolConnState_Ready) {
@@ -283,16 +311,20 @@ internal void pool_acquire(ConnPool *p, PoolProto proto, PoolReq *r) {
       if (!reusable && pool_conn_has_capacity(pc)) reusable = pc;
     }
   }
+  // PATH 1 (all protos): reuse a Ready conn that has capacity.
   if (reusable) {
     c->pool_stats.reuses++;
     pool_submit(reusable, r);
     return;
   }
-  if (handshaking) {
+  // PATH 2 (mux only): coalesce onto a handshaking conn.
+  if (coalesce && handshaking) {
     r->pc = handshaking;
     pool_waiting_push(handshaking, r);
     return;
   }
+  // PATH 3 (all protos): under the cap -> open a new conn. H1 fan-out lives
+  // here.
   if (origin_count < (int)c->max_conns_per_origin &&
       p->count < POOL_MAX_CONNS) {
     PoolConn *pc = pool_conn_open(p, proto, r);
@@ -304,10 +336,25 @@ internal void pool_acquire(ConnPool *p, PoolProto proto, PoolReq *r) {
     pool_waiting_push(pc, r);
     return;
   }
-  if (reusable_any) {  // at capacity, can't open more -> let nghttp2 queue it
-    c->pool_stats.reuses++;
-    pool_submit(reusable_any, r);
-    return;
+  // PATH 4: at the cap. Mux -> submit on any Ready conn (the protocol queues it
+  // beyond its concurrency window). H1 -> park on a conn's waiting queue
+  // (handshaking preferred so the request rides the soonest-free socket);
+  // pool_flush_waiting serves it when that conn's current request completes.
+  if (coalesce) {
+    if (reusable_any) {
+      c->pool_stats.reuses++;
+      pool_submit(reusable_any, r);
+      return;
+    }
+  } else {
+    PoolConn *park = handshaking ? handshaking : reusable_any;
+    if (park) {  // rides a conn another request opened -> a reuse (served
+                 // serially)
+      c->pool_stats.reuses++;
+      r->pc = park;
+      pool_waiting_push(park, r);
+      return;
+    }
   }
   pool_req_fail(r, "pool: no connection available");
 }
@@ -383,13 +430,16 @@ internal void pool_submit(PoolConn *pc, PoolReq *r) {
   // waiting queue; the post-recv flush (pool_h2_drain / pool_h3_recv_done)
   // submits it once the recv unwinds, so we never call nghttp2_session_send /
   // ngtcp2 writev from inside their recv path.
-  B32 in_recv = pc->proto == PoolProto_H2 ? pc->in_drain : pc->h3_conn.in_recv;
+  B32 in_recv =
+      pc->proto == PoolProto_H3 ? pc->h3_conn.in_recv : pc->in_drain;  // H1+H2
   if (in_recv) {
     pool_waiting_push(pc, r);
     return;
   }
   if (pc->proto == PoolProto_H2)
     pool_h2_submit(pc, r);
+  else if (pc->proto == PoolProto_H1)
+    pool_h1_submit(pc, r);
   else
     pool_h3_submit(pc, r);
 }
@@ -494,9 +544,10 @@ internal void pool_deliver(PoolReq *r, B32 ok, const char *error, int status,
   out.body_len = body_len;
   out.alpn = alpn;
   if (r->pc) {
-    out.resumed = r->proto == PoolProto_H2 ? conn_resumed(&r->pc->h2_conn)
+    // H1 + H2 ride the TCP Connection; only H3 uses the QUIC accessors.
+    out.resumed = r->proto != PoolProto_H3 ? conn_resumed(&r->pc->h2_conn)
                                            : quic_conn_resumed(&r->pc->h3_conn);
-    if (r->proto == PoolProto_H2)
+    if (r->proto != PoolProto_H3)
       conn_timing_ms(&r->pc->h2_conn, r->t_start_ns, &out.timing.dns_ms,
                      &out.timing.tcp_ms, &out.timing.tls_ms);
     else
@@ -620,6 +671,149 @@ internal void pool_h2_drain(void *user) {
   // Flush deferred/queued requests now that we're outside the recv callbacks.
   pool_flush_waiting(pc);
   pool_update_idle(pc);
+}
+
+//- H1 transport (keep-alive; one request at a time, fresh session per request)
+//-
+// Unlike H2/H3, H1 does not multiplex: a PoolConn serves a single request, then
+// is RETAINED idle for the next one (keep-alive) instead of closed. The per-
+// request H1Session lives on the PoolReq (freed in pool_req_done). The conn-
+// level state (waiting/active/inflight/idle/in_drain) is the shared pool
+// machinery; H1 caps at inflight<1 (pool_conn_has_capacity), so a concurrent
+// burst fans out across up to max_conns_per_origin conns (see pool_acquire).
+internal void pool_h1_send(void *user, const U8 *data, U64 len) {
+  PoolConn *pc = (PoolConn *)user;
+  conn_send_plaintext(&pc->h2_conn, data, len);
+}
+
+internal void pool_h1_on_ready(void *user, B32 ok, const char *err) {
+  PoolConn *pc = (PoolConn *)user;
+  if (!ok) {
+    pool_conn_fail_all(pc, err ? err : "connect failed");
+    return;
+  }
+  // We advertised http/1.1-only ALPN, so the server selects "http/1.1" or sends
+  // no ALPN; an "h2" selection here would be a server bug.
+  String8 alpn = conn_alpn(&pc->h2_conn);
+  if (alpn.size && !str8_match(alpn, str8_lit("http/1.1"))) {
+    pool_conn_fail_all(pc, "pool: server did not negotiate http/1.1");
+    return;
+  }
+  conn_on_readable(&pc->h2_conn, pool_h1_drain, pc);
+  pc->state = PoolConnState_Ready;
+  pool_flush_waiting(
+      pc);  // serve the first waiter (H1: one in-flight at a time)
+}
+
+internal void pool_h1_submit(PoolConn *pc, PoolReq *r) {
+  Client *c = pc->client;
+  // Same merge + pre-hook + wire-order chain as H2, then lower to H1 wire-cased
+  // names (build_h1_headers) — identical request bytes to the non-pooled path.
+  r->body = build_request_headers(
+      r->arena, c->profile->default_headers, c->profile->default_header_count,
+      r->caller_headers, r->caller_header_count, r->caller_body.str,
+      r->caller_body.size, c->override_default_headers, r->method_enum,
+      &r->req_headers);
+  client_run_pre_hook(c, r->method_enum, r->url, &r->req_headers);
+  apply_header_order(c, r->arena, &r->req_headers, r->header_order,
+                     c->profile->fetch_order, c->profile->fetch_order_count);
+  HeaderList h1_headers;
+  build_h1_headers(r->arena, c->profile, &r->req_headers, &h1_headers);
+
+  r->h1 = h1_session_alloc(pool_h1_send, pc);  // send routes to pc->h2_conn
+  if (!r->h1) {
+    pool_req_fail(r, "h1 session init failed");
+    return;
+  }
+  B32 is_head = r->method_enum == Method_HEAD;
+  if (h1_session_submit_request(r->h1, method_str(r->method_enum), r->authority,
+                                r->path, h1_headers.v, h1_headers.count,
+                                r->body.str, r->body.size, is_head,
+                                pool_h1_on_response, r) < 0) {
+    pool_req_fail(r, "h1 submit failed");  // pool_req_done releases r->h1
+    return;
+  }
+  pool_after_submit(pc, r);  // inflight 0->1, ref the conn, active_push
+}
+
+internal void pool_h1_on_response(void *user, const H1Response *hr) {
+  PoolReq *r = (PoolReq *)user;
+  PoolConn *pc = r->pc;
+  Client *c = r->client;
+  if (r->responded) return;
+
+  // This exchange is done: free the single H1 slot before deciding reuse.
+  pool_active_remove(pc, r);
+  if (pc->inflight > 0) pc->inflight--;
+
+  // No status with retries left => stale reuse on a silently-closed conn: retry
+  // on a fresh conn (idempotent-safe; no bytes were delivered).
+  if (!hr->ok && hr->status == 0 && r->retries_left > 0) {
+    pool_req_retry_or_fail(r, "h1 request failed");
+    return;
+  }
+  r->responded = 1;
+  if (hr->headers) {
+    String8 *as = header_list_get_ci(hr->headers, str8_lit("alt-svc"));
+    if (as) client_note_alt_svc(c, r->origin, *as);
+  }
+  pool_deliver(r, hr->ok, 0, hr->status, hr->headers ? hr->headers->v : 0,
+               hr->headers ? hr->headers->count : 0, hr->body, hr->body_len,
+               str8_lit("http/1.1"));
+  B32 keep = hr->keep_alive && hr->ok && !pc->broken;
+  pool_req_done(r);  // releases r->h1, disarms timer, recycles r->arena
+  // On NOT-keep (Connection: close / HTTP/1.0 / EOF-delimited / error), mark
+  // the conn broken: the post-drain pool_update_idle re-homes any queued
+  // waiters to fresh conns and closes this one (inflight==0). On keep,
+  // pool_h1_drain's post-loop flush serves the next waiter or marks the conn
+  // idle for reuse. We do NOT submit/close from here (we run inside the recv
+  // loop).
+  if (!keep) pc->broken = 1;
+}
+
+internal void pool_h1_drain(void *user) {
+  PoolConn *pc = (PoolConn *)user;
+  if (pc->state == PoolConnState_Closing) return;
+  U8 buf[16384];
+  pc->in_drain =
+      1;  // a chained submit from a response cb defers onto `waiting`
+  for (;;) {
+    int n = conn_read_plaintext(&pc->h2_conn, buf, sizeof buf);
+    if (n <= 0) break;
+    PoolReq *r = pc->active_head;  // H1: at most one in-flight request
+    if (!r || !r->h1) break;       // bytes with no active request: ignore
+    S64 rv = h1_session_recv(r->h1, buf, (U64)n);
+    if (rv < 0) {
+      pc->in_drain = 0;
+      pool_conn_fail_all(pc, "h1 parse error");
+      return;
+    }
+    if (pc->state == PoolConnState_Closing || pc->broken) break;
+  }
+  pc->in_drain = 0;
+  // Outside the recv: serve the next queued request on this freed conn (or, if
+  // broken via the keep-alive decision, re-home its waiters + close it).
+  pool_flush_waiting(pc);
+  pool_update_idle(pc);
+}
+
+internal void pool_h1_on_closed(void *user, const char *e) {
+  PoolConn *pc = (PoolConn *)user;
+  if (pc->state == PoolConnState_Closing) return;
+  // A clean EOF that completes a close-delimited in-flight body delivers it
+  // (mirrors the non-pooled h2req_on_closed -> h1_session_eof); then the conn
+  // is gone, so fail/retry any still-in-flight or queued requests.
+  PoolReq *r = pc->active_head;
+  if (r && r->h1) h1_session_eof(r->h1);  // may deliver -> pool_h1_on_response
+  pool_conn_fail_all(pc, e ? e : "connection closed");
+}
+
+internal void pool_h1_on_fully_closed(void *user) {
+  PoolConn *pc = (PoolConn *)user;
+  conn_cleanup(
+      &pc->h2_conn);  // no conn-level session (H1 sessions are per-req)
+  pool_remove_conn(pc->pool, pc);
+  arena_release(pc->arena);  // frees pc itself
 }
 
 //- H3 transport (per-conn QPACK + control/qpack uni streams; per-req bidi) ---

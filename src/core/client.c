@@ -1193,11 +1193,18 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
     return;
   }
 
-  // Forced HTTP/1.1: the legacy TCP path (never pooled — pooled conns advertise
-  // h2); h2req_connect swaps in c->h1_tls so the server negotiates http/1.1.
+  // Forced HTTP/1.1: pooled (keep-alive) when opted in, else the legacy
+  // per-request TCP path (a full handshake per request). Both use c->h1_tls
+  // (http/1.1-only ALPN) so the server negotiates http/1.1 — byte-identical
+  // wire either way (fingerprint-safe). use_pool is already false for
+  // proxy/streaming/ max_conns==0, so those keep the legacy path.
   if (hv == HttpVersion_H1) {
-    h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-                deadline_ns, proxy, on_chunk, chunk_user, header_order);
+    if (use_pool)
+      pool_dispatch(c, PoolProto_H1, m, url, headers, header_count, body,
+                    body_len, cb, user, deadline_ns, header_order);
+    else
+      h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
+                  deadline_ns, proxy, on_chunk, chunk_user, header_order);
     return;
   }
 
