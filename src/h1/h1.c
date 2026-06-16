@@ -31,6 +31,7 @@ struct H1Session {
   U64 header_end;  // byte offset just past the end-of-headers in `in`
 
   int status;
+  U32 http_minor;  // status-line HTTP minor version (1 => keep-alive default)
   HeaderList headers;  // arena-owned copies (stable across buffer growth)
   U64 content_length;
 
@@ -106,9 +107,24 @@ S32 h1_session_submit_request(H1Session *s, String8 method, String8 authority,
 
 //- response parsing
 
+// Can the connection be reused after this response? Computed from values we
+// already parsed — call it BEFORE h1_deliver flips state to Done. A close-
+// delimited body (read-until-EOF) is never reusable (EOF is its only
+// terminator); otherwise HTTP/1.1 keeps alive unless `Connection: close`, and
+// HTTP/1.0 only when it explicitly opts in with `Connection: keep-alive`.
+internal B32 h1_compute_keep_alive(H1Session *s) {
+  if (s->state == H1State_BodyClose) return 0;
+  String8 *cn = header_list_get_ci(&s->headers, str8_lit("connection"));
+  if (cn && str8_contains_ci(*cn, str8_lit("close"))) return 0;
+  if (s->http_minor >= 1) return 1;  // HTTP/1.1 default
+  return cn &&
+         str8_contains_ci(*cn, str8_lit("keep-alive"));  // HTTP/1.0 opt-in
+}
+
 internal void h1_deliver(H1Session *s) {
   if (s->delivered) return;
   s->delivered = 1;
+  B32 keep = h1_compute_keep_alive(s);  // read framing/state before -> Done
   s->state = H1State_Done;
   H1Response r;
   MemoryZeroStruct(&r);
@@ -117,6 +133,7 @@ internal void h1_deliver(H1Session *s) {
   r.body = s->body.v;
   r.body_len = s->body.len;
   r.ok = (s->status != 0);
+  r.keep_alive = keep;
   if (s->cb) s->cb(s->user, &r);
 }
 
@@ -211,6 +228,7 @@ S64 h1_session_recv(H1Session *s, const U8 *data, U64 len) {
     // Headers complete: copy out NOW (hdr[] point into `in`, which may move on
     // a later append), then never call phr_parse_response again.
     s->status = status;
+    s->http_minor = (U32)minor;  // for the keep-alive (reuse) decision
     s->header_end = (U64)rc;
     for (size_t i = 0; i < num; ++i) {
       if (hdr[i].name_len == 0) continue;  // obs-fold continuation; ignore

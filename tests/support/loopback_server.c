@@ -675,6 +675,14 @@ static void lb_h1_on_shutdown(uv_shutdown_t *req, int status) {
   (void)status;  // queued writes are now flushed (or cancelled) -> close
   lb_conn_close((LbConn *)req->data);
 }
+// Does the handler want this response to close the connection (keep-alive off)?
+static B32 lb_h1_resp_wants_close(const LbResponse *resp) {
+  for (U64 i = 0; i < resp->extra_count && i < 8; ++i)
+    if (strcasecmp(resp->extra_names[i], "connection") == 0 &&
+        strstr(resp->extra_values[i], "close"))
+      return 1;
+  return 0;
+}
 static void lb_h1_feed(LbConn *c, const U8 *data, U64 len) {
   if (c->h1len + len > c->h1cap) {
     U64 ncap = c->h1cap ? c->h1cap : 8192;
@@ -685,50 +693,68 @@ static void lb_h1_feed(LbConn *c, const U8 *data, U64 len) {
   MemoryCopy(c->h1buf + c->h1len, data, len);
   c->h1len += len;
 
-  String8 acc = str8(c->h1buf, c->h1len);
-  S64 pos = str8_find(acc, str8_lit("\r\n\r\n"));
-  if (pos < 0) return;  // headers incomplete
-  U64 hdr_end = (U64)pos + 4;
-  U64 clen = lb_h1_content_length(c->h1buf, hdr_end);
-  if (c->h1len < hdr_end + clen) return;  // body incomplete
+  // Persistent (keep-alive): process EVERY complete request buffered, leaving
+  // the connection open between responses. A response is HTTP/1.1 +
+  // Content-Length and carries NO Connection header (keep-alive default, like a
+  // real server) — unless the handler sets `Connection: close`, which we honor
+  // by half-closing after the write. This is what lets the H1 pool reuse the
+  // socket.
+  U64 off = 0;
+  for (;;) {
+    String8 acc = str8(c->h1buf + off, c->h1len - off);
+    S64 pos = str8_find(acc, str8_lit("\r\n\r\n"));
+    if (pos < 0) break;  // headers incomplete
+    U64 hdr_end = (U64)pos + 4;
+    U64 clen = lb_h1_content_length(c->h1buf + off, hdr_end);
+    if (c->h1len - off < hdr_end + clen) break;  // body incomplete
 
-  // Parse the request line: "METHOD SP path SP HTTP/1.1".
-  String8 line = str8(c->h1buf, (U64)pos);
-  String8 rest = line;
-  String8 method = str8_chop_by_delim(&rest, ' ');
-  String8 path = str8_chop_by_delim(&rest, ' ');
+    // Parse the request line: "METHOD SP path SP HTTP/1.1".
+    String8 line = str8(c->h1buf + off, (U64)pos);
+    String8 rest = line;
+    String8 method = str8_chop_by_delim(&rest, ' ');
+    String8 path = str8_chop_by_delim(&rest, ' ');
 
-  LbRequest req;
-  MemoryZeroStruct(&req);
-  req.method = method;
-  req.path = path;
-  req.body = c->h1buf + hdr_end;
-  req.body_len = clen;
-  req.is_h2 = 0;
-  req.client_cert = c->has_client_cert;
-  LbResponse resp;
-  MemoryZeroStruct(&resp);
-  c->server->handler(&req, &resp, c->server->user);
-  if (resp.withhold) return;
-  if (resp.status == 0) resp.status = 200;
+    LbRequest req;
+    MemoryZeroStruct(&req);
+    req.method = method;
+    req.path = path;
+    req.body = c->h1buf + off + hdr_end;  // valid until we compact (after loop)
+    req.body_len = clen;
+    req.is_h2 = 0;
+    req.client_cert = c->has_client_cert;
+    LbResponse resp;
+    MemoryZeroStruct(&resp);
+    c->server->handler(&req, &resp, c->server->user);
+    if (resp.withhold) break;  // never respond; leave it buffered, conn open
+    if (resp.status == 0) resp.status = 200;
 
-  char head[1024];
-  int hn = snprintf(head, sizeof head, "HTTP/1.1 %d OK\r\n", resp.status);
-  for (U64 i = 0; i < resp.extra_count && i < 8; ++i)
-    hn += snprintf(head + hn, sizeof head - (size_t)hn, "%s: %s\r\n",
-                   resp.extra_names[i], resp.extra_values[i]);
-  hn += snprintf(head + hn, sizeof head - (size_t)hn,
-                 "Content-Length: %llu\r\nConnection: close\r\n\r\n",
-                 (unsigned long long)resp.body_len);
-  SSL_write(c->ssl, head, hn);
-  if (resp.body_len) SSL_write(c->ssl, resp.body, (int)resp.body_len);
-  lb_conn_flush(c);
-  // Connection: close, but flush the (possibly multi-MB) queued writes first —
-  // uv_close would cancel them. uv_shutdown drains then half-closes; we close
-  // in its callback.
-  c->hsr.data = c;
-  if (uv_shutdown(&c->hsr, (uv_stream_t *)&c->tcp, lb_h1_on_shutdown) != 0)
-    lb_conn_close(c);
+    char head[1024];
+    int hn = snprintf(head, sizeof head, "HTTP/1.1 %d OK\r\n", resp.status);
+    for (U64 i = 0; i < resp.extra_count && i < 8; ++i)
+      hn += snprintf(head + hn, sizeof head - (size_t)hn, "%s: %s\r\n",
+                     resp.extra_names[i], resp.extra_values[i]);
+    hn += snprintf(head + hn, sizeof head - (size_t)hn,
+                   "Content-Length: %llu\r\n\r\n",
+                   (unsigned long long)resp.body_len);
+    SSL_write(c->ssl, head, hn);
+    if (resp.body_len) SSL_write(c->ssl, resp.body, (int)resp.body_len);
+    lb_conn_flush(c);
+    off += hdr_end + clen;  // consume this request
+
+    if (lb_h1_resp_wants_close(&resp)) {
+      // Honor Connection: close — flush queued writes (uv_close would cancel
+      // them) then half-close; we close in the shutdown callback.
+      c->hsr.data = c;
+      if (uv_shutdown(&c->hsr, (uv_stream_t *)&c->tcp, lb_h1_on_shutdown) != 0)
+        lb_conn_close(c);
+      return;
+    }
+  }
+  // Compact: drop the consumed request prefix, keep any partial next request.
+  if (off) {
+    MemoryMove(c->h1buf, c->h1buf + off, c->h1len - off);
+    c->h1len -= off;
+  }
 }
 
 //- drive loop + accept ------------------------------------------------------
