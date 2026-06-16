@@ -41,6 +41,11 @@ struct LbRequest {
   U64 body_len;
   B32 is_h2;          // the negotiated protocol
   B32 client_cert;    // a client certificate was presented (mTLS servers only)
+  // Received regular (non-pseudo) request header NAMES in wire order (H2 only;
+  // empty for H1), as sent on the wire (lowercased). Valid during the handler.
+  // For the header-order tests.
+  const char *const *header_names;
+  U64 header_name_count;
 };
 
 typedef struct LbResponse LbResponse;

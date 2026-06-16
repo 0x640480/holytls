@@ -110,6 +110,12 @@ typedef struct holytls_request {
   const char *proxy;  // optional per-request proxy URL (NULL = client default);
                       // overrides the client's pool/single proxy for this
                       // request, sticky across its redirect chain
+  const char *header_order;  // optional per-request wire header order: a comma/
+                             // whitespace-separated name list (NULL = the
+                             // client-level order). When set it REPLACES the
+                             // client-level order for this request and every
+                             // redirect hop; applies on pooled and non-pooled
+                             // paths. See holytls_client_set_header_order.
 } holytls_request;
 
 // A fully-buffered, caller-owned response. Every pointer here is a heap copy
@@ -324,13 +330,16 @@ void holytls_async_client_free(holytls_async_client *ac);
 
 typedef struct holytls_session holytls_session;
 
-holytls_session *holytls_session_new(int cookies_enabled,
+// `follow_redirects` 0 => the session never follows 3xx (single hop), decoupled
+// from `max_redirects`. `max_redirects` is honored verbatim (0 also yields a
+// single hop). Pass follow_redirects=1, max_redirects=10 for browser defaults.
+holytls_session *holytls_session_new(int cookies_enabled, int follow_redirects,
                                      uint64_t max_redirects);
 void holytls_session_free(holytls_session *s);
 
 // Perform one request on `c` with `s`'s cookies + its own redirect loop.
 // Ownership/return identical to holytls_perform(). `req->no_redirects` is
-// ignored (the session always runs its cookie-aware redirect loop).
+// ignored (the session runs its own redirect loop, gated by follow_redirects).
 holytls_response *holytls_session_perform(holytls_session *s, holytls_client *c,
                                           const holytls_request *req);
 

@@ -215,6 +215,7 @@ internal void build_params(Arena *a, const holytls_request *req,
   out->fetch_mode = map_fetch(req->fetch_mode);
   out->no_redirects = req->no_redirects ? 1 : 0;
   if (req->proxy) out->proxy = str8_cstring(req->proxy);
+  if (req->header_order) out->header_order = str8_cstring(req->header_order);
   if (req->header_count && req->headers) {
     Header *hs = push_array(a, Header, req->header_count);
     for (size_t i = 0; i < req->header_count; i++) {
@@ -484,6 +485,7 @@ struct AsyncSubmit {
   uint8_t *body;
   size_t body_len;
   char *proxy;
+  char *header_order;
   holytls_method method;
   holytls_fetch_mode fetch_mode;
   int no_redirects;
@@ -524,6 +526,7 @@ internal void async_submit_free(AsyncSubmit *s) {
   free(s->url);
   free(s->body);
   free(s->proxy);
+  free(s->header_order);
   if (s->headers) {
     for (size_t i = 0; i < s->header_count; i++) {
       free((void *)s->headers[i].name);
@@ -559,6 +562,10 @@ internal AsyncSubmit *async_submit_copy(const holytls_request *req,
     s->proxy = dup_cstr(req->proxy);
     if (!s->proxy) goto oom;
   }
+  if (req->header_order) {
+    s->header_order = dup_cstr(req->header_order);
+    if (!s->header_order) goto oom;
+  }
   if (req->header_count && req->headers) {
     s->headers = (holytls_header *)calloc(req->header_count, sizeof *s->headers);
     if (!s->headers) goto oom;
@@ -591,6 +598,7 @@ internal void build_params_from_submit(Arena *a, const AsyncSubmit *s,
   req.fetch_mode = s->fetch_mode;
   req.no_redirects = s->no_redirects;
   req.proxy = s->proxy;
+  req.header_order = s->header_order;
   build_params(a, &req, out);
 }
 
@@ -764,14 +772,16 @@ void holytls_async_client_free(holytls_async_client *ac) {
 // Session.
 // ---------------------------------------------------------------------------
 
-holytls_session *holytls_session_new(int cookies_enabled,
+holytls_session *holytls_session_new(int cookies_enabled, int follow_redirects,
                                      uint64_t max_redirects) {
   holytls_session *hs = (holytls_session *)calloc(1, sizeof *hs);
   if (!hs) return 0;
   SessionConfig cfg;
   session_config_default(&cfg);
   cfg.cookies_enabled = cookies_enabled ? 1 : 0;
-  if (max_redirects) cfg.max_redirects = max_redirects;  // 0 = keep the default
+  cfg.follow_redirects = follow_redirects ? 1 : 0;
+  cfg.has_follow_redirects = 1;
+  cfg.max_redirects = max_redirects;  // honored verbatim now (0 => no follow)
   session_init(&hs->session, &cfg);
   return hs;
 }

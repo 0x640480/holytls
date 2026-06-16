@@ -11,10 +11,17 @@ Run (after building libholytls_capi + installing the binding)::
 
     pytest bindings/python/tests
 """
+import inspect
+
 import pytest
 
 import holytls
-from holytls import Client, HolyTLSError, HttpVersion, Method, Profile
+from holytls import Client, HolyTLSError, HttpVersion, Method, Profile, Session
+
+try:
+    from holytls import AsyncClient
+except ImportError:  # pragma: no cover - AsyncClient is always present today
+    AsyncClient = None
 
 
 def test_version_is_nonempty_string():
@@ -93,3 +100,30 @@ def test_close_is_idempotent():
     c = Client()
     c.close()
     c.close()  # double close must not crash or double-free
+
+
+def test_session_redirect_controls_construct():
+    # Bug #2: a Session can express "do not follow redirects". Both knobs are
+    # decoupled — an explicit max_redirects=0 is honored (no silent ->10), and
+    # follow_redirects=False disables following independent of the budget.
+    with Client() as c:
+        for s in (
+            Session(c, follow_redirects=False),
+            Session(c, max_redirects=0),
+            Session(c, follow_redirects=True, max_redirects=5),
+        ):
+            assert s is not None
+            s.close()
+
+
+def test_header_order_kwarg_is_accepted():
+    # The per-request header_order= surfaces on every request entry point, and
+    # the client-level form constructs (string or sequence).
+    for fn in (Client.request, Session.request):
+        assert "header_order" in inspect.signature(fn).parameters
+    if AsyncClient is not None:
+        assert "header_order" in inspect.signature(AsyncClient.request).parameters
+    with Client(header_order="user-agent, accept") as c:
+        assert c is not None
+    with Client(header_order=["user-agent", "accept"]) as c:
+        assert c is not None

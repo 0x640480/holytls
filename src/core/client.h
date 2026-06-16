@@ -129,6 +129,13 @@ struct RequestParams {
                          // arrive and the Response body is empty. Forces a
                          // single hop (no redirects) on the non-pooled path.
   void *chunk_user;
+  String8
+      header_order;  // optional per-request wire header order, a comma/
+                     // whitespace-separated name list (like
+                     // client_set_header_order_str). Empty = use the
+                     // client-level order. When set it REPLACES the
+                     // client-level order for this request and every
+                     // redirect hop. Applies on pooled and non-pooled paths.
 };
 
 // Request/response middleware (set once on the Client; see client_set_pre_hook

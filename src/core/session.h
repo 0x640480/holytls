@@ -20,10 +20,16 @@ typedef struct SessionConfig SessionConfig;
 struct SessionConfig {
   const char *preset;   // informational (fingerprint is the passed-in Client's)
   B32 cookies_enabled;  // jar on/off (default on)
-  U64 max_redirects;    // session-level redirect budget (default 10)
+  B32 follow_redirects;  // follow 3xx (default on); 0 => single hop. Decoupled
+                         // from max_redirects so an explicit 0 budget is
+                         // honored
+  B32 has_follow_redirects;  // 1 => follow_redirects is set; lets a zeroed
+                             // config still default to "follow" (back-compat)
+  U64 max_redirects;  // session-level redirect budget (default 10); honored
+                      // verbatim now (0 => no following), no silent ?:10
 };
 
-// Browser-faithful defaults: cookies on, 10 redirects.
+// Browser-faithful defaults: cookies on, follow redirects, budget 10.
 void session_config_default(SessionConfig *cfg);
 
 typedef struct Session Session;
@@ -31,6 +37,8 @@ struct Session {
   Arena *arena;  // owns the jar + session-lifetime allocations
   CookieJar jar;
   B32 cookies_enabled;
+  B32 follow_redirects;  // 0 => never follow (single hop), independent of
+                         // budget
   U64 max_redirects;
 };
 
@@ -49,9 +57,10 @@ void session_destroy(Session *s);
 // per-hop redirect loop. Async: the response is delivered to `cb` (valid only
 // during the callback, like the Client). Set `p->fetch_mode` for coherent
 // Sec-Fetch-* headers (replaces the old session_fetch). `p->no_redirects` and
-// `p->deadline_ns` are ignored — the Session always runs its own cookie-aware
-// redirect loop (up to s->max_redirects) and derives one chain-wide deadline
-// from client_set_timeout_ms. `p->on_chunk` IS honored (the body is streamed to
+// `p->deadline_ns` are ignored — the Session runs its own cookie-aware redirect
+// loop (up to s->max_redirects, and only when s->follow_redirects is set) and
+// derives one chain-wide deadline from client_set_timeout_ms. `p->on_chunk` IS
+// honored (the body is streamed to
 // the sink); as in client_request a streamed body is terminal, so a streaming
 // request does NOT follow redirects.
 void session_request(Session *s, Client *client, const RequestParams *p,
