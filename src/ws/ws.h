@@ -19,14 +19,14 @@ typedef enum WsTransport {
 
 typedef struct WsConn WsConn;
 
-// Allocate a WS handle bound to `client` (borrows its loop / profile / SSL_CTX).
-// Pair with ws_conn_free.
+// Allocate a WS handle bound to `client` (borrows its loop / profile /
+// SSL_CTX). Pair with ws_conn_free.
 WsConn *ws_conn_alloc(Client *client);
 void ws_conn_free(WsConn *w);
 
 // Blocking: open the WebSocket at `url` (wss://… ; https://… accepted as the
-// same) with optional extra request headers. Returns 1 on a completed handshake,
-// 0 on failure (see ws_conn_error).
+// same) with optional extra request headers. Returns 1 on a completed
+// handshake, 0 on failure (see ws_conn_error).
 B32 ws_conn_connect(WsConn *w, String8 url, const Header *headers,
                     U64 header_count);
 
@@ -34,11 +34,11 @@ B32 ws_conn_connect(WsConn *w, String8 url, const Header *headers,
 // closed/failed.
 B32 ws_conn_send(WsConn *w, WsOpcode op, const U8 *data, U64 len);
 
-// Blocking: receive the next application message (auto-answers pings). Returns 1
-// and fills *out with a Message (out->data valid until the next ws_conn_* call);
-// 0 and fills *out with the peer's Close; -1 on error / a dead transport; -2 if
-// `timeout_ms` elapsed with no message (the connection stays usable). 0 timeout
-// blocks indefinitely.
+// Blocking: receive the next application message (auto-answers pings). Returns
+// 1 and fills *out with a Message (out->data valid until the next ws_conn_*
+// call); 0 and fills *out with the peer's Close; -1 on error / a dead
+// transport; -2 if `timeout_ms` elapsed with no message (the connection stays
+// usable). 0 timeout blocks indefinitely.
 int ws_conn_recv(WsConn *w, WsEvent *out, U64 timeout_ms);
 
 // Send a Close frame (code + optional reason) and begin teardown.

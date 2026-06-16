@@ -13,11 +13,12 @@
 // requests onto the SAME loop and runs it once until all complete — the native,
 // zero-thread concurrency that is the whole point of an event-loop client.
 //
-// Ownership: every holytls_response* this returns is heap-allocated and owned by
-// the caller — free it with holytls_response_free(). A holytls_client/_session
-// is created explicitly and freed with its _free(). Strings the caller passes in
-// (url, header names/values, proxy URL, …) are copied as needed during the
-// call; the caller may free them immediately after the call returns.
+// Ownership: every holytls_response* this returns is heap-allocated and owned
+// by the caller — free it with holytls_response_free(). A
+// holytls_client/_session is created explicitly and freed with its _free().
+// Strings the caller passes in (url, header names/values, proxy URL, …) are
+// copied as needed during the call; the caller may free them immediately after
+// the call returns.
 //
 // Threading: a holytls_client owns its own loop + transport and is NOT
 // internally locked — drive one client from one thread at a time. For
@@ -48,9 +49,9 @@ typedef enum holytls_method {
   HOLYTLS_OPTIONS,
 } holytls_method;
 
-// Wire-protocol selection. This is the single knob for HTTP/3: the client builds
-// the QUIC transport automatically iff the chosen mode can use H3 (AUTO or H3).
-// Passed to holytls_client_new[_named] at construction and to
+// Wire-protocol selection. This is the single knob for HTTP/3: the client
+// builds the QUIC transport automatically iff the chosen mode can use H3 (AUTO
+// or H3). Passed to holytls_client_new[_named] at construction and to
 // holytls_client_set_http_version at runtime (the latter can only narrow within
 // the capability the constructor built — it can't add QUIC after the fact).
 typedef enum holytls_http_version {
@@ -58,7 +59,7 @@ typedef enum holytls_http_version {
                           // advertises alt-svc: h3 (builds QUIC).
   HOLYTLS_HTTP_1,         // force HTTP/1.1 (changes the ALPN/fingerprint).
   HOLYTLS_HTTP_2,         // force HTTP/2 over TCP, never H3 (no QUIC built).
-  HOLYTLS_HTTP_3,         // force HTTP/3/QUIC on the first request (builds QUIC).
+  HOLYTLS_HTTP_3,  // force HTTP/3/QUIC on the first request (builds QUIC).
 } holytls_http_version;
 
 // Fetch Metadata context. DEFAULT keeps the profile's static navigation
@@ -73,11 +74,11 @@ typedef enum holytls_fetch_mode {
 
 // Emulation profile. Selects the TLS+H2(+H3) fingerprint the client reproduces.
 typedef enum holytls_profile_id {
-  HOLYTLS_PROFILE_CHROME = 0,     // newest Chrome (currently 149)
+  HOLYTLS_PROFILE_CHROME = 0,  // newest Chrome (currently 149)
   HOLYTLS_PROFILE_CHROME_149 = 1,
   HOLYTLS_PROFILE_CHROME_148 = 2,
   HOLYTLS_PROFILE_FIREFOX_151 = 3,
-  HOLYTLS_PROFILE_FIREFOX = 3,    // newest Firefox (currently 151)
+  HOLYTLS_PROFILE_FIREFOX = 3,  // newest Firefox (currently 151)
 } holytls_profile_id;
 
 // ---------------------------------------------------------------------------
@@ -132,14 +133,14 @@ typedef struct holytls_response {
   size_t header_count;
 
   const uint8_t *body;  // response body bytes (decompressed); NUL-terminated
-  size_t body_len;      // body length in bytes (authoritative; body may hold NULs)
+  size_t body_len;  // body length in bytes (authoritative; body may hold NULs)
 
   const char *final_url;  // URL that produced this response (after redirects)
   const char *alpn;       // negotiated ALPN ("h2" / "h3" / "")
   int resumed;            // the TLS handshake resumed a cached session (1-RTT)
   int early_data;         // the request was sent + accepted as 0-RTT early data
 
-  uint64_t dns_ms;    // timing breakdown (ms); setup phases are 0 on reuse
+  uint64_t dns_ms;  // timing breakdown (ms); setup phases are 0 on reuse
   uint64_t tcp_ms;
   uint64_t tls_ms;
   uint64_t total_ms;  // whole request, spanning the full redirect chain
@@ -211,8 +212,9 @@ int holytls_client_set_local_address(holytls_client *c, const char *ip);
 int holytls_client_add_ca_file(holytls_client *c, const char *path);
 // Present a client certificate for mutual TLS. `cert_path` is a PEM cert chain,
 // `key_path` its private key (may equal cert_path for a combined PEM),
-// `passphrase` decrypts an encrypted key (NULL/"" if none). Fingerprint-neutral.
-// Returns 1 on success, 0 if a file can't be read or the key doesn't match.
+// `passphrase` decrypts an encrypted key (NULL/"" if none).
+// Fingerprint-neutral. Returns 1 on success, 0 if a file can't be read or the
+// key doesn't match.
 int holytls_client_set_client_cert(holytls_client *c, const char *cert_path,
                                    const char *key_path,
                                    const char *passphrase);
@@ -233,7 +235,8 @@ void holytls_client_set_key_log_file(holytls_client *c, const char *path);
 // failure — an HTTP error or transport failure comes back AS a response (with
 // status set, or ok=0 + error). The request struct and the strings it points to
 // need only live for the duration of this call.
-holytls_response *holytls_perform(holytls_client *c, const holytls_request *req);
+holytls_response *holytls_perform(holytls_client *c,
+                                  const holytls_request *req);
 
 // Perform `count` requests CONCURRENTLY on the client's single loop: all are
 // submitted, then the loop runs once until every one completes. This is the
@@ -249,13 +252,14 @@ size_t holytls_perform_many(holytls_client *c, const holytls_request *reqs,
 
 // Like holytls_perform, but STREAMS the (decoded) response body: `on_chunk`
 // fires with each decoded chunk as it arrives (the chunk bytes are valid only
-// for that call) instead of buffering, and the returned holytls_response carries
-// an empty body. Bounded memory over HTTP/2; H1/H3 deliver the whole body in one
-// `on_chunk` call (v1). Forces a single hop (no redirects) and the non-pooled
-// path. A NULL `on_chunk` behaves like holytls_perform.
+// for that call) instead of buffering, and the returned holytls_response
+// carries an empty body. Bounded memory over HTTP/2; H1/H3 deliver the whole
+// body in one `on_chunk` call (v1). Forces a single hop (no redirects) and the
+// non-pooled path. A NULL `on_chunk` behaves like holytls_perform.
 holytls_response *holytls_perform_stream(
     holytls_client *c, const holytls_request *req,
-    void (*on_chunk)(void *user, const uint8_t *data, uint64_t len), void *user);
+    void (*on_chunk)(void *user, const uint8_t *data, uint64_t len),
+    void *user);
 
 void holytls_response_free(holytls_response *r);
 
@@ -274,11 +278,11 @@ typedef struct holytls_async_client holytls_async_client;
 // Request completion. Fires ON THE LOOP THREAD (the holytls_async_run thread)
 // when the request finishes. `req_id` echoes the id passed to submit, so the
 // caller can correlate. OWNERSHIP of `resp` transfers to the callback — it must
-// be freed with holytls_response_free() (typically after marshalling). `resp` is
-// never NULL: a transport failure is an ok=0 response; only catastrophic OOM
+// be freed with holytls_response_free() (typically after marshalling). `resp`
+// is never NULL: a transport failure is an ok=0 response; only catastrophic OOM
 // would be, and the trampoline substitutes an error response.
 typedef void (*holytls_async_complete_fn)(void *user, uint64_t req_id,
-                                           holytls_response *resp);
+                                          holytls_response *resp);
 
 // Create an async client (same profile/mode/verify matrix as
 // holytls_client_new_named). The loop is NOT running yet — start it by calling
@@ -289,16 +293,18 @@ holytls_async_client *holytls_async_client_new_named(const char *profile_name,
                                                      int verify);
 
 // Borrow the inner client for CONFIGURATION ONLY (the holytls_client_set_*
-// functions), and ONLY before the loop thread is started — config touches client
-// state and is not thread-safe. Do NOT issue requests on the returned handle.
+// functions), and ONLY before the loop thread is started — config touches
+// client state and is not thread-safe. Do NOT issue requests on the returned
+// handle.
 holytls_client *holytls_async_client_base(holytls_async_client *ac);
 
 // Submit one request WITHOUT blocking. Thread-safe — callable from any thread
 // (typically the asyncio thread). Deep-copies everything it needs out of `req`
 // (url, headers, body, proxy) synchronously, so `req` and its strings need only
 // live for the duration of THIS call. When the response lands, `cb(user,
-// req_id, resp)` fires on the loop thread. Returns 1 on success, 0 if the client
-// is stopping or on allocation failure (in which case `cb` is never called).
+// req_id, resp)` fires on the loop thread. Returns 1 on success, 0 if the
+// client is stopping or on allocation failure (in which case `cb` is never
+// called).
 int holytls_async_submit(holytls_async_client *ac, const holytls_request *req,
                          uint64_t req_id, holytls_async_complete_fn cb,
                          void *user);
@@ -375,9 +381,9 @@ holytls_ws *holytls_ws_connect(holytls_client *c, const char *url,
 int holytls_ws_send_text(holytls_ws *ws, const char *text, size_t len);
 int holytls_ws_send_binary(holytls_ws *ws, const uint8_t *data, size_t len);
 
-// Receive the next message (auto-answers pings). Returns 1 and fills *out with a
-// message; 0 and fills *out with the peer's Close (close_code); -1 on error / a
-// dead connection; -2 if `timeout_ms` elapsed with no message (the connection
+// Receive the next message (auto-answers pings). Returns 1 and fills *out with
+// a message; 0 and fills *out with the peer's Close (close_code); -1 on error /
+// a dead connection; -2 if `timeout_ms` elapsed with no message (the connection
 // stays usable; 0 = block indefinitely). *out->data is valid until the next
 // holytls_ws_* call.
 int holytls_ws_recv(holytls_ws *ws, holytls_ws_message *out,

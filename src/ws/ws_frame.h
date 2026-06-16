@@ -20,13 +20,13 @@ typedef enum WsOpcode {
 } WsOpcode;
 
 // Build one CLIENT frame into `out` (arena-backed). Per RFC 6455 a client MUST
-// mask every frame: `mask_key` is 4 random bytes (the caller supplies them, e.g.
-// from RAND_bytes) XORed over the payload. `fin` ends a message; for a single
-// (unfragmented) message pass fin=1 with the text/binary opcode. `rsv1` sets the
-// RSV1 bit (RFC 7692 permessage-deflate: a compressed message's FIRST frame);
-// pass 0 otherwise.
-void ws_frame_build(U8Buf *out, WsOpcode op, B32 fin, B32 rsv1, const U8 *payload,
-                    U64 len, const U8 mask_key[4]);
+// mask every frame: `mask_key` is 4 random bytes (the caller supplies them,
+// e.g. from RAND_bytes) XORed over the payload. `fin` ends a message; for a
+// single (unfragmented) message pass fin=1 with the text/binary opcode. `rsv1`
+// sets the RSV1 bit (RFC 7692 permessage-deflate: a compressed message's FIRST
+// frame); pass 0 otherwise.
+void ws_frame_build(U8Buf *out, WsOpcode op, B32 fin, B32 rsv1,
+                    const U8 *payload, U64 len, const U8 mask_key[4]);
 
 // --- incremental receive parser --------------------------------------------
 
@@ -34,17 +34,19 @@ typedef enum WsEventKind {
   WsEvent_Message,  // a complete application message (text/binary, reassembled)
   WsEvent_Ping,     // control: caller should reply with a Pong (echo data)
   WsEvent_Pong,
-  WsEvent_Close,    // control: the peer is closing (close_code + optional reason)
+  WsEvent_Close,  // control: the peer is closing (close_code + optional reason)
 } WsEventKind;
 
 typedef struct WsEvent WsEvent;
 struct WsEvent {
   WsEventKind kind;
-  WsOpcode op;     // WsOp_Text / WsOp_Binary for a message; the control opcode else
+  WsOpcode
+      op;  // WsOp_Text / WsOp_Binary for a message; the control opcode else
   const U8 *data;  // message / control payload — valid only during the callback
   U64 len;
   U16 close_code;  // for WsEvent_Close (0 if the peer sent no code)
-  B32 compressed;  // RFC 7692: the message's RSV1 was set (payload still deflated)
+  B32 compressed;  // RFC 7692: the message's RSV1 was set (payload still
+                   // deflated)
 };
 
 typedef void (*WsEventFn)(void *user, const WsEvent *ev);
@@ -75,9 +77,9 @@ struct WsParser {
   // len reset to 0 after each complete message, capacity kept).
   U8 *msg;
   U64 msg_len, msg_cap;
-  WsOpcode msg_op;   // opcode of the in-progress message (its first fragment)
-  B32 in_message;    // a fragmented message is in progress
-  U64 max_message;   // reassembly ceiling (decompression-bomb-style guard)
+  WsOpcode msg_op;  // opcode of the in-progress message (its first fragment)
+  B32 in_message;   // a fragmented message is in progress
+  U64 max_message;  // reassembly ceiling (decompression-bomb-style guard)
 
   // Control-frame payload (RFC 6455: control payloads are <= 125 bytes).
   U8 ctrl[125];
@@ -91,8 +93,8 @@ struct WsParser {
 void ws_parser_init(WsParser *p, U64 max_message);
 void ws_parser_free(WsParser *p);
 
-// Permit RSV1 (RFC 7692 permessage-deflate). Call after the handshake negotiates
-// the extension; until then RSV1 is a protocol error like RSV2/RSV3.
+// Permit RSV1 (RFC 7692 permessage-deflate). Call after the handshake
+// negotiates the extension; until then RSV1 is a protocol error like RSV2/RSV3.
 internal inline void ws_parser_allow_compression(WsParser *p) {
   p->allow_rsv1 = 1;
 }

@@ -3,13 +3,14 @@
 // importantly the QUIC transport parameters + H3 SETTINGS, which are otherwise
 // only verified live (fingerprint_h3_test). Together with ja4_test (TLS
 // ClientHello) + h2_test (Akamai) this makes the whole wire surface offline-
-// checkable, so a refactor of how profiles are stored can be proven value-exact.
-// Also exercises the by-name profile registry.
+// checkable, so a refactor of how profiles are stored can be proven
+// value-exact. Also exercises the by-name profile registry.
+#include "profile/profile.h"
+
 #include <stdio.h>
 
 #include "base/base.h"
 #include "base/string8.h"
-#include "profile/profile.h"
 
 global int g_checks = 0, g_fails = 0;
 #define CHECK(c)                                                   \
@@ -82,7 +83,8 @@ static void snap_firefox(void) {
   CHECK(q->h3.settings_count == 6);
   CHECK(q->h3.settings[2].id == 727725890 && q->h3.settings[2].value == 0);
   CHECK(q->h3.settings[3].id == 16765559 && q->h3.settings[3].value == 1);
-  CHECK(q->h3.pseudo_order[1] == Pseudo_Scheme);  // H3: m,s,a,p (differs from H2)
+  CHECK(q->h3.pseudo_order[1] ==
+        Pseudo_Scheme);  // H3: m,s,a,p (differs from H2)
   // No sec-ch-ua / client-hints.
   CHECK(profile_sec_ch_ua(p).size == 0);
   CHECK(str8_contains(profile_user_agent(p), str8_lit("Firefox/151.0")));
@@ -112,7 +114,8 @@ int main(void) {
   CHECK(profile_by_name(str8_lit("CHROME149")) == profile_chrome149());  // ci
   CHECK(profile_quic_by_name(str8_lit("chrome148")) == profile_chrome148_h3());
   CHECK(profile_by_name(str8_lit("firefox151")) == profile_firefox151());
-  CHECK(profile_quic_by_name(str8_lit("Firefox151")) == profile_firefox151_h3());
+  CHECK(profile_quic_by_name(str8_lit("Firefox151")) ==
+        profile_firefox151_h3());
   CHECK(profile_by_name(str8_lit("safari")) == 0);  // unknown -> 0
   CHECK(profile_quic_by_name(str8_lit("nope")) == 0);
 

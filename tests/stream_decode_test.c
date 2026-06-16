@@ -1,7 +1,8 @@
 // Streaming Content-Encoding decoder: feed compressed input in small pieces and
-// confirm the decoded chunks reassemble the original (the property response-body
-// streaming relies on). Exercises the gzip (streaming inflate) and identity
-// (passthrough) paths; gzip data is produced here with zlib's deflate.
+// confirm the decoded chunks reassemble the original (the property
+// response-body streaming relies on). Exercises the gzip (streaming inflate)
+// and identity (passthrough) paths; gzip data is produced here with zlib's
+// deflate.
 #include <stdio.h>
 #include <string.h>
 #include <zlib.h>

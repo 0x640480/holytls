@@ -1,11 +1,12 @@
 // Offline WebSocket-over-HTTP/2 test (RFC 8441 Extended CONNECT) against the
 // in-process loopback echo origin (lb_ws_echo_start), which advertises
-// SETTINGS_ENABLE_CONNECT_PROTOCOL, answers a CONNECT+:protocol stream with 200,
-// and re-frames every client (masked) WS frame back as an unmasked server frame.
-// We open a WsConn (forced onto h2 by an h2-only server), assert transport==H2,
-// round-trip a text + a binary message, and close cleanly. This exercises the
-// whole H2 path: the deferred data provider, ENABLE_CONNECT_PROTOCOL gating, the
-// CONNECT submit, bidirectional DATA framing, and the H2 close. ASan-clean.
+// SETTINGS_ENABLE_CONNECT_PROTOCOL, answers a CONNECT+:protocol stream with
+// 200, and re-frames every client (masked) WS frame back as an unmasked server
+// frame. We open a WsConn (forced onto h2 by an h2-only server), assert
+// transport==H2, round-trip a text + a binary message, and close cleanly. This
+// exercises the whole H2 path: the deferred data provider,
+// ENABLE_CONNECT_PROTOCOL gating, the CONNECT submit, bidirectional DATA
+// framing, and the H2 close. ASan-clean.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,9 +74,9 @@ int main(void) {
   CHECK(send_and_expect_echo(ws, WsOp_Binary, bin, sizeof bin, 4));
 
   // Large message: a 100 KB frame uses the 64-bit length, nghttp2 splits it
-  // across many 16 KB DATA frames, the loopback re-frames a partial frame across
-  // chunks, and the parser reassembles across reads — the deferred provider's
-  // multi-read drain end-to-end.
+  // across many 16 KB DATA frames, the loopback re-frames a partial frame
+  // across chunks, and the parser reassembles across reads — the deferred
+  // provider's multi-read drain end-to-end.
   U64 big_len = 100 * 1024;
   U8 *big = (U8 *)malloc(big_len);
   for (U64 i = 0; i < big_len; ++i) big[i] = (U8)(i * 167 + (i >> 9));

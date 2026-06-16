@@ -137,7 +137,7 @@ internal B32 zstd_decode(const U8 *data, U64 len, U8Buf *out) {
 
 typedef enum DecKind {
   Dec_Identity,
-  Dec_Gzip,     // zlib auto-detect (gzip + zlib-wrapped)
+  Dec_Gzip,  // zlib auto-detect (gzip + zlib-wrapped)
   Dec_Brotli,
   Dec_Zstd,
 } DecKind;

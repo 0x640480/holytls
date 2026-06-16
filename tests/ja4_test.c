@@ -98,9 +98,10 @@ internal void test_profile(Arena *a, const Profile *prof, const char *golden) {
   if (cr.ctx) SSL_CTX_free(cr.ctx);
 }
 
-// Capture the TLS half of a QUIC/H3 profile's ClientHello (h3 ALPN, TLS1.3-only,
-// h3 sig-algs) and assert its JA4. Locks every h3 TlsProfile field offline (the
-// QUIC transport params ride QUIC separately and are value-locked in profile_test).
+// Capture the TLS half of a QUIC/H3 profile's ClientHello (h3 ALPN,
+// TLS1.3-only, h3 sig-algs) and assert its JA4. Locks every h3 TlsProfile field
+// offline (the QUIC transport params ride QUIC separately and are value-locked
+// in profile_test).
 internal void test_quic_profile(Arena *a, const QuicProfile *prof,
                                 const char *golden) {
   CtxResult cr;
@@ -145,18 +146,21 @@ int main(void) {
 
   // HTTP/3 (QUIC) profiles — the TLS half of the ClientHello. Both 148/149 h3
   // are wire-identical; locks the h3 TlsProfile fields offline.
-  test_quic_profile(a, profile_chrome148_h3(), "t13d0310h3_55b375c5d22e_7e133008cbfb");
-  test_quic_profile(a, profile_chrome149_h3(), "t13d0310h3_55b375c5d22e_7e133008cbfb");
+  test_quic_profile(a, profile_chrome148_h3(),
+                    "t13d0310h3_55b375c5d22e_7e133008cbfb");
+  test_quic_profile(a, profile_chrome149_h3(),
+                    "t13d0310h3_55b375c5d22e_7e133008cbfb");
 
-  // Firefox 151 — a genuinely different fingerprint: no GREASE, FFDHE groups, no
-  // ALPS, fixed extension order. H2 JA4 captured from real Firefox 151
+  // Firefox 151 — a genuinely different fingerprint: no GREASE, FFDHE groups,
+  // no ALPS, fixed extension order. H2 JA4 captured from real Firefox 151
   // (browserleaks). H3 JA4 is the build_ctx TLS-form of the QUIC profile.
   test_profile(a, profile_firefox151(), "t13d1617h2_86a278354501_3cbfd9057e0d");
   // Firefox H3: offline build_ctx JA4 == the live q13d0315h3 minus the
   // quic_transport_parameters(0039) ext ngtcp2 injects at runtime (same -1 as
   // Chrome's 0311->0310). Includes the Firefox-only EMS(0017)+reneg(ff01) the
   // fork patch re-enables, and the H3 sigalgs order.
-  test_quic_profile(a, profile_firefox151_h3(), "t13d0314h3_55b375c5d22e_056779b56822");
+  test_quic_profile(a, profile_firefox151_h3(),
+                    "t13d0314h3_55b375c5d22e_056779b56822");
 
   arena_release(a);
   fprintf(stderr, "[ja4_test] %d checks, %d failures\n", g_checks, g_fails);

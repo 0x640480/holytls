@@ -1,14 +1,16 @@
 // Offline RFC 6455 frame-codec tests. The parser consumes SERVER (unmasked)
-// frames; ws_frame_build produces CLIENT (masked) frames — so masking is checked
-// separately from parsing. The key property is the byte-exact partial-feed
-// invariant: a byte stream split at ANY offset must decode identically.
+// frames; ws_frame_build produces CLIENT (masked) frames — so masking is
+// checked separately from parsing. The key property is the byte-exact
+// partial-feed invariant: a byte stream split at ANY offset must decode
+// identically.
+#include "ws/ws_frame.h"
+
 #include <stdio.h>
 #include <string.h>
 
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/u8buf.h"
-#include "ws/ws_frame.h"
 
 global int g_checks = 0, g_fails = 0;
 #define CHECK(c)                                                   \
@@ -52,7 +54,8 @@ static void collect(void *user, const WsEvent *ev) {
   e->compressed = ev->compressed;
   e->code = ev->close_code;
   e->len = ev->len;
-  if (ev->len && ev->len <= sizeof e->data) MemoryCopy(e->data, ev->data, ev->len);
+  if (ev->len && ev->len <= sizeof e->data)
+    MemoryCopy(e->data, ev->data, ev->len);
 }
 
 // Feed `buf` through a fresh parser in `step`-byte chunks; collect into g_evs.
@@ -83,9 +86,9 @@ int main(void) {
     U8Buf b;
     u8buf_init(&b, a, 64);
     ws_frame_build(&b, WsOp_Text, 1, 0, (const U8 *)m, ml, key);
-    CHECK(b.v[0] == 0x81);                  // FIN + text
-    CHECK(b.v[1] == (U8)(0x80 | ml));       // MASK bit + len
-    CHECK(memcmp(b.v + 2, key, 4) == 0);    // mask key present
+    CHECK(b.v[0] == 0x81);                // FIN + text
+    CHECK(b.v[1] == (U8)(0x80 | ml));     // MASK bit + len
+    CHECK(memcmp(b.v + 2, key, 4) == 0);  // mask key present
     B32 unmask_ok = 1;
     for (U64 i = 0; i < ml; ++i)
       if ((U8)(b.v[6 + i] ^ key[i & 3]) != (U8)m[i]) unmask_ok = 0;
@@ -135,8 +138,8 @@ int main(void) {
   {
     U8Buf s;
     u8buf_init(&s, a, 64);
-    server_frame(&s, WsOp_Text, 0, (const U8 *)"Hel", 3);          // fin=0
-    server_frame(&s, WsOp_Ping, 1, (const U8 *)"pp", 2);           // control between
+    server_frame(&s, WsOp_Text, 0, (const U8 *)"Hel", 3);  // fin=0
+    server_frame(&s, WsOp_Ping, 1, (const U8 *)"pp", 2);   // control between
     server_frame(&s, WsOp_Continuation, 1, (const U8 *)"lo!", 3);  // fin=1
     CHECK(feed_in_steps(s.v, s.len, 1) >= 0);
     CHECK(g_nev == 2);
@@ -220,8 +223,8 @@ int main(void) {
     CHECK(feed_in_steps(rsv1_text, sizeof rsv1_text, 1) < 0);  // rejected
 
     // With compression allowed, RSV1 marks the message compressed; the codec
-    // surfaces the flag but does NOT inflate (the WsConn owns zlib). The payload
-    // is delivered verbatim.
+    // surfaces the flag but does NOT inflate (the WsConn owns zlib). The
+    // payload is delivered verbatim.
     g_nev = 0;
     WsParser p;
     ws_parser_init(&p, 0);
@@ -250,7 +253,8 @@ int main(void) {
     ws_parser_free(&p);
 
     // RSV1 on a CONTINUATION frame (only the first fragment may carry it).
-    U8 frag[] = {0x41, 0x01, 'a', 0xC0, 0x01, 'b'};  // RSV1|Text fin0, RSV1|cont fin1
+    U8 frag[] = {0x41, 0x01, 'a',
+                 0xC0, 0x01, 'b'};  // RSV1|Text fin0, RSV1|cont fin1
     ws_parser_init(&p, 0);
     ws_parser_allow_compression(&p);
     CHECK(ws_parser_feed(&p, frag, sizeof frag, collect, 0) < 0);
@@ -258,6 +262,7 @@ int main(void) {
   }
 
   arena_release(a);
-  fprintf(stderr, "[ws_frame_test] %d checks, %d failures\n", g_checks, g_fails);
+  fprintf(stderr, "[ws_frame_test] %d checks, %d failures\n", g_checks,
+          g_fails);
   return g_fails ? 1 : 0;
 }

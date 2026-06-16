@@ -4,10 +4,10 @@
 // STB_SPRINTF_IMPLEMENTATION is set before the guard fires the first time.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsign-compare"
-// Force aligned word accesses in stb_sprintf. Its default fast paths do unaligned
-// uint32 loads/stores (benign on x86/ARM64 but technically UB), which UBSan's
-// alignment check flags; this keeps UBSan clean without disabling the check for
-// our own code.
+// Force aligned word accesses in stb_sprintf. Its default fast paths do
+// unaligned uint32 loads/stores (benign on x86/ARM64 but technically UB), which
+// UBSan's alignment check flags; this keeps UBSan clean without disabling the
+// check for our own code.
 #define STB_SPRINTF_NOUNALIGNED
 #define STB_SPRINTF_IMPLEMENTATION
 #include "vendor/stb_sprintf.h"

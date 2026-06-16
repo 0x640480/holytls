@@ -75,16 +75,18 @@ static void run_session(EventLoop *loop, B32 ncto, const char *label) {
   CHECK(echo_ok(ws, WsOp_Binary, zeros, sizeof zeros, 4));
   CHECK(echo_ok(ws, WsOp_Binary, zeros, sizeof zeros, 4));
 
-  const char *txt = "permessage-deflate round-trips this text message just fine";
+  const char *txt =
+      "permessage-deflate round-trips this text message just fine";
   CHECK(echo_ok(ws, WsOp_Text, (const U8 *)txt, strlen(txt), 4));
 
   // Empty message in the MIDDLE: its compressed form is empty after the trailer
-  // strip; without the RFC 7692 7.2.3.6 0x00-octet fix this corrupts the inflate
-  // context and breaks every following message — so the sends below guard it.
+  // strip; without the RFC 7692 7.2.3.6 0x00-octet fix this corrupts the
+  // inflate context and breaks every following message — so the sends below
+  // guard it.
   CHECK(echo_ok(ws, WsOp_Text, (const U8 *)"", 0, 4));
 
-  // Payload literally containing the 00 00 ff ff marker bytes — must survive the
-  // strip/append trailer handling intact.
+  // Payload literally containing the 00 00 ff ff marker bytes — must survive
+  // the strip/append trailer handling intact.
   U8 marker[12] = {1, 2, 0x00, 0x00, 0xff, 0xff, 3, 4, 0x00, 0x00, 0xff, 0xff};
   CHECK(echo_ok(ws, WsOp_Binary, marker, sizeof marker, 4));
 
@@ -95,7 +97,8 @@ static void run_session(EventLoop *loop, B32 ncto, const char *label) {
   CHECK(echo_ok(ws, WsOp_Binary, rnd, rlen, 4));
   free(rnd);
 
-  // Large, mixed message (multi-DATA-frame, exercises the deferred provider too).
+  // Large, mixed message (multi-DATA-frame, exercises the deferred provider
+  // too).
   U64 blen = 100 * 1024;
   U8 *big = (U8 *)malloc(blen);
   for (U64 i = 0; i < blen; ++i) big[i] = (U8)((i / 64) ^ (i * 7));

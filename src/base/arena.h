@@ -41,7 +41,7 @@ Arena *arena_alloc_sized(U64 block_size);
 void arena_release(Arena *arena);
 
 //- thread-local recycle pool (for hot, short-lived per-request arenas).
-//acquire()
+// acquire()
 //  hands back a cleared, ready-to-use arena — popping the free-list, else
 //  arena_alloc'ing; recycle() returns one to the pool (clearing it) instead of
 //  freeing, so the next acquire() skips the malloc. Single loop thread => no
@@ -82,7 +82,7 @@ Temp scratch_begin(Arena **conflicts, U64 conflict_count);
 #define scratch_end(t) temp_end(t)
 
 //- allocation profiling (compiled in only with HOLYTLS_ARENA_STATS; otherwise
-//the
+// the
 //  accessors return zeros and the hot path is untouched). Cumulative counters
 //  plus current/peak live tallies. Single-process-wide; not
 //  thread-synchronized.

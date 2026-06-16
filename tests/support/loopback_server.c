@@ -125,19 +125,20 @@ typedef struct LbStream {
   B32 stall;  // send the body but never EOF (hold the stream open) — for
               // exercising a client that aborts mid-stream
   // RFC 8441 Extended CONNECT (WS echo mode):
-  char protocol[32];   // ":protocol" (e.g. "websocket")
+  char protocol[32];  // ":protocol" (e.g. "websocket")
   U64 protocol_len;
-  B32 is_ws;           // a CONNECT + :protocol stream
-  B32 ws_responded;    // 200 sent, deferred echo provider installed
-  B32 ws_pmd;          // permessage-deflate negotiated (client offered it)
-  char req_ext[64];    // the client's Sec-WebSocket-Extensions request value
+  B32 is_ws;         // a CONNECT + :protocol stream
+  B32 ws_responded;  // 200 sent, deferred echo provider installed
+  B32 ws_pmd;        // permessage-deflate negotiated (client offered it)
+  char req_ext[64];  // the client's Sec-WebSocket-Extensions request value
   U64 req_ext_len;
-  U8 *win;             // inbound client (masked) frame accumulator
+  U8 *win;  // inbound client (masked) frame accumulator
   U64 win_len, win_cap;
-  U8 *wout;            // re-framed server (unmasked) bytes; the provider drains
+  U8 *wout;  // re-framed server (unmasked) bytes; the provider drains
   U64 wout_len, wout_off, wout_cap;
 #ifdef HOLYTLS_HAVE_ZLIB
-  z_stream sin, sout;  // server inflate (client->server) + deflate (echo) streams
+  z_stream sin,
+      sout;  // server inflate (client->server) + deflate (echo) streams
   B32 sin_init, sout_init;
 #endif
   struct LbStream *next;  // per-connection list (freed on close incl. withheld)
@@ -167,9 +168,10 @@ struct LbServer {
   LbAlpn alpn;
   LbHandler handler;
   void *user;
-  B32 ws_echo;       // RFC 8441 Extended CONNECT echo origin (lb_ws_echo_start)
-  B32 ws_pmd;        // also negotiate permessage-deflate (lb_ws_echo_start_pmd)
-  B32 ws_pmd_ncto;   // negotiate client_no_context_takeover too (deflateReset path)
+  B32 ws_echo;      // RFC 8441 Extended CONNECT echo origin (lb_ws_echo_start)
+  B32 ws_pmd;       // also negotiate permessage-deflate (lb_ws_echo_start_pmd)
+  B32 ws_pmd_ncto;  // negotiate client_no_context_takeover too (deflateReset
+                    // path)
   LbConn *conns;
 };
 
@@ -383,7 +385,8 @@ static B32 lb_pmd_deflate(LbStream *st, const U8 *in, U64 len, U8 **out,
     n = cap - st->sout.avail_out;
   } while (st->sout.avail_out == 0);
   if (n >= 4) n -= 4;  // strip the 00 00 ff ff sync marker
-  if (n == 0) buf[n++] = 0x00;  // RFC 7692 7.2.3.6: empty -> a single 0x00 octet
+  if (n == 0)
+    buf[n++] = 0x00;  // RFC 7692 7.2.3.6: empty -> a single 0x00 octet
   *out = buf;
   *outlen = n;
   return 1;
@@ -423,7 +426,8 @@ static void lb_ws_reframe(LbStream *st) {
     const U8 *pl = st->win + i + hdr + mklen;
     U8 *raw = (U8 *)malloc(plen ? plen : 1);  // unmasked frame payload
     if (!raw) break;                          // OOM (test helper)
-    for (U64 j = 0; j < plen; ++j) raw[j] = masked ? (U8)(pl[j] ^ mk[j & 3]) : pl[j];
+    for (U64 j = 0; j < plen; ++j)
+      raw[j] = masked ? (U8)(pl[j] ^ mk[j & 3]) : pl[j];
     i += hdr + mklen + plen;
 
     const U8 *epay = raw;  // bytes to echo back
@@ -529,9 +533,10 @@ static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
   LbStream *st =
       (LbStream *)nghttp2_session_get_stream_user_data(s, frame->hd.stream_id);
 
-  // RFC 8441 Extended CONNECT: a `:method=CONNECT` + `:protocol` HEADERS opens a
-  // bidirectional stream (no END_STREAM on the request). Reply 200 and install a
-  // deferred echo provider; the stream then stays open for DATA both ways.
+  // RFC 8441 Extended CONNECT: a `:method=CONNECT` + `:protocol` HEADERS opens
+  // a bidirectional stream (no END_STREAM on the request). Reply 200 and
+  // install a deferred echo provider; the stream then stays open for DATA both
+  // ways.
   if (c->server->ws_echo && st && !st->ws_responded &&
       frame->hd.type == NGHTTP2_HEADERS && st->protocol_len > 0 &&
       str8_match(str8((U8 *)st->method, st->method_len), str8_lit("CONNECT"))) {
@@ -565,7 +570,8 @@ static int lb_h2_frame_recv(nghttp2_session *s, const nghttp2_frame *frame,
 
   if (!(frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) return 0;
   if (!st) return 0;
-  if (!c->server->handler) return 0;  // WS-echo origin: no plain-request handler
+  if (!c->server->handler)
+    return 0;  // WS-echo origin: no plain-request handler
 
   // Received header names in wire order (views into st->hdr_buf, valid for the
   // handler call below).
@@ -657,8 +663,8 @@ static void lb_h2_init(LbConn *c) {
       {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, 100}};
   size_t niv = 1;
   if (c->server->ws_echo)  // RFC 8441: allow Extended CONNECT (:protocol)
-    iv[niv++] = (nghttp2_settings_entry){
-        NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1};
+    iv[niv++] =
+        (nghttp2_settings_entry){NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1};
   nghttp2_submit_settings(c->h2, NGHTTP2_FLAG_NONE, iv, niv);
 }
 
@@ -776,7 +782,8 @@ static void lb_conn_drive(LbConn *c) {
     unsigned al = 0;
     SSL_get0_alpn_selected(c->ssl, &ap, &al);
     c->is_h2 = (al == 2 && memcmp(ap, "h2", 2) == 0);
-    X509 *peer = SSL_get_peer_certificate(c->ssl);  // mTLS: did the client present one?
+    X509 *peer =
+        SSL_get_peer_certificate(c->ssl);  // mTLS: did the client present one?
     c->has_client_cert = peer != 0;
     if (peer) X509_free(peer);
     if (c->is_h2) lb_h2_init(c);
@@ -895,7 +902,8 @@ LbServer *lb_ws_echo_start(EventLoop *loop, U16 *out_port) {
   LbServer *s = (LbServer *)calloc(1, sizeof(LbServer));
   s->ctx = lb_server_ctx(LB_ALPN_H2);
   s->alpn = LB_ALPN_H2;
-  s->ws_echo = 1;  // handler stays 0: this origin only serves WS Extended CONNECT
+  s->ws_echo =
+      1;  // handler stays 0: this origin only serves WS Extended CONNECT
   U16 port = lb_listen(loop, &s->listener, lb_on_conn, s);
   if (out_port) *out_port = port;
   return s;
