@@ -18,7 +18,7 @@ from holytls._client import (
     _fill_request,
     _normalize_headers,
     _profile_name,
-    _response_from_c,
+    _response_from_c_lazy,
     available_profiles,
 )
 from holytls._models import (
@@ -31,6 +31,10 @@ from holytls._models import (
     Response,
 )
 from holytls._native import ffi, lib
+
+# Max completions processed per _drain tick before yielding to the loop (bounds
+# the GIL hold for a huge burst; lazy bodies keep each item cheap, so generous).
+_DRAIN_MAX = 128
 
 
 class AsyncClient:
@@ -132,6 +136,7 @@ class AsyncClient:
         # _drain for the lock-free ordering + its GIL-atomicity assumption.
         self._completions: list = []  # [(req_id, c_resp), ...]
         self._drain_scheduled = False
+        self._carry: list = []  # bounded-drain leftover (asyncio-thread-only)
         # ONE lifetime cffi callback dispatches every completion by req_id.
         self._cb = ffi.callback(
             "void(void *, uint64_t, holytls_response *)", self._on_complete
@@ -178,13 +183,31 @@ class AsyncClient:
         self._drain_scheduled = False
         batch = self._completions
         self._completions = []
+        # Carry forward any leftover from a prior bounded tick (asyncio-thread-only,
+        # so it never races the loop-thread producer of _completions).
+        if self._carry:
+            batch = self._carry + batch
+            self._carry = []
+        # Bound the work per tick so a huge burst can't hold the GIL in one shot
+        # (lazy bodies make each item cheap, but the eager header decode still
+        # costs O(headers)); re-schedule the remainder for the next tick.
+        if len(batch) > _DRAIN_MAX:
+            self._carry = batch[_DRAIN_MAX:]
+            batch = batch[:_DRAIN_MAX]
+            if not self._drain_scheduled:
+                self._drain_scheduled = True
+                self._loop.call_soon(self._drain)
         for req_id, c_resp in batch:
             fut = self._inflight.pop(req_id, None)
             if fut is None or fut.cancelled():
                 lib.holytls_response_free(c_resp)  # awaiter gone -> free
                 continue
             try:
-                resp = _response_from_c(c_resp)  # marshals AND frees c_resp (finally)
+                # LAZY: decode the cheap meta now, defer the body copy to first
+                # .content access — so this drain never memcpys a body under the
+                # GIL (which would starve the loop thread). The Response owns
+                # c_resp (ffi.gc) and frees it exactly once.
+                resp = _response_from_c_lazy(c_resp)
             except BaseException as e:  # noqa: BLE001 - surfaced on the future
                 if not fut.done():
                     fut.set_exception(e)
@@ -327,10 +350,14 @@ class AsyncClient:
         self._flush_scheduled = False
         # Free any completions parked but never drained (loop died before _drain):
         # these are owned native responses Python must free (the C free path below
-        # doesn't know about them).
+        # doesn't know about them). Drain BOTH the producer queue and the bounded-
+        # drain carry.
         for _rid, c_resp in self._completions:
             lib.holytls_response_free(c_resp)
+        for _rid, c_resp in self._carry:
+            lib.holytls_response_free(c_resp)
         self._completions = []
+        self._carry = []
         self._drain_scheduled = False
         # Fail any futures still unresolved (in-flight at stop, or registered but
         # never flushed).
