@@ -346,7 +346,7 @@ def _apply_config(
     override_default_headers=False,
     header_order=None,
     proxy=None,
-    proxies=None,
+    proxy_pool=None,
     verify_proxy=True,
     local_address=None,
     cert=None,
@@ -381,8 +381,8 @@ def _apply_config(
             c, proxy.encode("utf-8"), 1 if verify_proxy else 0
         ):
             raise HolyTLSError(f"invalid proxy URL: {proxy!r}")
-    if proxies:
-        for purl in proxies:
+    if proxy_pool:
+        for purl in proxy_pool:
             if not lib.holytls_client_add_proxy(
                 c, purl.encode("utf-8"), 1 if verify_proxy else 0
             ):
@@ -425,7 +425,7 @@ class Client:
         max_redirects: int = 0,
         http_version: Union[HttpVersion, str, int, None] = None,
         proxy: Optional[str] = None,
-        proxies: Optional[Sequence[str]] = None,
+        proxy_pool: Optional[Sequence[str]] = None,
         verify_proxy: bool = True,
         ech: bool = False,
         resumption: bool = False,
@@ -475,7 +475,7 @@ class Client:
             override_default_headers=override_default_headers,
             header_order=header_order,
             proxy=proxy,
-            proxies=proxies,
+            proxy_pool=proxy_pool,
             verify_proxy=verify_proxy,
             local_address=local_address,
             cert=cert,
