@@ -7,6 +7,12 @@
 typedef struct Req Req;
 struct Req {
   H2Session *sess;
+  // Per-request arena (arena_acquire'd from the thread-local recycled pool),
+  // recycled when the stream closes — so a long-lived (keep-alive-pooled)
+  // connection's per-request memory (this Req + headers + body + request-body
+  // copy) is reclaimed per stream instead of accumulating on the session arena.
+  // For a WebSocket (is_ws) Req this aliases the session arena (long-lived).
+  Arena *arena;
   S32 stream_id;
   int status;
   HeaderList headers;
@@ -22,10 +28,11 @@ struct Req {
   StreamDecoder *dec;  // malloc'd; created lazily on first DATA, freed at close
   B32 dec_inited;
   B32 stream_failed;  // a decode/bomb error mid-stream -> deliver ok=0
-  Req *dec_next;  // intrusive link: Reqs that created a decoder (s->dec_list),
-                  // so h2_session_release can free any still-live decoder
-                  // (nghttp2_session_del frees open streams WITHOUT firing
-                  // on_stream_close, which would otherwise leak the decoder)
+  Req *
+      live_next;  // intrusive link: all open non-WS Reqs (s->live), so
+                  // h2_session_release can recycle the arena + free any still-
+                  // live decoder of a stream nghttp2_session_del frees WITHOUT
+                  // firing on_stream_close (timeout / drop / shutdown / cancel)
   // WebSocket over H2 (RFC 8441): is_ws marks a bidirectional CONNECT stream.
   // Inbound DATA goes to on_data (opaque, not decoded); outbound bytes queue in
   // wq (arena-backed, reused across sends — drained by ws_data_read_cb right
@@ -49,7 +56,8 @@ struct H2Session {
   nghttp2_session *session;
   int open_streams;     // concurrent in-flight streams (multiplexing)
   B32 goaway_received;  // server asked us to stop opening new streams
-  Req *dec_list;        // intrusive list of Reqs that created a StreamDecoder
+  Req *live;            // intrusive stack of all open non-WS Reqs (per-stream
+                        // arena owners); swept at h2_session_release
 };
 
 // Request body source for nghttp2's DATA-frame read callback (arena-owned).
@@ -70,12 +78,27 @@ internal nghttp2_nv make_nv(String8 name, String8 value) {
   return nv;
 }
 
-internal void body_append(H2Session *s, Req *req, const U8 *data, U64 len) {
+// Pre-size the response-body buffer to a known content-length, but never
+// front-load more than this for a bogus/huge CL (then fall back to doubling).
+#define H2_BODY_PRESIZE_MAX MB(8)
+
+internal void body_append(Req *req, const U8 *data, U64 len) {
   if (len == 0) return;
   if (req->body_len + len > req->body_cap) {
-    U64 newcap = req->body_cap ? req->body_cap * 2 : KB(4);
+    U64 newcap;
+    if (req->body_cap == 0) {
+      // First grow: pre-size to content-length (known from HEADERS, which
+      // always precede DATA) to avoid ~log2(N) reallocs + their copies. Clamp a
+      // bogus CL; absent (chunked) or over-cap falls through to doubling below.
+      String8 *cl =
+          header_list_get_ci(&req->headers, str8_lit("content-length"));
+      U64 hint = cl ? str8_to_u64(*cl) : 0;
+      newcap = (hint > 0 && hint <= H2_BODY_PRESIZE_MAX) ? hint : KB(4);
+    } else {
+      newcap = req->body_cap * 2;
+    }
     while (newcap < req->body_len + len) newcap *= 2;
-    U8 *nb = push_array_no_zero(s->arena, U8, newcap);
+    U8 *nb = push_array_no_zero(req->arena, U8, newcap);
     if (req->body_len) MemoryCopy(nb, req->body, req->body_len);
     req->body = nb;
     req->body_cap = newcap;
@@ -108,7 +131,7 @@ internal int on_header_cb(nghttp2_session *session, const nghttp2_frame *frame,
   if (str8_match(n, str8_lit(":status"))) {
     req->status = (int)str8_to_u64(v);
   } else {
-    Arena *a = req->sess->arena;
+    Arena *a = req->arena;  // per-request arena (reclaimed at stream close)
     header_list_push(&req->headers, push_str8_copy(a, n), push_str8_copy(a, v),
                      0);
   }
@@ -118,7 +141,7 @@ internal int on_header_cb(nghttp2_session *session, const nghttp2_frame *frame,
 internal int on_data_cb(nghttp2_session *session, U8 flags, S32 stream_id,
                         const U8 *data, size_t len, void *user) {
   (void)flags;
-  H2Session *s = (H2Session *)user;
+  (void)user;  // s->live tracking is set up at submit; recycle at close/release
   Req *req = (Req *)nghttp2_session_get_stream_user_data(session, stream_id);
   if (req && req->is_ws) {
     // WebSocket CONNECT stream: hand the raw DATA (WS frame bytes) to on_data
@@ -132,16 +155,14 @@ internal int on_data_cb(nghttp2_session *session, U8 flags, S32 stream_id,
       String8 *ce = header_list_get_ci(&req->headers, str8_lit("content-encoding"));
       req->dec = stream_decoder_create(ce ? *ce : str8_zero());
       req->dec_inited = 1;
-      if (req->dec) {  // track for teardown-time cleanup (see h2_session_release)
-        req->dec_next = s->dec_list;
-        s->dec_list = req;
-      }
+      // No separate tracking needed: req is already on s->live, which
+      // h2_session_release sweeps to free any decoder left on an open stream.
     }
     if (req->dec &&
         !stream_decoder_push(req->dec, data, len, req->on_chunk, req->chunk_user))
       req->stream_failed = 1;
   } else if (req) {
-    body_append(s, req, data, len);
+    body_append(req, data, len);
   }
   // With no_auto_window_update (the preface WINDOW_UPDATE is fingerprint
   // bytes), nghttp2 replenishes recv windows only when we report bytes
@@ -156,6 +177,16 @@ internal int on_data_cb(nghttp2_session *session, U8 flags, S32 stream_id,
   return 0;
 }
 
+// Unlink a Req from the session's live stack (O(open_streams), small).
+internal void live_remove(H2Session *s, Req *req) {
+  for (Req **pp = &s->live; *pp; pp = &(*pp)->live_next)
+    if (*pp == req) {
+      *pp = req->live_next;
+      req->live_next = 0;
+      return;
+    }
+}
+
 internal int on_stream_close_cb(nghttp2_session *session, S32 stream_id,
                                 U32 error_code, void *user) {
   H2Session *s = (H2Session *)user;
@@ -165,7 +196,7 @@ internal int on_stream_close_cb(nghttp2_session *session, S32 stream_id,
 
   if (req->is_ws) {  // CONNECT stream closed: signal EOF (data==0,len==0)
     if (req->on_data) req->on_data(req->on_data_user, 0, 0);
-    return 0;  // wq is arena-backed; nothing to free here
+    return 0;  // WS reqs live on the session arena; freed at h2_session_release
   }
 
   if (req->dec) {  // streaming: tear down the decoder (also covers RST/cancel)
@@ -182,8 +213,15 @@ internal int on_stream_close_cb(nghttp2_session *session, S32 stream_id,
   resp.body = req->on_chunk ? 0 : req->body;
   resp.body_len = req->on_chunk ? 0 : req->body_len;
   resp.ok = (error_code == NGHTTP2_NO_ERROR) && !req->stream_failed;
+  // The consumer copies body/headers out DURING the callback ("valid only
+  // during the callback"), so reclaim this stream's arena right after it
+  // returns — keeping a keep-alive-pooled connection's memory flat instead of
+  // unbounded.
   if (req->cb) req->cb(req->user, &resp);
-  return 0;  // Req is arena-owned; freed in bulk on h2_session_release
+  live_remove(s, req);
+  arena_recycle(
+      req->arena);  // frees the Req + its headers/body; req dangles now
+  return 0;
 }
 
 // Note a received GOAWAY so the connection pool stops opening new streams on a
@@ -257,18 +295,22 @@ H2Session *h2_session_alloc(const Http2Profile *prof, H2SendFn send_fn,
 
 void h2_session_release(H2Session *s) {
   if (!s) return;
-  // Free any streaming decoder still live on an open stream. nghttp2_session_del
-  // frees open streams DIRECTLY without firing on_stream_close_cb, so a stream
-  // aborted mid-body (timeout / connection drop / shutdown) would otherwise
-  // orphan the malloc'd StreamDecoder + its zlib/brotli/zstd state. on_stream_close
-  // nulls req->dec after freeing, so closed streams are skipped (no double-free).
-  for (Req *r = s->dec_list; r; r = r->dec_next)
-    if (r->dec) {
-      stream_decoder_free(r->dec);
-      r->dec = 0;
-    }
+  // Sweep streams still open at teardown — nghttp2_session_del frees open
+  // streams DIRECTLY without firing on_stream_close_cb (a stream aborted mid-
+  // body by timeout / drop / shutdown, or one cancelled via
+  // h2_session_cancel_stream which nulls its user-data so close early-returns).
+  // For each we must free its malloc'd StreamDecoder (zlib/brotli/zstd state)
+  // and recycle its per-request arena (never reached by on_stream_close).
+  // Capture live_next before recycling — the Req node lives in the arena being
+  // recycled.
+  for (Req *r = s->live, *next; r; r = next) {
+    next = r->live_next;
+    if (r->dec) stream_decoder_free(r->dec);
+    arena_recycle(r->arena);
+  }
+  s->live = 0;
   if (s->session) nghttp2_session_del(s->session);
-  arena_release(s->arena);  // frees the struct + all reqs/headers/bodies
+  arena_release(s->arena);  // frees the session struct + any WS reqs/wq
 }
 
 //- preface / io -------------------------------------------------------------
@@ -361,9 +403,14 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
                                s->prof->priority_weight,
                                s->prof->priority_exclusive ? 1 : 0);
 
-  Req *req = push_struct(s->arena, Req);
+  // Per-request arena from the recycled pool: this Req + its response headers +
+  // body + the request-body copy all live here and are reclaimed when the
+  // stream closes (so a reused keep-alive connection's memory stays flat).
+  Arena *ra = arena_acquire();
+  Req *req = push_struct(ra, Req);
+  req->arena = ra;
   req->sess = s;
-  header_list_init(&req->headers, s->arena);
+  header_list_init(&req->headers, ra);
   req->cb = cb;
   req->user = user;
   req->on_chunk = on_chunk;  // non-null => stream the body, don't buffer
@@ -372,9 +419,9 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
   nghttp2_data_provider2 prd;
   nghttp2_data_provider2 *prdp = 0;
   if (body_len) {
-    U8 *copy = push_array_no_zero(s->arena, U8, body_len);
+    U8 *copy = push_array_no_zero(ra, U8, body_len);
     MemoryCopy(copy, body, body_len);
-    BodySource *bs = push_struct(s->arena, BodySource);
+    BodySource *bs = push_struct(ra, BodySource);
     bs->p = copy;
     bs->len = body_len;
     bs->off = 0;
@@ -386,8 +433,12 @@ S32 h2_session_submit_request(H2Session *s, String8 method, String8 scheme,
   S32 sid = nghttp2_submit_request2(
       s->session, s->prof->use_priority ? &pri : 0, nva, n, prdp, req);
   scratch_end(scr);
-  if (sid < 0) return sid;
+  if (sid < 0) {
+    arena_recycle(ra);  // submit failed: reclaim the per-request arena
+    return sid;
+  }
   req->stream_id = sid;
+  SLLStackPush_N(s->live, req, live_next);  // tracked for teardown sweep
   s->open_streams += 1;
   h2_session_flush(s);
   return sid;
@@ -472,7 +523,12 @@ S32 h2_session_ws_connect(H2Session *s, String8 scheme, String8 authority,
   for (U64 i = 0; i < header_count; ++i)
     nva[n++] = make_nv(headers[i].name, headers[i].value);
 
+  // A WebSocket CONNECT stream is long-lived and singular; keep it on the
+  // session arena (NOT a per-request arena, and not on s->live) — its wq
+  // high-water is one frame, so there's no unbounded per-request growth to
+  // reclaim, and on_stream_close's is_ws branch never recycles.
   Req *req = push_struct(s->arena, Req);
+  req->arena = s->arena;
   req->sess = s;
   header_list_init(&req->headers, s->arena);
   req->is_ws = 1;
@@ -553,3 +609,5 @@ U32 h2_session_max_concurrent_streams(H2Session *s) {
 }
 
 B32 h2_session_goaway_received(H2Session *s) { return s->goaway_received; }
+
+U64 h2_session_arena_used(H2Session *s) { return s ? arena_pos(s->arena) : 0; }

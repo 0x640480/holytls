@@ -15,8 +15,9 @@ typedef struct H2Response H2Response;
 struct H2Response {
   S32 stream_id;
   int status;
-  HeaderList *headers;  // valid until the session is released
-  U8 *body;
+  HeaderList *headers;  // valid ONLY during the callback (the stream's per-
+                        // request arena is reclaimed right after it returns)
+  U8 *body;             // valid ONLY during the callback (same as headers)
   U64 body_len;
   B32 ok;  // false if the stream was reset / errored
 };
@@ -103,5 +104,11 @@ B32 h2_session_idle(H2Session *s);
 // server's SETTINGS arrive). True once a GOAWAY has been received.
 U32 h2_session_max_concurrent_streams(H2Session *s);
 B32 h2_session_goaway_received(H2Session *s);
+
+// Bytes currently used in the SESSION arena (introspection / tests). With per-
+// request arenas this stays ~flat as streams come and go on a reused
+// connection; a regression that re-routed per-request allocations back to the
+// session arena would make it grow ~linearly with request count.
+U64 h2_session_arena_used(H2Session *s);
 
 #endif  // HOLYTLS_H2_H
