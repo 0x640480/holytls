@@ -44,7 +44,8 @@ internal void on_response(void *user, const Response *r) {
 }
 
 // One GET https://tls.browserleaks.com/json through the full Client stack with
-// |prof|, asserting browserleaks reports the byte-exact fresh-handshake goldens.
+// |prof|, asserting browserleaks reports the byte-exact fresh-handshake
+// goldens.
 internal void run_profile(EventLoop *loop, const Profile *prof,
                           const char *want_ja4, const char *want_akamai) {
   Client client;

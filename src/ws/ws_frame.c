@@ -9,10 +9,9 @@ global const U8 g_ws_empty[1] = {0};
 
 // --- build (client frames are always masked) --------------------------------
 
-void ws_frame_build(U8Buf *out, WsOpcode op, B32 fin, B32 rsv1, const U8 *payload,
-                    U64 len, const U8 mask_key[4]) {
-  u8buf_push(out,
-             (U8)((fin ? 0x80 : 0) | (rsv1 ? 0x40 : 0) | ((U8)op & 0x0f)));
+void ws_frame_build(U8Buf *out, WsOpcode op, B32 fin, B32 rsv1,
+                    const U8 *payload, U64 len, const U8 mask_key[4]) {
+  u8buf_push(out, (U8)((fin ? 0x80 : 0) | (rsv1 ? 0x40 : 0) | ((U8)op & 0x0f)));
   if (len < 126) {
     u8buf_push(out, (U8)(0x80 | len));
   } else if (len <= 0xffff) {
@@ -66,8 +65,8 @@ internal B32 ws_msg_append(WsParser *p, const U8 *d, U64 n) {
   return 1;
 }
 
-// A complete frame header has arrived (p->hdr[0..hdr_need)); validate it and set
-// up payload accumulation. Returns 0 on a protocol violation.
+// A complete frame header has arrived (p->hdr[0..hdr_need)); validate it and
+// set up payload accumulation. Returns 0 on a protocol violation.
 internal B32 ws_begin_frame(WsParser *p) {
   p->cur_fin = (p->hdr[0] & 0x80) != 0;
   p->cur_op = (WsOpcode)(p->hdr[0] & 0x0f);
@@ -87,7 +86,8 @@ internal B32 ws_begin_frame(WsParser *p) {
   if (rsv1 && !p->allow_rsv1) return 0;  // RSV1 without negotiated extension
 
   if (p->cur_op & 0x8) {  // control frame
-    if (!p->cur_fin || plen > 125) return 0;  // control: never fragmented, <=125
+    if (!p->cur_fin || plen > 125)
+      return 0;          // control: never fragmented, <=125
     if (rsv1) return 0;  // RFC 7692: control frames are never compressed
     if (p->cur_op != WsOp_Close && p->cur_op != WsOp_Ping &&
         p->cur_op != WsOp_Pong)
@@ -148,7 +148,8 @@ internal B32 ws_frame_done(WsParser *p, WsEventFn cb, void *user) {
     MemoryZeroStruct(&ev);
     ev.kind = WsEvent_Message;
     ev.op = p->msg_op;
-    ev.data = p->msg ? p->msg : g_ws_empty;  // non-null even for an empty message
+    ev.data =
+        p->msg ? p->msg : g_ws_empty;  // non-null even for an empty message
     ev.len = p->msg_len;
     ev.compressed = p->msg_rsv1;  // RFC 7692: payload is still deflated
     cb(user, &ev);

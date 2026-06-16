@@ -2,6 +2,7 @@
 
 #include <uv.h>
 
+#include "base/platform_net.h"  // inet_pton (validate client_set_local_address)
 #include "core/alt_svc.h"
 #include "core/client_internal.h"
 #include "core/decompress.h"
@@ -10,7 +11,6 @@
 #include "core/json.h"
 #include "core/pool.h"
 #include "core/url.h"
-#include "base/platform_net.h"  // inet_pton (validate client_set_local_address)
 #include "h1/h1.h"
 #include "h2/h2.h"
 #include "h3/h3_session.h"
@@ -405,7 +405,8 @@ struct H2Request {
   B32 retried_no_early;  // already retried once without 0-RTT (one-shot guard)
   ReqTimer *timeout;     // whole-operation deadline timer (0 = no timeout)
   ProxyConfig proxy;     // resolved proxy for this request (type None = direct)
-  BodyChunkFn on_chunk;  // streaming sink (0 = buffer); set => empty Response body
+  BodyChunkFn
+      on_chunk;  // streaming sink (0 = buffer); set => empty Response body
   void *chunk_user;
 };
 
@@ -734,7 +735,7 @@ internal void h2req_start(Client *c, Method m, String8 url,
   req->cb = cb;
   req->user = user;
   req->proxy = proxy ? *proxy : c->proxy;  // resolved proxy (None = direct)
-  req->on_chunk = on_chunk;  // streaming sink (0 = buffer)
+  req->on_chunk = on_chunk;                // streaming sink (0 = buffer)
   req->chunk_user = chunk_user;
   req->t_start_ns = uv_hrtime();
   req->method = method_str(m);
@@ -797,7 +798,8 @@ struct QuicRequest {
   B32 retried_no_early;  // already retried once without 0-RTT (one-shot guard)
   ReqTimer *timeout;     // whole-operation deadline timer (0 = no timeout)
   ProxyConfig proxy;     // resolved proxy for this request (type None = direct)
-  BodyChunkFn on_chunk;  // streaming sink (0 = buffer); set => empty Response body
+  BodyChunkFn
+      on_chunk;  // streaming sink (0 = buffer); set => empty Response body
   void *chunk_user;
 };
 
@@ -1149,8 +1151,8 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
   }
   HttpVersion hv = c->http_version;
   // The proxy in effect for this request: the per-request override / pool pick
-  // (`proxy`) if given, else the client's single proxy. Rotation/override forces
-  // the per-request transport path (pooling would defeat the rotation).
+  // (`proxy`) if given, else the client's single proxy. Rotation/override
+  // forces the per-request transport path (pooling would defeat the rotation).
   const ProxyConfig *px = proxy ? proxy : &c->proxy;
   // Streaming and rotation/override both take the non-pooled per-request path
   // (the pool buffers + would defeat both).
@@ -1295,9 +1297,9 @@ struct EchPrefetch {
   String8 body;
   ResponseFn cb;
   void *user;
-  U64 deadline_ns;   // the operation deadline (the DoH round-trip eats into it)
-  ProxyConfig proxy; // the request's resolved proxy (carried across the DoH)
-  B32 has_proxy;     // 1 => use proxy on replay; 0 => the client's single proxy
+  U64 deadline_ns;  // the operation deadline (the DoH round-trip eats into it)
+  ProxyConfig proxy;  // the request's resolved proxy (carried across the DoH)
+  B32 has_proxy;  // 1 => use proxy on replay; 0 => the client's single proxy
   BodyChunkFn on_chunk;  // streaming sink (carried across the DoH)
   void *chunk_user;
   String8 header_order;  // per-request wire order CSV, carried across the DoH
@@ -1521,10 +1523,10 @@ internal void client_redirect_cb(void *user, const Response *r) {
   arena_release(st->arena);
 }
 
-// Build the shared HTTPS-proxy outer TLS context on first need (host-independent
-// — one ctx serves the single proxy, every pool entry, and any per-request
-// override). Idempotent; freed in client_cleanup, self-healing if a later
-// client_set_proxy frees it.
+// Build the shared HTTPS-proxy outer TLS context on first need
+// (host-independent — one ctx serves the single proxy, every pool entry, and
+// any per-request override). Idempotent; freed in client_cleanup, self-healing
+// if a later client_set_proxy frees it.
 internal void client_ensure_proxy_ctx(Client *c, B32 verify) {
   if (c->proxy_ctx.ctx) return;
   c->proxy_tls = c->profile->tls;
@@ -1532,10 +1534,11 @@ internal void client_ensure_proxy_ctx(Client *c, B32 verify) {
   c->proxy_tls.alpn_wire_len = (U16)sizeof k_alpn_http11;
   c->proxy_tls.alps_count = 0;
   c->proxy_ctx = build_ctx(&c->proxy_tls, verify);
-  c->proxy_verify = verify;  // record the verify the live shared ctx was built
-                             // with, so it stays consistent with the ctx (the
-                             // ctx is build-once; the FIRST HTTPS proxy's verify
-                             // wins until a client_set_proxy change frees it)
+  c->proxy_verify =
+      verify;  // record the verify the live shared ctx was built
+               // with, so it stays consistent with the ctx (the
+               // ctx is build-once; the FIRST HTTPS proxy's verify
+               // wins until a client_set_proxy change frees it)
 }
 
 // Resolve the proxy in effect for a request: a per-request override URL (if
@@ -1554,7 +1557,8 @@ internal B32 client_resolve_proxy(Client *c, String8 override_url,
   if (c->proxy_pool_count) {
     *out = c->proxy_pool[c->proxy_rr];
     c->proxy_rr = (U8)((c->proxy_rr + 1) % c->proxy_pool_count);
-    if (out->type == ProxyType_Https)  // (re)build the shared outer ctx on demand
+    if (out->type ==
+        ProxyType_Https)  // (re)build the shared outer ctx on demand
       client_ensure_proxy_ctx(c, c->proxy_verify);
     return 1;
   }
@@ -1587,9 +1591,9 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
 
   U64 deadline = p->deadline_ns ? p->deadline_ns : client_deadline(c);
 
-  // Single hop: caller forced it (the former client_send), following is disabled
-  // on the client, or streaming (a streamed body is terminal — we can't follow a
-  // redirect after handing chunks to the sink).
+  // Single hop: caller forced it (the former client_send), following is
+  // disabled on the client, or streaming (a streamed body is terminal — we
+  // can't follow a redirect after handing chunks to the sink).
   if (p->no_redirects || c->max_redirects == 0 || p->on_chunk) {
     client_dispatch(c, p->method, p->url, headers, header_count, p->body.str,
                     p->body.size, cb, user, deadline, px, p->on_chunk,
@@ -1720,8 +1724,7 @@ B32 client_set_client_cert(Client *c, String8 cert_path, String8 key_path,
   Temp scr = scratch_begin(0, 0);
   const char *cp = push_str8_cstr(scr.arena, cert_path);
   const char *kp = push_str8_cstr(scr.arena, key_path);
-  const char *pw =
-      passphrase.size ? push_str8_cstr(scr.arena, passphrase) : 0;
+  const char *pw = passphrase.size ? push_str8_cstr(scr.arena, passphrase) : 0;
   // Present the cert on BOTH target contexts (H2/TCP + QUIC/H3); the proxy ctx
   // (outer TLS to a proxy) is left alone — a client cert is for the target.
   // SSL_new() inherits the cert/key, so every connection presents it.
@@ -1824,7 +1827,7 @@ B32 client_set_proxy(Client *c, String8 proxy_url, B32 verify_proxy) {
     MemoryZeroStruct(&c->proxy_ctx);
   }
   c->proxy = next;
-  if (c->proxy.type == ProxyType_Https)  // build the shared outer-TLS ctx
+  if (c->proxy.type == ProxyType_Https)        // build the shared outer-TLS ctx
     client_ensure_proxy_ctx(c, verify_proxy);  // records proxy_verify
   // Stop reusing pooled conns established through the old proxy (new requests
   // open fresh conns through the new one). No-op when pooling is off.

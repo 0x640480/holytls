@@ -182,8 +182,10 @@ const QuicProfile *profile_firefox151_h3(void);
 //- profile registry ---------------------------------------------------------
 // The single source of truth for which browser profiles exist. Each entry pairs
 // a stable name + id with the TCP/H2 and QUIC/H3 accessors; entry[0] is the
-// default ("newest"). Adding a browser = one new row (in src/profile/profiles.c)
-// + its data file. Selection is by name (the capi / Python layers resolve here).
+// default ("newest"). Adding a browser = one new row (in
+// src/profile/profiles.c)
+// + its data file. Selection is by name (the capi / Python layers resolve
+// here).
 typedef struct ProfileEntry ProfileEntry;
 struct ProfileEntry {
   U32 id;

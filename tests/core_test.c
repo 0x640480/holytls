@@ -55,17 +55,18 @@ internal void test_url(void) {
   // --- robustness: ports ---
   CHECK(url_parse(str8_lit("https://x.com:65535/")).ok &&
         url_parse(str8_lit("https://x.com:65535/")).port == 65535);
-  CHECK(!url_parse(str8_lit("https://x.com:65536/")).ok);   // overflow rejected
+  CHECK(!url_parse(str8_lit("https://x.com:65536/")).ok);  // overflow rejected
   CHECK(!url_parse(str8_lit("https://x.com:99999999/")).ok);  // no silent wrap
-  CHECK(!url_parse(str8_lit("https://x.com:80x/")).ok);     // non-digit rejected
-  CHECK(!url_parse(str8_lit("https://[::1]:70000/p")).ok);  // IPv6 port overflow
-  u = url_parse(str8_lit("https://x.com:/p"));               // bare ':' -> default
+  CHECK(!url_parse(str8_lit("https://x.com:80x/")).ok);  // non-digit rejected
+  CHECK(
+      !url_parse(str8_lit("https://[::1]:70000/p")).ok);  // IPv6 port overflow
+  u = url_parse(str8_lit("https://x.com:/p"));            // bare ':' -> default
   CHECK(u.ok && u.port == 443);
 
   // --- robustness: host / authority ---
-  CHECK(!url_parse(str8_lit("https:///path")).ok);          // empty host
-  CHECK(!url_parse(str8_lit("https://[::1/p")).ok);         // unterminated IPv6
-  CHECK(!url_parse(str8_lit("https://[::1]x/p")).ok);       // garbage after ']'
+  CHECK(!url_parse(str8_lit("https:///path")).ok);     // empty host
+  CHECK(!url_parse(str8_lit("https://[::1/p")).ok);    // unterminated IPv6
+  CHECK(!url_parse(str8_lit("https://[::1]x/p")).ok);  // garbage after ']'
   // userinfo stripped at the LAST '@' (a@b@host -> host, like a browser)
   u = url_parse(str8_lit("https://a@b@x.com/p"));
   CHECK(u.ok && str8_match(u.host, str8_lit("x.com")));

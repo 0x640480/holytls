@@ -29,9 +29,9 @@
 #include "base/string8.h"
 #include "core/client.h"
 #include "core/session.h"
-#include "ws/ws.h"
 #include "net/loop.h"
 #include "profile/profile.h"
+#include "ws/ws.h"
 
 // ---------------------------------------------------------------------------
 // Handles.
@@ -52,35 +52,51 @@ struct holytls_session {
 
 internal Method map_method(holytls_method m) {
   switch (m) {
-    case HOLYTLS_POST: return Method_POST;
-    case HOLYTLS_PUT: return Method_PUT;
-    case HOLYTLS_DELETE: return Method_DELETE;
-    case HOLYTLS_HEAD: return Method_HEAD;
-    case HOLYTLS_PATCH: return Method_PATCH;
-    case HOLYTLS_OPTIONS: return Method_OPTIONS;
+    case HOLYTLS_POST:
+      return Method_POST;
+    case HOLYTLS_PUT:
+      return Method_PUT;
+    case HOLYTLS_DELETE:
+      return Method_DELETE;
+    case HOLYTLS_HEAD:
+      return Method_HEAD;
+    case HOLYTLS_PATCH:
+      return Method_PATCH;
+    case HOLYTLS_OPTIONS:
+      return Method_OPTIONS;
     case HOLYTLS_GET:
-    default: return Method_GET;
+    default:
+      return Method_GET;
   }
 }
 
 internal FetchMode map_fetch(holytls_fetch_mode f) {
   switch (f) {
-    case HOLYTLS_FETCH_NAVIGATE: return FetchMode_Navigate;
-    case HOLYTLS_FETCH_CORS: return FetchMode_Cors;
-    case HOLYTLS_FETCH_NO_CORS: return FetchMode_NoCors;
-    case HOLYTLS_FETCH_SAME_ORIGIN: return FetchMode_SameOrigin;
+    case HOLYTLS_FETCH_NAVIGATE:
+      return FetchMode_Navigate;
+    case HOLYTLS_FETCH_CORS:
+      return FetchMode_Cors;
+    case HOLYTLS_FETCH_NO_CORS:
+      return FetchMode_NoCors;
+    case HOLYTLS_FETCH_SAME_ORIGIN:
+      return FetchMode_SameOrigin;
     case HOLYTLS_FETCH_DEFAULT:
-    default: return FetchMode_Default;
+    default:
+      return FetchMode_Default;
   }
 }
 
 internal HttpVersion map_http_version(holytls_http_version v) {
   switch (v) {
-    case HOLYTLS_HTTP_1: return HttpVersion_H1;
-    case HOLYTLS_HTTP_2: return HttpVersion_H2;
-    case HOLYTLS_HTTP_3: return HttpVersion_H3;
+    case HOLYTLS_HTTP_1:
+      return HttpVersion_H1;
+    case HOLYTLS_HTTP_2:
+      return HttpVersion_H2;
+    case HOLYTLS_HTTP_3:
+      return HttpVersion_H3;
     case HOLYTLS_HTTP_AUTO:
-    default: return HttpVersion_Auto;
+    default:
+      return HttpVersion_Auto;
   }
 }
 
@@ -102,11 +118,15 @@ internal const QuicProfile *pick_quic_named(const char *name) {
 // the registry default; specific versions map to their canonical names.
 internal const char *profile_enum_name(holytls_profile_id id) {
   switch (id) {
-    case HOLYTLS_PROFILE_CHROME_148: return "chrome148";
-    case HOLYTLS_PROFILE_CHROME_149: return "chrome149";
-    case HOLYTLS_PROFILE_FIREFOX_151: return "firefox151";  // (== FIREFOX)
+    case HOLYTLS_PROFILE_CHROME_148:
+      return "chrome148";
+    case HOLYTLS_PROFILE_CHROME_149:
+      return "chrome149";
+    case HOLYTLS_PROFILE_FIREFOX_151:
+      return "firefox151";  // (== FIREFOX)
     case HOLYTLS_PROFILE_CHROME:
-    default: return 0;  // 0 => registry default
+    default:
+      return 0;  // 0 => registry default
   }
 }
 
@@ -160,8 +180,7 @@ internal holytls_response *response_copy(const Response *r) {
   out->tls_ms = r->timing.tls_ms;
   out->total_ms = r->timing.total_ms;
   if (r->header_count && r->headers) {
-    holytls_header *hs =
-        (holytls_header *)calloc(r->header_count, sizeof *hs);
+    holytls_header *hs = (holytls_header *)calloc(r->header_count, sizeof *hs);
     if (!hs) {  // OOM: fail honestly rather than return a 0-header "success"
       holytls_response_free(out);
       return 0;
@@ -211,7 +230,8 @@ internal void build_params(Arena *a, const holytls_request *req,
   MemoryZeroStruct(out);
   out->method = map_method(req->method);
   out->url = str8_cstring(req->url);
-  if (req->body && req->body_len) out->body = str8((U8 *)req->body, req->body_len);
+  if (req->body && req->body_len)
+    out->body = str8((U8 *)req->body, req->body_len);
   out->fetch_mode = map_fetch(req->fetch_mode);
   out->no_redirects = req->no_redirects ? 1 : 0;
   if (req->proxy) out->proxy = str8_cstring(req->proxy);
@@ -253,7 +273,8 @@ internal int client_loop_init(EventLoop *loop, Client *client,
 
 internal holytls_client *client_new_from(const Profile *h2,
                                          const QuicProfile *h3,
-                                         holytls_http_version mode, int verify) {
+                                         holytls_http_version mode,
+                                         int verify) {
   holytls_client *hc = (holytls_client *)calloc(1, sizeof *hc);
   if (!hc) return 0;
   if (!client_loop_init(&hc->loop, &hc->client, h2, h3, mode, verify)) {
@@ -271,7 +292,8 @@ holytls_client *holytls_client_new(holytls_profile_id pid,
 }
 
 holytls_client *holytls_client_new_named(const char *profile_name,
-                                         holytls_http_version mode, int verify) {
+                                         holytls_http_version mode,
+                                         int verify) {
   return client_new_from(pick_profile_named(profile_name),
                          pick_quic_named(profile_name), mode, verify);
 }
@@ -300,7 +322,8 @@ void holytls_client_set_max_redirects(holytls_client *c, uint64_t max) {
 void holytls_client_set_timeout_ms(holytls_client *c, uint64_t ms) {
   if (c) client_set_timeout_ms(&c->client, ms);
 }
-void holytls_client_set_http_version(holytls_client *c, holytls_http_version v) {
+void holytls_client_set_http_version(holytls_client *c,
+                                     holytls_http_version v) {
   if (c) client_set_http_version(&c->client, map_http_version(v));
 }
 void holytls_client_set_ech_enabled(holytls_client *c, int on) {
@@ -465,12 +488,13 @@ void holytls_response_free(holytls_response *r) {
 // Async client — non-blocking submit + a loop on a caller-spawned thread.
 //
 // Threading model: the loop runs on ONE dedicated thread (holytls_async_run).
-// All Client state (dispatch, response copy, cleanup) is touched ONLY there. The
-// asyncio thread calls holytls_async_submit/stop, which touch only the mutex'd
-// queue + uv_async_send (the one libuv call documented thread-safe). A request's
-// bytes are deep-copied (malloc, not arena — arenas are loop-thread-only) before
-// crossing; the completion's holytls_response is plain malloc'd memory, so the
-// caller can marshal + free it on whatever thread it lands the result on.
+// All Client state (dispatch, response copy, cleanup) is touched ONLY there.
+// The asyncio thread calls holytls_async_submit/stop, which touch only the
+// mutex'd queue + uv_async_send (the one libuv call documented thread-safe). A
+// request's bytes are deep-copied (malloc, not arena — arenas are
+// loop-thread-only) before crossing; the completion's holytls_response is plain
+// malloc'd memory, so the caller can marshal + free it on whatever thread it
+// lands the result on.
 // ---------------------------------------------------------------------------
 
 // One queued submission: owned malloc copies of a flat request, crossing from
@@ -497,17 +521,18 @@ struct AsyncSubmit {
 typedef struct AsyncCtx AsyncCtx;
 
 struct holytls_async_client {
-  holytls_client base;  // {EventLoop loop; Client client;} — reuse the sync body
-  uv_async_t async;     // persistent: keeps the loop alive AND wakes it
-  uv_mutex_t qlock;     // guards the submission queue + stopping
+  holytls_client
+      base;          // {EventLoop loop; Client client;} — reuse the sync body
+  uv_async_t async;  // persistent: keeps the loop alive AND wakes it
+  uv_mutex_t qlock;  // guards the submission queue + stopping
   AsyncSubmit *qhead, *qtail;
   int stopping;
-  AsyncCtx *inflight;   // dll of dispatched-not-yet-completed ctxs (LOOP THREAD
-                        // ONLY); survivors are freed at teardown so a request
-                        // abandoned at stop doesn't leak its ctx
-  Arena *arena;         // loop-thread-only scratch for per-dispatch Header rows.
-                        // Owned (not the thread-local arena_acquire pool, which
-                        // would leak when THIS loop thread exits).
+  AsyncCtx *inflight;  // dll of dispatched-not-yet-completed ctxs (LOOP THREAD
+                       // ONLY); survivors are freed at teardown so a request
+                       // abandoned at stop doesn't leak its ctx
+  Arena *arena;        // loop-thread-only scratch for per-dispatch Header rows.
+                       // Owned (not the thread-local arena_acquire pool, which
+                       // would leak when THIS loop thread exits).
 };
 
 // Per-request completion trampoline ctx. malloc'd (not arena): client_request
@@ -537,8 +562,8 @@ internal void async_submit_free(AsyncSubmit *s) {
   free(s);
 }
 
-// Deep-copy a flat request into an owned AsyncSubmit (runs off the loop thread).
-// Returns NULL on OOM (any partial copies are freed).
+// Deep-copy a flat request into an owned AsyncSubmit (runs off the loop
+// thread). Returns NULL on OOM (any partial copies are freed).
 internal AsyncSubmit *async_submit_copy(const holytls_request *req,
                                         uint64_t req_id,
                                         holytls_async_complete_fn cb,
@@ -567,7 +592,8 @@ internal AsyncSubmit *async_submit_copy(const holytls_request *req,
     if (!s->header_order) goto oom;
   }
   if (req->header_count && req->headers) {
-    s->headers = (holytls_header *)calloc(req->header_count, sizeof *s->headers);
+    s->headers =
+        (holytls_header *)calloc(req->header_count, sizeof *s->headers);
     if (!s->headers) goto oom;
     s->header_count = req->header_count;  // set before the loop so OOM cleanup
                                           // walks every (zeroed) slot
@@ -666,8 +692,8 @@ internal void on_async(uv_async_t *h) {
   }
 
   // Stop is signalled by setting `stopping` + waking us: just uv_stop so
-  // uv_run returns. The async handle is NOT closed here (loop_shutdown closes it
-  // during _free — closing it twice would abort libuv).
+  // uv_run returns. The async handle is NOT closed here (loop_shutdown closes
+  // it during _free — closing it twice would abort libuv).
   if (stopping) uv_stop(loop_uv(&ac->base.loop));
 }
 
@@ -678,7 +704,8 @@ holytls_async_client *holytls_async_client_new_named(const char *profile_name,
   const QuicProfile *h3 = pick_quic_named(profile_name);
   holytls_async_client *ac = (holytls_async_client *)calloc(1, sizeof *ac);
   if (!ac) return 0;
-  if (!client_loop_init(&ac->base.loop, &ac->base.client, h2, h3, mode, verify)) {
+  if (!client_loop_init(&ac->base.loop, &ac->base.client, h2, h3, mode,
+                        verify)) {
     free(ac);
     return 0;
   }
@@ -782,9 +809,9 @@ void holytls_async_run(holytls_async_client *ac) {
   // final closing-handles pass so the loop is left quiesced for _free.
   if (uv_loop_alive(loop_uv(&ac->base.loop)))
     uv_run(loop_uv(&ac->base.loop), UV_RUN_NOWAIT);
-  // This thread is about to exit; release the per-thread arena pools the request
-  // path (h2req_start/quicreq_start via arena_acquire) built here, else they'd
-  // leak when this thread's thread_local storage is destroyed.
+  // This thread is about to exit; release the per-thread arena pools the
+  // request path (h2req_start/quicreq_start via arena_acquire) built here, else
+  // they'd leak when this thread's thread_local storage is destroyed.
   arena_thread_cleanup();
 }
 
@@ -809,7 +836,8 @@ void holytls_async_client_free(holytls_async_client *ac) {
     async_submit_free(s);
     s = next;
   }
-  for (AsyncCtx *cx = ac->inflight; cx;) {  // ctxs of requests abandoned at stop
+  for (AsyncCtx *cx = ac->inflight;
+       cx;) {  // ctxs of requests abandoned at stop
     AsyncCtx *next = cx->next;
     free(cx);
     cx = next;
@@ -859,8 +887,8 @@ holytls_response *holytls_session_perform(holytls_session *hs,
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket. A thin wrapper over WsConn, which is itself blocking (it drives the
-// client's loop until each event) — so unlike holytls_perform there is no
+// WebSocket. A thin wrapper over WsConn, which is itself blocking (it drives
+// the client's loop until each event) — so unlike holytls_perform there is no
 // per-call CallCtx/loop_run here; WsConn owns that. The connection persists
 // across calls (it is NOT closed between them).
 // ---------------------------------------------------------------------------

@@ -180,7 +180,7 @@ int main(void) {
   }
 
   //- H3 fingerprint through the pool: a pooled GET to quic.browserleaks.com
-  //must
+  // must
   //  report the same h3_hash the direct path does (proves the per-connection
   //  stream split didn't disturb the control-stream surface).
   {

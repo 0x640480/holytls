@@ -470,7 +470,8 @@ internal void pool_h2_submit(PoolConn *pc, PoolReq *r) {
   S32 sid = h2_session_submit_request(
       pc->h2, method_str(r->method_enum), r->scheme, r->authority, r->path,
       r->req_headers.v, r->req_headers.count, r->body.str, r->body.size,
-      pool_h2_on_response, r, /*on_chunk=*/0, /*chunk_user=*/0);  // pool: no stream
+      pool_h2_on_response, r, /*on_chunk=*/0,
+      /*chunk_user=*/0);  // pool: no stream
   if (sid < 0) {
     pool_req_fail(r, "h2 submit failed");
     return;

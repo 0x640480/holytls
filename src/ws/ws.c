@@ -19,8 +19,8 @@
 
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-// permessage-deflate (RFC 7692) is available only with zlib (always present in a
-// real build — it backs gzip too). Without it the WS handshake does not
+// permessage-deflate (RFC 7692) is available only with zlib (always present in
+// a real build — it backs gzip too). Without it the WS handshake does not
 // advertise the extension.
 #ifdef HOLYTLS_HAVE_ZLIB
 #define WS_HAVE_DEFLATE 1
@@ -69,7 +69,7 @@ struct WsConn {
   U8Buf hs_in;              // handshake-response accumulation (pre-established)
   const Header *hs_extra;   // caller's extra handshake headers (arena copies)
   U64 hs_extra_count;
-  TlsProfile ws_h1_tls;     // profile TLS with http/1.1-only ALPN (default WS)
+  TlsProfile ws_h1_tls;  // profile TLS with http/1.1-only ALPN (default WS)
   B32 established;
 
   // Inbound message queue (FIFO). The parser callback enqueues; recv dequeues.
@@ -91,9 +91,9 @@ struct WsConn {
 #endif
 
   ReqTimer *connect_timer;
-  B32 got_peer_close;    // the peer sent a Close (its half of the handshake)
-  B32 close_timed_out;   // close-handshake wait expired (silent peer)
-  B32 recv_timed_out;    // ws_conn_recv's deadline elapsed (connection stays up)
+  B32 got_peer_close;   // the peer sent a Close (its half of the handshake)
+  B32 close_timed_out;  // close-handshake wait expired (silent peer)
+  B32 recv_timed_out;   // ws_conn_recv's deadline elapsed (connection stays up)
   B32 closed, fully_closed, fail;
   const char *err;
 };
@@ -150,11 +150,13 @@ internal void ws_pmd_negotiate(WsConn *w, String8 ext) {
 }
 
 #if WS_HAVE_DEFLATE
-// Deflate one message into `out` per RFC 7692: raw deflate (no zlib header) with
-// Z_SYNC_FLUSH, then drop the trailing 4-byte empty-block marker (00 00 ff ff)
-// the flush emits. The stream persists across messages (context takeover) unless
-// the server asked for client_no_context_takeover. Returns 0 on a zlib error.
-internal B32 ws_deflate_message(WsConn *w, const U8 *data, U64 len, U8Buf *out) {
+// Deflate one message into `out` per RFC 7692: raw deflate (no zlib header)
+// with Z_SYNC_FLUSH, then drop the trailing 4-byte empty-block marker (00 00 ff
+// ff) the flush emits. The stream persists across messages (context takeover)
+// unless the server asked for client_no_context_takeover. Returns 0 on a zlib
+// error.
+internal B32 ws_deflate_message(WsConn *w, const U8 *data, U64 len,
+                                U8Buf *out) {
   if (!w->deflate_init) {
     MemoryZeroStruct(&w->deflate_zs);
     if (deflateInit2(&w->deflate_zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
@@ -184,7 +186,8 @@ internal B32 ws_deflate_message(WsConn *w, const U8 *data, U64 len, U8Buf *out) 
 // Inflate one received message into `out`: append the stripped marker, raw
 // inflate (-15 window decodes any sender window). The stream is PERSISTENT
 // across messages — context takeover requires the prior window. Bomb-capped.
-internal B32 ws_inflate_message(WsConn *w, const U8 *data, U64 len, U8Buf *out) {
+internal B32 ws_inflate_message(WsConn *w, const U8 *data, U64 len,
+                                U8Buf *out) {
   if (!w->inflate_init) {
     MemoryZeroStruct(&w->inflate_zs);
     if (inflateInit2(&w->inflate_zs, -15) != Z_OK) return 0;
@@ -205,7 +208,7 @@ internal B32 ws_inflate_message(WsConn *w, const U8 *data, U64 len, U8Buf *out) 
       if (rv != Z_OK && rv != Z_STREAM_END && rv != Z_BUF_ERROR) return 0;
       u8buf_append(out, buf, sizeof buf - w->inflate_zs.avail_out);
       if (out->len > (64ull << 20)) return 0;  // decompression-bomb cap
-      if (rv == Z_BUF_ERROR) break;             // needs the next chunk
+      if (rv == Z_BUF_ERROR) break;            // needs the next chunk
     } while (w->inflate_zs.avail_in > 0 || w->inflate_zs.avail_out == 0);
   }
   return 1;
@@ -275,12 +278,13 @@ internal void ws_on_event(void *user, const WsEvent *ev) {
 // --- HTTP/1.1 Upgrade -------------------------------------------------------
 
 // Build + send the GET upgrade handshake. Serialized directly (not
-// h1_session_submit_request, which strips Connection + injects Host). The header
-// SET, ORDER, and CASING match a real Chrome 149 WebSocket handshake captured
-// over the wire (powhttp): Host, Connection, Pragma, Cache-Control, User-Agent,
-// Upgrade, Origin, Sec-WebSocket-Version, Accept-Encoding, Accept-Language,
-// Sec-WebSocket-Key, Sec-WebSocket-Extensions. Values (UA / Accept-* ) are
-// profile-sourced so they track the emulated browser. Caller extras append last.
+// h1_session_submit_request, which strips Connection + injects Host). The
+// header SET, ORDER, and CASING match a real Chrome 149 WebSocket handshake
+// captured over the wire (powhttp): Host, Connection, Pragma, Cache-Control,
+// User-Agent, Upgrade, Origin, Sec-WebSocket-Version, Accept-Encoding,
+// Accept-Language, Sec-WebSocket-Key, Sec-WebSocket-Extensions. Values (UA /
+// Accept-* ) are profile-sourced so they track the emulated browser. Caller
+// extras append last.
 internal void ws_h1_send_handshake(WsConn *w, const Header *headers,
                                    U64 header_count) {
   U8 keyb[16];
@@ -422,7 +426,8 @@ internal void ws_h2_on_connect(void *user, int status, String8 extensions) {
   ws_wake(w);
 }
 
-// Inbound CONNECT-stream DATA = WS frame bytes (or a (0,0) EOF on stream close).
+// Inbound CONNECT-stream DATA = WS frame bytes (or a (0,0) EOF on stream
+// close).
 internal void ws_h2_on_data(void *user, const U8 *data, U64 len) {
   WsConn *w = (WsConn *)user;
   if (!data || len == 0) {  // the CONNECT stream closed
@@ -439,7 +444,8 @@ internal void ws_h2_on_data(void *user, const U8 *data, U64 len) {
 
 // Submit the Extended CONNECT once the peer's ENABLE_CONNECT_PROTOCOL is known.
 // WS-over-H2 carries NO Sec-WebSocket-Key (the H2 stream replaces the accept
-// handshake); Sec-WebSocket-Version + UA + caller extras ride as regular fields.
+// handshake); Sec-WebSocket-Version + UA + caller extras ride as regular
+// fields.
 internal void ws_h2_submit(WsConn *w) {
   w->h2_submitted = 1;
   const Profile *p = w->client->profile;
@@ -449,12 +455,13 @@ internal void ws_h2_submit(WsConn *w) {
   hs[k++] = (Header){str8_lit("sec-websocket-version"), str8_lit("13"), 0};
   hs[k++] = (Header){str8_lit("user-agent"), profile_user_agent(p), 0};
   if (WS_HAVE_DEFLATE)
-    hs[k++] = (Header){str8_lit("sec-websocket-extensions"),
-                       str8_lit("permessage-deflate; client_max_window_bits"), 0};
+    hs[k++] =
+        (Header){str8_lit("sec-websocket-extensions"),
+                 str8_lit("permessage-deflate; client_max_window_bits"), 0};
   for (U64 i = 0; i < w->hs_extra_count; ++i) hs[k++] = w->hs_extra[i];
-  w->h2_stream = h2_session_ws_connect(
-      w->h2, str8_lit("https"), w->authority, w->path, str8_lit("websocket"), hs,
-      nh, ws_h2_on_connect, w, ws_h2_on_data, w);
+  w->h2_stream = h2_session_ws_connect(w->h2, str8_lit("https"), w->authority,
+                                       w->path, str8_lit("websocket"), hs, nh,
+                                       ws_h2_on_connect, w, ws_h2_on_data, w);
   if (w->h2_stream < 0) {
     w->fail = 1;
     w->err = "h2 websocket CONNECT submit failed";
@@ -508,7 +515,8 @@ internal void ws_on_ready(void *user, B32 ok, const char *err) {
       return;
     }
     conn_on_readable(&w->conn, ws_h2_drain, w);
-    if (!h2_session_start(w->h2)) {  // emit our preface (SETTINGS + WINDOW_UPDATE)
+    if (!h2_session_start(
+            w->h2)) {  // emit our preface (SETTINGS + WINDOW_UPDATE)
       w->fail = 1;
       w->err = "h2 session start failed";
       ws_wake(w);
@@ -600,15 +608,16 @@ B32 ws_conn_connect(WsConn *w, String8 url, const Header *headers,
   w->hs_extra = hs;
   w->hs_extra_count = header_count;
 
-  // Transport / ALPN selection. WebSocket over h2 (RFC 8441 Extended CONNECT) is
-  // rare — most servers (even h2-capable ones) only do the HTTP/1.1 Upgrade — so
-  // the DEFAULT offers http/1.1 only, like a fresh browser WebSocket, and the H2
-  // path is opt-in via http_version=H2. This http/1.1 ALPN + dropped ALPS yields
-  // a ClientHello byte-exact with real Chrome's WS hello (JA4
+  // Transport / ALPN selection. WebSocket over h2 (RFC 8441 Extended CONNECT)
+  // is rare — most servers (even h2-capable ones) only do the HTTP/1.1 Upgrade
+  // — so the DEFAULT offers http/1.1 only, like a fresh browser WebSocket, and
+  // the H2 path is opt-in via http_version=H2. This http/1.1 ALPN + dropped
+  // ALPS yields a ClientHello byte-exact with real Chrome's WS hello (JA4
   // t13d1515h1_8daaf6152771_0a20fe35d3a5; verified offline in ja4_test).
   const TlsProfile *tls;
   if (w->client->http_version == HttpVersion_H2) {
-    tls = &w->client->profile->tls;  // normal h2,http/1.1 ALPN -> server picks h2
+    tls =
+        &w->client->profile->tls;  // normal h2,http/1.1 ALPN -> server picks h2
   } else {
     w->ws_h1_tls = w->client->profile->tls;
     w->ws_h1_tls.alpn_wire = g_ws_alpn_h11;
@@ -623,10 +632,10 @@ B32 ws_conn_connect(WsConn *w, String8 url, const Header *headers,
   conn_set_dns_cache(&w->conn, &w->client->dns_cache);
 
   U64 t = client_get_timeout_ms(w->client);
-  w->connect_timer = req_timer_arm(w->loop, t ? uv_hrtime() + t * 1000000ull : 0,
-                                   ws_on_connect_timeout, w);
-  conn_connect(&w->conn, push_str8_cstr(w->arena, pu.host), w->port, ws_on_ready,
-               w);
+  w->connect_timer = req_timer_arm(
+      w->loop, t ? uv_hrtime() + t * 1000000ull : 0, ws_on_connect_timeout, w);
+  conn_connect(&w->conn, push_str8_cstr(w->arena, pu.host), w->port,
+               ws_on_ready, w);
   while (!w->established && !w->fail && !w->closed) loop_run(w->loop);
   req_timer_disarm(w->connect_timer);
   w->connect_timer = 0;
@@ -684,10 +693,10 @@ int ws_conn_recv(WsConn *w, WsEvent *out, U64 timeout_ms) {
     w->cur_msg = 0;
   }
   w->recv_timed_out = 0;
-  ReqTimer *t = timeout_ms ? req_timer_arm(w->loop,
-                                           uv_hrtime() + timeout_ms * 1000000ull,
-                                           ws_on_recv_timeout, w)
-                           : 0;
+  ReqTimer *t =
+      timeout_ms ? req_timer_arm(w->loop, uv_hrtime() + timeout_ms * 1000000ull,
+                                 ws_on_recv_timeout, w)
+                 : 0;
   int rc;
   for (;;) {
     if (w->in_head) {
@@ -729,7 +738,8 @@ void ws_conn_close(WsConn *w, U16 code, String8 reason) {
     U64 plen = 0;
     payload[plen++] = (U8)(code >> 8);
     payload[plen++] = (U8)code;
-    U64 rn = reason.size < sizeof payload - 2 ? reason.size : sizeof payload - 2;
+    U64 rn =
+        reason.size < sizeof payload - 2 ? reason.size : sizeof payload - 2;
     if (rn) MemoryCopy(payload + 2, reason.str, rn);
     plen += rn;
     ws_conn_send(w, WsOp_Close, payload, plen);
@@ -738,13 +748,13 @@ void ws_conn_close(WsConn *w, U16 code, String8 reason) {
     // handshake by awaiting the peer's Close — bounded so a silent peer can't
     // hang teardown.
     w->close_timed_out = 0;
-    ReqTimer *t =
-        req_timer_arm(w->loop, uv_hrtime() + 2000000000ull /*2s*/,
-                      ws_on_close_timeout, w);
+    ReqTimer *t = req_timer_arm(w->loop, uv_hrtime() + 2000000000ull /*2s*/,
+                                ws_on_close_timeout, w);
     while (!w->got_peer_close && !w->closed && !w->fail && !w->close_timed_out)
       loop_run(w->loop);
     req_timer_disarm(t);
-    // H2: half-close the CONNECT stream (END_STREAM) now that the WS Close is done.
+    // H2: half-close the CONNECT stream (END_STREAM) now that the WS Close is
+    // done.
     if (w->transport == WsTransport_H2 && w->h2) {
       h2_session_ws_finish(w->h2, w->h2_stream);
       h2_session_flush(w->h2);

@@ -96,7 +96,8 @@ int main(void) {
   loop_init(&loop);
   g_loop = &loop;
   U16 port = 0;
-  LbServer *srv = lb_mtls_server_start(&loop, LB_ALPN_H2, mtls_handler, 0, &port);
+  LbServer *srv =
+      lb_mtls_server_start(&loop, LB_ALPN_H2, mtls_handler, 0, &port);
   char url[64];
   snprintf(url, sizeof url, "https://127.0.0.1:%u/", port);
 

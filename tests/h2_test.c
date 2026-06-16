@@ -103,7 +103,8 @@ internal int srv_header(nghttp2_session *s, const nghttp2_frame *f,
 // Run one request through a raw nghttp2 server, capturing the fingerprint
 // surface into `*cap` (settings/window/pseudo + the HEADERS-frame priority) and
 // returning the akamai text. The PRIORITY (0x20) flag + its {weight, dep, excl}
-// are the bit nghttp2 stopped emitting (RFC 9218) and our fork patch re-enables.
+// are the bit nghttp2 stopped emitting (RFC 9218) and our fork patch
+// re-enables.
 internal String8 akamai_text(Arena *arena, const Http2Profile *prof, Cap *cap) {
   OutBuf out = {{0}, 0};
   H2Session *cli = h2_session_alloc(prof, out_sink, &out);
@@ -156,7 +157,8 @@ int main(void) {
   // chrome149's H2 (Akamai) fingerprint is identical to chrome148's.
   String8 chrome149 = akamai_text(a, &profile_chrome149()->h2, &cap);
   CHECK(str8_match(
-      chrome149, str8_lit("1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p")));
+      chrome149,
+      str8_lit("1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p")));
   CHECK(cap.pri_flag && cap.pri_weight == 256 && cap.pri_dep == 0 &&
         cap.pri_excl == 1);
 

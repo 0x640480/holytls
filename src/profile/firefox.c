@@ -3,17 +3,19 @@
 // H2 JA4 t13d1617h2_86a278354501_3cbfd9057e0d, QUIC JA4 q13d0315h3_55b375c5d22e
 // _dc5437974b47, h3_hash d50d4e585c22bb92b6c86b592aa2d586. Firefox differs from
 // Chrome in big ways: NO GREASE, NO sec-ch-ua/client-hints, FFDHE groups, a
-// TLS1.3 cipher order of AES128/CHACHA20/AES256 (the fork's kCiphersFirefox path,
-// triggered by the cipher_list's TLS1.3 prefix), and a fixed extension order.
+// TLS1.3 cipher order of AES128/CHACHA20/AES256 (the fork's kCiphersFirefox
+// path, triggered by the cipher_list's TLS1.3 prefix), and a fixed extension
+// order.
 #include "profile/profile.h"
 
 //- Firefox shared wire constants --------------------------------------------
 
 // The cipher_list MUST start with the 3 TLS1.3 suites in Firefox order
-// (AES128,CHACHA20,AES256) so the lexiforest fork selects kCiphersFirefox for the
-// TLS1.3 ClientHello ciphers; the rest are Firefox's 13 TLS1.2 suites.
+// (AES128,CHACHA20,AES256) so the lexiforest fork selects kCiphersFirefox for
+// the TLS1.3 ClientHello ciphers; the rest are Firefox's 13 TLS1.2 suites.
 global const char k_firefox_cipher_list[] =
-    "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:"
+    "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_"
+    "SHA384:"
     "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:"
     "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:"
     "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:"
@@ -76,33 +78,29 @@ global const PseudoId k_firefox_h2_pseudo[] = {Pseudo_Method, Pseudo_Path,
                                                Pseudo_Authority, Pseudo_Scheme};
 
 global const H3Setting k_firefox_h3_settings[] = {
-    {0x01, 65536},      // QPACK_MAX_TABLE_CAPACITY
-    {0x07, 20},         // QPACK_BLOCKED_STREAMS
-    {727725890, 0},     // WEBTRANS_DRAFT00 (Firefox draft setting)
-    {16765559, 1},      // H3_DATAGRAM_DRAFT04 (Firefox draft setting)
-    {0x33, 1},          // H3_DATAGRAM
-    {0x08, 1},          // ENABLE_CONNECT_PROTOCOL
+    {0x01, 65536},   // QPACK_MAX_TABLE_CAPACITY
+    {0x07, 20},      // QPACK_BLOCKED_STREAMS
+    {727725890, 0},  // WEBTRANS_DRAFT00 (Firefox draft setting)
+    {16765559, 1},   // H3_DATAGRAM_DRAFT04 (Firefox draft setting)
+    {0x33, 1},       // H3_DATAGRAM
+    {0x08, 1},       // ENABLE_CONNECT_PROTOCOL
 };
-// H3 pseudo order: :method :scheme :authority :path (m,s,a,p) — differs from H2.
+// H3 pseudo order: :method :scheme :authority :path (m,s,a,p) — differs from
+// H2.
 global const PseudoId k_firefox_h3_pseudo[] = {Pseudo_Method, Pseudo_Scheme,
                                                Pseudo_Authority, Pseudo_Path};
 
 //- Firefox fingerprint, expressed once --------------------------------------
 
-#define FIREFOX_TLS_H2                          \
-  .cipher_list = k_firefox_cipher_list,         \
-  .curves_list = k_firefox_curves,              \
-  .sigalgs_list = k_firefox_sigalgs,            \
-  .min_version = TlsVersion_1_2,                \
-  .max_version = TlsVersion_1_3,                \
-  .alpn_wire = k_firefox_alpn_h2,               \
-  .alpn_wire_len = sizeof k_firefox_alpn_h2,    \
-  .cert_compress_algs = k_firefox_cert_compress, .cert_compress_count = 3, \
-  .enable_ocsp_stapling = 1, .enable_signed_cert_timestamps = 1,           \
-  .enable_ech_grease = 1, .session_tickets = 1,                            \
-  .record_size_limit = 0x4001,                                            \
-  .delegated_credentials = k_firefox_delegated_creds,                     \
-  .key_shares_limit = 3,                                                  \
+#define FIREFOX_TLS_H2                                                       \
+  .cipher_list = k_firefox_cipher_list, .curves_list = k_firefox_curves,     \
+  .sigalgs_list = k_firefox_sigalgs, .min_version = TlsVersion_1_2,          \
+  .max_version = TlsVersion_1_3, .alpn_wire = k_firefox_alpn_h2,             \
+  .alpn_wire_len = sizeof k_firefox_alpn_h2,                                 \
+  .cert_compress_algs = k_firefox_cert_compress, .cert_compress_count = 3,   \
+  .enable_ocsp_stapling = 1, .enable_signed_cert_timestamps = 1,             \
+  .enable_ech_grease = 1, .session_tickets = 1, .record_size_limit = 0x4001, \
+  .delegated_credentials = k_firefox_delegated_creds, .key_shares_limit = 3, \
   .extension_order = k_firefox_extension_order
 /* grease=0, permute_extensions=0, alps_count=0 — all default-zero (Firefox). */
 
@@ -110,68 +108,55 @@ global const PseudoId k_firefox_h3_pseudo[] = {Pseudo_Method, Pseudo_Scheme,
 // extensions, and uses the default extension order (no custom order); it keeps
 // status_request (OCSP), record_size_limit, delegated_credentials, ECH, and
 // compress_certificate. ngtcp2 adds quic_transport_parameters.
-#define FIREFOX_TLS_H3                          \
-  .curves_list = k_firefox_curves_h3,           \
-  .sigalgs_list = k_firefox_sigalgs_h3,         \
-  .min_version = TlsVersion_1_3,                \
-  .max_version = TlsVersion_1_3,                \
-  .alpn_wire = k_firefox_alpn_h3,               \
-  .alpn_wire_len = sizeof k_firefox_alpn_h3,    \
-  .cert_compress_algs = k_firefox_cert_compress, .cert_compress_count = 3, \
-  .enable_ocsp_stapling = 1, .enable_ech_grease = 1,                      \
-  .record_size_limit = 0x4001,                                            \
-  .delegated_credentials = k_firefox_delegated_creds,                     \
-  .key_shares_limit = 3,                                                  \
+#define FIREFOX_TLS_H3                                                       \
+  .curves_list = k_firefox_curves_h3, .sigalgs_list = k_firefox_sigalgs_h3,  \
+  .min_version = TlsVersion_1_3, .max_version = TlsVersion_1_3,              \
+  .alpn_wire = k_firefox_alpn_h3, .alpn_wire_len = sizeof k_firefox_alpn_h3, \
+  .cert_compress_algs = k_firefox_cert_compress, .cert_compress_count = 3,   \
+  .enable_ocsp_stapling = 1, .enable_ech_grease = 1,                         \
+  .record_size_limit = 0x4001,                                               \
+  .delegated_credentials = k_firefox_delegated_creds, .key_shares_limit = 3, \
   .force_tls13_legacy_ext = 1
 /* Firefox uniquely sends EMS + renegotiation_info in its TLS1.3-only QUIC
-   ClientHello; the fork knob re-enables them (gated off for TLS1.3 by stock). */
+   ClientHello; the fork knob re-enables them (gated off for TLS1.3 by stock).
+ */
 
-#define FIREFOX_H2_FP                            \
-  .settings = k_firefox_h2_settings,             \
-  .settings_count = 4,                           \
-  .connection_window_increment = 12517377,       \
-  .use_priority = 1,                             \
-  .priority_weight = 42,                         \
-  .pseudo_order = k_firefox_h2_pseudo,           \
+#define FIREFOX_H2_FP                                         \
+  .settings = k_firefox_h2_settings, .settings_count = 4,     \
+  .connection_window_increment = 12517377, .use_priority = 1, \
+  .priority_weight = 42, .pseudo_order = k_firefox_h2_pseudo, \
   .pseudo_count = 4
 
-#define FIREFOX_H3_FP                                  \
-  .initial_max_data = 25165824,                        \
-  .initial_max_stream_data_bidi_local = 12582912,      \
-  .initial_max_stream_data_bidi_remote = 1048576,      \
-  .initial_max_stream_data_uni = 1048576,              \
-  .initial_max_streams_bidi = 100,                     \
-  .initial_max_streams_uni = 100,                      \
-  .max_idle_timeout_ms = 30000,                        \
-  .max_datagram_frame_size = 65535,                    \
-  .settings = k_firefox_h3_settings,                   \
-  .settings_count = 6,                                 \
-  .send_grease_frame = 1,                              \
-  .pseudo_order = k_firefox_h3_pseudo,                 \
-  .pseudo_count = 4
+#define FIREFOX_H3_FP                                                      \
+  .initial_max_data = 25165824,                                            \
+  .initial_max_stream_data_bidi_local = 12582912,                          \
+  .initial_max_stream_data_bidi_remote = 1048576,                          \
+  .initial_max_stream_data_uni = 1048576, .initial_max_streams_bidi = 100, \
+  .initial_max_streams_uni = 100, .max_idle_timeout_ms = 30000,            \
+  .max_datagram_frame_size = 65535, .settings = k_firefox_h3_settings,     \
+  .settings_count = 6, .send_grease_frame = 1,                             \
+  .pseudo_order = k_firefox_h3_pseudo, .pseudo_count = 4
 
 // Navigation request headers in wire order. Firefox sends NO sec-ch-ua /
 // client-hints. referer/cookie/te are order-only (emitted when the caller adds
 // them). Per the Firefox 151 capture.
-#define FIREFOX_NAV_HEADERS                                                  \
-  {"user-agent",                                                             \
-   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 "     \
-   "Firefox/151.0",                                                          \
-   "User-Agent"},                                                            \
-  {"accept",                                                                 \
-   "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",         \
-   "Accept"},                                                                \
-  {"accept-language", "en-US,en;q=0.9", "Accept-Language"},                 \
-  {"accept-encoding", "gzip, deflate, br, zstd", "Accept-Encoding"},        \
-  {"referer", "", "Referer"},                                              \
-  {"cookie", "", "Cookie"},                                                 \
-  {"upgrade-insecure-requests", "1", "Upgrade-Insecure-Requests"},          \
-  {"sec-fetch-dest", "document", "Sec-Fetch-Dest"},                         \
-  {"sec-fetch-mode", "navigate", "Sec-Fetch-Mode"},                         \
-  {"sec-fetch-site", "none", "Sec-Fetch-Site"},                            \
-  {"sec-fetch-user", "?1", "Sec-Fetch-User"},                              \
-  {"priority", "u=0, i", "Priority"},                                      \
-  {"te", "", "TE"}
+#define FIREFOX_NAV_HEADERS                                               \
+  {"user-agent",                                                          \
+   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 "  \
+   "Firefox/151.0",                                                       \
+   "User-Agent"},                                                         \
+      {"accept",                                                          \
+       "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", \
+       "Accept"},                                                         \
+      {"accept-language", "en-US,en;q=0.9", "Accept-Language"},           \
+      {"accept-encoding", "gzip, deflate, br, zstd", "Accept-Encoding"},  \
+      {"referer", "", "Referer"}, {"cookie", "", "Cookie"},               \
+      {"upgrade-insecure-requests", "1", "Upgrade-Insecure-Requests"},    \
+      {"sec-fetch-dest", "document", "Sec-Fetch-Dest"},                   \
+      {"sec-fetch-mode", "navigate", "Sec-Fetch-Mode"},                   \
+      {"sec-fetch-site", "none", "Sec-Fetch-Site"},                       \
+      {"sec-fetch-user", "?1", "Sec-Fetch-User"},                         \
+      {"priority", "u=0, i", "Priority"}, {"te", "", "TE"}
 
 global const DefaultHeader k_firefox_headers[] = {FIREFOX_NAV_HEADERS};
 

@@ -1,12 +1,14 @@
 // Offline response-streaming test over the shared in-process loopback origin.
-// The server returns a known 256 KB body; the client requests it with a streaming
-// chunk callback (RequestParams.on_chunk). We verify, over both transports:
+// The server returns a known 256 KB body; the client requests it with a
+// streaming chunk callback (RequestParams.on_chunk). We verify, over both
+// transports:
 //   - the concatenated chunks equal the server body byte-for-byte (decoded);
 //   - the final Response carries an EMPTY body (it was streamed, not buffered);
-//   - H2 truly streams (the body arrives across multiple DATA frames => >1 chunk),
+//   - H2 truly streams (the body arrives across multiple DATA frames => >1
+//   chunk),
 //     while H1 uses the buffered fallback (one chunk).
-// Run under ASan to prove the per-stream StreamDecoder is freed (no leak) on the
-// normal close path.
+// Run under ASan to prove the per-stream StreamDecoder is freed (no leak) on
+// the normal close path.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +38,8 @@ static void body_handler(const LbRequest *req, LbResponse *resp, void *user) {
   resp->body = g_body;  // the server copies it
   resp->body_len = g_body_len;
   // "/stall": send the body but never END_STREAM, so the client streams the
-  // body (decoder created) then must abort (timeout) with the stream still open.
+  // body (decoder created) then must abort (timeout) with the stream still
+  // open.
   if (str8_contains(req->path, str8_lit("stall"))) resp->stall = 1;
 }
 
@@ -74,8 +77,8 @@ static void wd_cb(uv_timer_t *t) {
   uv_stop(loop_uv(g_loop));
 }
 
-static void run(EventLoop *loop, LbAlpn alpn, HttpVersion ver, const char *label,
-                B32 expect_multi) {
+static void run(EventLoop *loop, LbAlpn alpn, HttpVersion ver,
+                const char *label, B32 expect_multi) {
   U16 port = 0;
   LbServer *srv = lb_server_start(loop, alpn, body_handler, 0, &port);
   char url[64];
@@ -108,7 +111,8 @@ static void run(EventLoop *loop, LbAlpn alpn, HttpVersion ver, const char *label
   CHECK(sink.len == g_body_len && memcmp(sink.buf, g_body, g_body_len) == 0);
   CHECK(rc.resp_body_len == 0);  // streamed => the final Response has no body
   CHECK(sink.chunks >= 1);
-  if (expect_multi) CHECK(sink.chunks > 1);  // H2: body spans multiple DATA frames
+  if (expect_multi)
+    CHECK(sink.chunks > 1);  // H2: body spans multiple DATA frames
 
   free(sink.buf);
   client_cleanup(&c);
@@ -148,13 +152,16 @@ static void run_cancel(EventLoop *loop) {
   loop_run(loop);
   uv_timer_stop(&g_wd);
 
-  fprintf(stderr, "  [cancel] ok=%d chunks=%d streamed=%llu (decoder live at teardown)\n",
-          rc.ok, sink.chunks, (unsigned long long)sink.len);
+  fprintf(
+      stderr,
+      "  [cancel] ok=%d chunks=%d streamed=%llu (decoder live at teardown)\n",
+      rc.ok, sink.chunks, (unsigned long long)sink.len);
   CHECK(rc.responded && !rc.ok);  // aborted by the timeout, not a clean close
   CHECK(sink.chunks >= 1);        // the decoder WAS created (body streamed)
 
   free(sink.buf);
-  client_cleanup(&c);  // h2_session_release with the streaming stream still open
+  client_cleanup(
+      &c);  // h2_session_release with the streaming stream still open
   lb_server_stop(srv);
   for (int g = 0; g < 500 && uv_run(loop_uv(loop), UV_RUN_NOWAIT); ++g) {
   }
@@ -163,7 +170,8 @@ static void run_cancel(EventLoop *loop) {
 int main(void) {
   g_body_len = 256 * 1024;  // large enough to span many H2 DATA frames
   g_body = (U8 *)malloc(g_body_len);
-  for (U64 i = 0; i < g_body_len; ++i) g_body[i] = (U8)((i * 131 + (i >> 7)) & 0xff);
+  for (U64 i = 0; i < g_body_len; ++i)
+    g_body[i] = (U8)((i * 131 + (i >> 7)) & 0xff);
 
   EventLoop loop;
   loop_init(&loop);

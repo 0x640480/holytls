@@ -63,11 +63,11 @@ void h2_session_cancel_stream(H2Session *s, S32 stream_id);
 
 // --- WebSocket over HTTP/2 (RFC 8441 Extended CONNECT) ----------------------
 // The CONNECT stream is bidirectional + long-lived: establishment fires
-// on_connect(:status), inbound DATA streams to on_data, outbound bytes queue via
-// h2_session_ws_send. DATA is opaque (no Content-Encoding handling): WS frames
-// ride the stream body directly.
-// response :status arrived; `extensions` is the Sec-WebSocket-Extensions
-// response header value (str8_zero if absent) for permessage-deflate negotiation.
+// on_connect(:status), inbound DATA streams to on_data, outbound bytes queue
+// via h2_session_ws_send. DATA is opaque (no Content-Encoding handling): WS
+// frames ride the stream body directly. response :status arrived; `extensions`
+// is the Sec-WebSocket-Extensions response header value (str8_zero if absent)
+// for permessage-deflate negotiation.
 typedef void (*H2ConnectFn)(void *user, int status, String8 extensions);
 // Inbound CONNECT-stream DATA. A final call with (data==0, len==0) signals the
 // stream closed (EOF) — real DATA chunks are always non-empty.
@@ -79,12 +79,14 @@ B32 h2_session_connect_protocol_enabled(H2Session *s);
 
 // Open a WebSocket CONNECT stream: :method=CONNECT, :protocol, :scheme, :path,
 // :authority (profile pseudo order; :protocol right after :method) + `headers`.
-// A deferred data provider carries the bidirectional body. Returns the stream id
+// A deferred data provider carries the bidirectional body. Returns the stream
+// id
 // (>=0) or a negative nghttp2 error.
 S32 h2_session_ws_connect(H2Session *s, String8 scheme, String8 authority,
                           String8 path, String8 protocol, const Header *headers,
                           U64 header_count, H2ConnectFn on_connect,
-                          void *connect_user, H2DataFn on_data, void *data_user);
+                          void *connect_user, H2DataFn on_data,
+                          void *data_user);
 
 // Queue outbound bytes on the CONNECT stream + un-defer its provider. Does NOT
 // flush — call h2_session_flush after (or, when invoked from inside a recv
@@ -92,8 +94,8 @@ S32 h2_session_ws_connect(H2Session *s, String8 scheme, String8 authority,
 // reentrant nghttp2_session_send). Returns 0 if the stream is unknown/closed.
 B32 h2_session_ws_send(H2Session *s, S32 stream_id, const U8 *data, U64 len);
 
-// Half-close the CONNECT stream: EOF the provider so the next emitted DATA frame
-// carries END_STREAM. Does NOT flush (see h2_session_ws_send).
+// Half-close the CONNECT stream: EOF the provider so the next emitted DATA
+// frame carries END_STREAM. Does NOT flush (see h2_session_ws_send).
 void h2_session_ws_finish(H2Session *s, S32 stream_id);
 
 B32 h2_session_want_write(H2Session *s);

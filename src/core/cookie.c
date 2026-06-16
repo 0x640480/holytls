@@ -5,7 +5,7 @@
 #include "core/psl.h"
 
 //- HTTP-date (RFC 6265 §5.1.1: tokenize, then pick day/month/year/time
-//heuristically)
+// heuristically)
 internal const char *k_months[12] = {"jan", "feb", "mar", "apr", "may", "jun",
                                      "jul", "aug", "sep", "oct", "nov", "dec"};
 

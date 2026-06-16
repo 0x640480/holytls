@@ -123,7 +123,7 @@ struct RequestParams {
   String8 proxy;         // optional per-request proxy URL (overrides the
                          // client's proxy pool / single proxy for this request,
                          // sticky across its redirect chain; empty = none).
-                         // Forces the non-pooled path (rotation excludes reuse).
+                  // Forces the non-pooled path (rotation excludes reuse).
   BodyChunkFn on_chunk;  // optional streaming sink: when set, decoded body
                          // chunks go to on_chunk(chunk_user, ...) as they
                          // arrive and the Response body is empty. Forces a
@@ -375,12 +375,13 @@ B32 client_get_override_default_headers(Client *c);
 B32 client_set_proxy(Client *c, String8 proxy_url, B32 verify_proxy);
 
 // Add a proxy to the rotation pool. When the pool is non-empty, each non-pooled
-// request round-robins to the next entry (overriding the single client_set_proxy
-// proxy), sticky across that request's redirect chain; a per-request
-// RequestParams.proxy overrides the pool. `verify_proxy` applies to HTTPS-proxy
-// certificate checks (the outer TLS ctx is shared across all proxies). Returns 1
-// if added, 0 on a malformed URL or a full pool (CLIENT_PROXY_POOL_MAX). Proxy
-// rotation forces the per-request (non-pooled) transport path. Off by default.
+// request round-robins to the next entry (overriding the single
+// client_set_proxy proxy), sticky across that request's redirect chain; a
+// per-request RequestParams.proxy overrides the pool. `verify_proxy` applies to
+// HTTPS-proxy certificate checks (the outer TLS ctx is shared across all
+// proxies). Returns 1 if added, 0 on a malformed URL or a full pool
+// (CLIENT_PROXY_POOL_MAX). Proxy rotation forces the per-request (non-pooled)
+// transport path. Off by default.
 B32 client_add_proxy(Client *c, String8 proxy_url, B32 verify_proxy);
 
 // Bind every outgoing connection (TCP + QUIC) to source IP `ip` (an IPv4 or
@@ -522,7 +523,8 @@ struct Client {
   ProxyConfig proxy;
   CtxResult proxy_ctx;
   TlsProfile proxy_tls;
-  B32 proxy_verify;  // verify setting used to build proxy_ctx (for lazy rebuild)
+  B32 proxy_verify;  // verify setting used to build proxy_ctx (for lazy
+                     // rebuild)
 
   // Proxy rotation pool (opt-in; client_add_proxy). When non-empty, each
   // non-pooled request round-robins to the next entry (sticky across its
@@ -531,8 +533,8 @@ struct Client {
   U8 proxy_pool_count;
   U8 proxy_rr;  // round-robin cursor
 
-  // Source-address binding (egress IP selection; empty = OS default). Applied to
-  // every outgoing TCP + QUIC connection.
+  // Source-address binding (egress IP selection; empty = OS default). Applied
+  // to every outgoing TCP + QUIC connection.
   char local_address[64];
   B32 has_local_address;
 

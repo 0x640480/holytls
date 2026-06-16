@@ -1,12 +1,12 @@
 // Live proof of the WebSocket H1 (RFC 6455 Upgrade) path end-to-end. Forces
 // http/1.1 ALPN (client_set_http_version), opens wss://echo.websocket.events,
-// and round-trips a text + a binary message through the echo server, then closes
-// cleanly. Asserts the transport negotiated H1, the handshake completed, and the
-// echoed payloads come back byte-for-byte. This exercises the whole WsConn path:
-// the TLS connection takeover, the manual GET handshake, Sec-WebSocket-Accept
-// verification, leftover-bytes-after-101 feeding, the masked client frames, and
-// the incremental parser delivering server frames. Network-gated: set
-// HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
+// and round-trips a text + a binary message through the echo server, then
+// closes cleanly. Asserts the transport negotiated H1, the handshake completed,
+// and the echoed payloads come back byte-for-byte. This exercises the whole
+// WsConn path: the TLS connection takeover, the manual GET handshake,
+// Sec-WebSocket-Accept verification, leftover-bytes-after-101 feeding, the
+// masked client frames, and the incremental parser delivering server frames.
+// Network-gated: set HOLYTLS_LIVE=1 to run (otherwise it skips and passes).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
