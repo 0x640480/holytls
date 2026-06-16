@@ -165,6 +165,64 @@ def test_bounded_drain_large_burst_offline():
 
 
 # --------------------------------------------------------------------------- #
+# Completion-queue fast path (POSIX SelectorEventLoop) vs the callback fallback. #
+# On Linux CI asyncio.run uses a SelectorEventLoop, so the queue path engages —  #
+# the assertion below proves CI exercises the FAST path, not just the fallback.  #
+# The two fallback tests force the cb path (no fd / add_reader unsupported, i.e.  #
+# Windows ProactorEventLoop) and prove it still resolves every future.           #
+# --------------------------------------------------------------------------- #
+
+
+def test_queue_path_engages_offline():
+    async def run():
+        async with AsyncClient(timeout_ms=3000) as c:
+            r = await c.get(_DEAD)  # first request flips on the queue path
+            assert c._uses_queue is True  # fast path active (CI proof)
+            assert c._completion_fd >= 0
+            assert _is_response(r) and not r.ok
+            # And a follow-up gather still drains correctly on the same path.
+            rs = await asyncio.gather(*[c.get(_DEAD) for _ in range(32)])
+            assert len(rs) == 32 and all(_is_response(r) for r in rs)
+    asyncio.run(run())
+
+
+def test_fallback_when_no_completion_fd_offline():
+    # Simulate no usable fd (Windows / pipe-create failure): force the cb path and
+    # prove the full lifecycle (gather + cancel + close) still works unchanged.
+    async def run():
+        c = AsyncClient(timeout_ms=3000)
+        c._completion_fd = -1  # _ensure_reader will stay on the callback path
+        tasks = [asyncio.ensure_future(c.get(_DEAD)) for _ in range(16)]
+        await asyncio.sleep(0.02)
+        assert c._uses_queue is False  # fallback engaged
+        for t in tasks[:8]:
+            t.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert len(results) == 16
+        for r in results:
+            assert _is_response(r) or isinstance(r, asyncio.CancelledError)
+        await c.aclose()
+    asyncio.run(run())
+
+
+def test_fallback_when_add_reader_unsupported_offline():
+    # Simulate a loop that can't watch a raw fd (e.g. Windows ProactorEventLoop):
+    # add_reader raises NotImplementedError -> stay on the callback path.
+    async def run():
+        async with AsyncClient(timeout_ms=3000) as c:
+            loop = asyncio.get_running_loop()
+
+            def _boom(*a, **k):
+                raise NotImplementedError
+
+            loop.add_reader = _boom  # type: ignore[method-assign]
+            rs = await asyncio.gather(*[c.get(_DEAD) for _ in range(16)])
+            assert c._uses_queue is False  # add_reader failed -> fallback
+            assert len(rs) == 16 and all(_is_response(r) for r in rs)
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
 # Live (network-gated)                                                         #
 # --------------------------------------------------------------------------- #
 

@@ -9,6 +9,7 @@ the two with a mutex'd queue + uv_async).
 """
 import asyncio
 import itertools
+import os
 import threading
 from typing import List, Optional, Sequence, Tuple, Union
 
@@ -130,17 +131,27 @@ class AsyncClient:
         # instead of N. Touched only on the asyncio thread.
         self._pending: list = []  # [(c_req, keep, req_id, fut), ...]
         self._flush_scheduled = False
-        # Completion batching: _on_complete (loop thread) parks finished responses
-        # here and schedules ONE _drain, collapsing N call_soon_threadsafe into ~1.
-        # Single-producer (loop thread) / single-consumer (asyncio thread); see
-        # _drain for the lock-free ordering + its GIL-atomicity assumption.
-        self._completions: list = []  # [(req_id, c_resp), ...]
+        # Completion plumbing — two paths, chosen once per client:
+        #   * QUEUE (fast, POSIX SelectorEventLoop): the loop thread parks finished
+        #     responses on a C-side FIFO and signals a self-pipe (no GIL per
+        #     completion); _drain_ready drains them in batches via loop.add_reader.
+        #   * CALLBACK (fallback: Windows / non-selector loops): the loop thread
+        #     fires self._cb per completion + call_soon_threadsafe(_drain). UNCHANGED.
+        # _cb is built unconditionally (cheap, harmless) so the C side can take the
+        # cb branch for any completion delivered before the queue flag is flipped.
+        self._completions: list = []  # cb path: [(req_id, c_resp), ...]
         self._drain_scheduled = False
-        self._carry: list = []  # bounded-drain leftover (asyncio-thread-only)
-        # ONE lifetime cffi callback dispatches every completion by req_id.
+        self._carry: list = []  # cb path: bounded-drain leftover (asyncio-only)
         self._cb = ffi.callback(
             "void(void *, uint64_t, holytls_response *)", self._on_complete
         )
+        # Get the completion fd from C BEFORE the loop thread starts (thread
+        # creation publishes it). -1 => no fd (Windows / unsupported): stay on _cb.
+        # The queue is enabled later, in _ensure_reader, once we hold the loop and
+        # confirm it can watch the fd.
+        self._completion_fd = lib.holytls_async_completion_fd(self._ac)
+        self._uses_queue = False
+        self._reader_tried = False
         self._closed = False
         self._thread = threading.Thread(
             target=lib.holytls_async_run, args=(self._ac,),
@@ -215,6 +226,74 @@ class AsyncClient:
             if not fut.done():
                 fut.set_result(resp)
 
+    # -- completion queue (fast path) ----------------------------------------
+
+    def _ensure_reader(self, loop) -> None:
+        # Called once on the asyncio thread from the first request(), when we
+        # finally hold the running loop. If the loop can watch the completion fd,
+        # register the reader and flip C to the queue path; else stay on _cb.
+        if self._reader_tried:
+            return
+        self._reader_tried = True
+        fd = self._completion_fd
+        if fd < 0:
+            return  # no fd (Windows / unsupported) -> callback path
+        try:
+            loop.add_reader(fd, self._drain_ready)  # POSIX SelectorEventLoop only
+        except (NotImplementedError, OSError):
+            return  # e.g. ProactorEventLoop -> callback path (no regression)
+        # Flip AFTER add_reader succeeds: completions delivered before this take
+        # the _cb path (still wired), completions after take the queue path. The
+        # flag is atomic + monotonic, so each completion takes exactly one path.
+        lib.holytls_async_use_completion_queue(self._ac, 1)
+        self._uses_queue = True
+
+    def _drain_ready(self) -> None:
+        # Runs on the ASYNCIO THREAD when the completion fd is readable. Clear the
+        # pipe FIRST, THEN drain: a completion enqueued after this read either
+        # re-signals the fd (the FIFO was empty) or is swept by the imminent drain
+        # (the FIFO was non-empty), so no wakeup is lost (see the C producer).
+        try:
+            while True:
+                if not os.read(self._completion_fd, 4096):
+                    break  # write end closed (teardown) -> stop
+        except (BlockingIOError, InterruptedError):
+            pass  # drained the coalesced byte(s)
+        except OSError:
+            pass
+        self._drain_batch()
+
+    def _drain_batch(self) -> None:
+        # Runs on the ASYNCIO THREAD (sole consumer). Drain up to _DRAIN_MAX
+        # completions from the C FIFO and resolve their futures. If the batch
+        # filled, more may remain AND the fd is already clear -> reschedule via
+        # call_soon (NOT the fd: the FIFO holds the remainder, no byte is owed).
+        out = ffi.new("holytls_completion[]", _DRAIN_MAX)
+        n = lib.holytls_async_drain(self._ac, out, _DRAIN_MAX)
+        for i in range(n):
+            rid = int(out[i].req_id)
+            c_resp = out[i].resp
+            fut = self._inflight.pop(rid, None)
+            if c_resp == ffi.NULL:  # catastrophic OOM copying the response
+                if fut is not None and not fut.done():
+                    fut.set_exception(HolyTLSError("out of memory copying response"))
+                continue
+            if fut is None or fut.cancelled():
+                lib.holytls_response_free(c_resp)  # awaiter gone -> free
+                continue
+            try:
+                # LAZY: defer the body copy to first .content (see _drain). The
+                # Response owns c_resp (ffi.gc) and frees it exactly once.
+                resp = _response_from_c_lazy(c_resp)
+            except BaseException as e:  # noqa: BLE001 - surfaced on the future
+                if not fut.done():  # c_resp already gc-owned; do NOT free here
+                    fut.set_exception(e)
+                continue
+            if not fut.done():
+                fut.set_result(resp)
+        if n == _DRAIN_MAX:
+            self._loop.call_soon(self._drain_batch)
+
     # -- requests ------------------------------------------------------------
 
     async def request(
@@ -235,6 +314,7 @@ class AsyncClient:
         self._check()
         loop = asyncio.get_running_loop()
         self._loop = loop  # set before submit -> visible to _on_complete
+        self._ensure_reader(loop)  # one-time: pick the queue path if the loop can
         hdrs = _normalize_headers(headers)
         body, hdrs = _encode_body(data, json, form, files, hdrs)
         keep: list = []
@@ -348,14 +428,30 @@ class AsyncClient:
                 fut.set_exception(HolyTLSError("async client closed"))
         self._pending = []
         self._flush_scheduled = False
-        # Free any completions parked but never drained (loop died before _drain):
-        # these are owned native responses Python must free (the C free path below
-        # doesn't know about them). Drain BOTH the producer queue and the bounded-
-        # drain carry.
-        for _rid, c_resp in self._completions:
-            lib.holytls_response_free(c_resp)
-        for _rid, c_resp in self._carry:
-            lib.holytls_response_free(c_resp)
+        # Free any completions parked but never drained (loop joined before the
+        # last drain): owned native responses Python must free. Their futures are
+        # failed below. Two paths per the completion mode chosen at first request.
+        if self._uses_queue:
+            # Stop watching the fd BEFORE C closes it (never leave the selector
+            # polling a fd about to be closed/recycled), then drain the C FIFO to
+            # empty so _client_free finds nothing left to free.
+            try:
+                self._loop.remove_reader(self._completion_fd)
+            except (OSError, ValueError, RuntimeError):
+                pass
+            out = ffi.new("holytls_completion[]", _DRAIN_MAX)
+            while True:
+                n = lib.holytls_async_drain(self._ac, out, _DRAIN_MAX)
+                if n == 0:
+                    break
+                for i in range(n):
+                    if out[i].resp != ffi.NULL:
+                        lib.holytls_response_free(out[i].resp)
+        else:
+            for _rid, c_resp in self._completions:
+                lib.holytls_response_free(c_resp)
+            for _rid, c_resp in self._carry:
+                lib.holytls_response_free(c_resp)
         self._completions = []
         self._carry = []
         self._drain_scheduled = False

@@ -24,6 +24,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+// POSIX self-pipe + C11 atomics back the optional off-GIL completion queue (see
+// the header). The whole feature is POSIX-only: on Windows the completion fd
+// can't be created (holytls_async_completion_fd returns -1) and the client stays
+// on the unchanged callback path, so none of this is referenced there.
+#if !defined(_WIN32)
+#include <errno.h>
+#include <fcntl.h>
+#include <stdatomic.h>
+#include <unistd.h>
+#define HT_ATOMIC_INT _Atomic int
+#define HT_ATOMIC_LOAD(p) atomic_load_explicit((p), memory_order_relaxed)
+#define HT_ATOMIC_STORE(p, v) atomic_store_explicit((p), (v), memory_order_relaxed)
+#else
+#define HT_ATOMIC_INT int
+#define HT_ATOMIC_LOAD(p) (*(p))
+#define HT_ATOMIC_STORE(p, v) (*(p) = (v))
+#endif
+
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/string8.h"
@@ -533,17 +551,28 @@ struct holytls_async_client {
   Arena *arena;        // loop-thread-only scratch for per-dispatch Header rows.
                        // Owned (not the thread-local arena_acquire pool, which
                        // would leak when THIS loop thread exits).
+  // Off-GIL completion queue (see the header). Active iff use_completion_queue;
+  // otherwise the cb path above is taken and these stay idle.
+  uv_mutex_t clock;        // guards the completion FIFO (chead/ctail)
+  AsyncCtx *chead, *ctail;  // FIFO: loop-thread producer, foreign-thread drainer
+  int cq_fd_read, cq_fd_write;   // self-pipe (-1 when unset); read end exposed
+  HT_ATOMIC_INT use_completion_queue;  // 0 = cb path, 1 = queue+fd path
 };
 
 // Per-request completion trampoline ctx. malloc'd (not arena): client_request
 // may deliver synchronously OR much later, so this must outlive the submit.
-// Intrusively linked into holytls_async_client.inflight on the loop thread.
+// Intrusively linked into holytls_async_client.inflight on the loop thread,
+// then (in completion-queue mode) re-used as the node of the completion FIFO —
+// unlinked from `inflight` BEFORE being pushed there, so it is on at most one
+// list at any instant (no double-free between the two teardown walks).
 struct AsyncCtx {
-  AsyncCtx *prev, *next;
+  AsyncCtx *prev, *next;     // inflight dll (loop thread only)
+  AsyncCtx *cnext;           // completion FIFO singly-linked (under `clock`)
   holytls_async_client *ac;
   uint64_t req_id;
-  holytls_async_complete_fn cb;
-  void *user;
+  holytls_async_complete_fn cb;  // callback path only
+  void *user;                    // callback path only
+  holytls_response *resp;        // owned copy, set on completion (queue path)
 };
 
 internal void async_submit_free(AsyncSubmit *s) {
@@ -628,20 +657,77 @@ internal void build_params_from_submit(Arena *a, const AsyncSubmit *s,
   build_params(a, &req, out);
 }
 
+#if !defined(_WIN32)
+// Create a self-pipe with both ends non-blocking + close-on-exec. pipe()+fcntl
+// (not pipe2) keeps one code path across Linux and macOS. Returns 1 on success.
+internal int make_completion_pipe(int fds[2]) {
+  if (pipe(fds) != 0) return 0;
+  for (int i = 0; i < 2; i++) {
+    int fl = fcntl(fds[i], F_GETFL, 0);
+    if (fl < 0 || fcntl(fds[i], F_SETFL, fl | O_NONBLOCK) < 0) goto fail;
+    int fdfl = fcntl(fds[i], F_GETFD, 0);
+    if (fdfl < 0 || fcntl(fds[i], F_SETFD, fdfl | FD_CLOEXEC) < 0) goto fail;
+  }
+  return 1;
+fail:
+  close(fds[0]);
+  close(fds[1]);
+  return 0;
+}
+#endif
+
+// Wake the completion-fd watcher (loop thread). One coalesced byte: a full pipe
+// (EAGAIN) means a byte is already pending, so the watcher will fire regardless.
+internal void async_completion_signal(holytls_async_client *ac) {
+#if !defined(_WIN32)
+  if (ac->cq_fd_write < 0) return;
+  uint8_t b = 1;
+  ssize_t w;
+  do {
+    w = write(ac->cq_fd_write, &b, 1);
+  } while (w < 0 && errno == EINTR);
+  (void)w;
+#else
+  (void)ac;
+#endif
+}
+
 // Response trampoline — fires on the loop thread when a request completes.
-// Copies the "valid only during the callback" Response into owned heap memory
-// and hands ownership to the user's completion callback.
+// Copies the "valid only during the callback" Response into owned heap memory,
+// then EITHER parks it on the completion FIFO + signals the fd (queue path: no
+// foreign-runtime call, no GIL) OR hands it to the user's callback (cb path).
 internal void on_async_response(void *user, const Response *resp) {
   AsyncCtx *cx = (AsyncCtx *)user;
+  holytls_async_client *ac = cx->ac;
   holytls_response *out = response_copy(resp);
   if (!out) out = make_error_response("out of memory copying response");
-  if (out) cx->cb(cx->user, cx->req_id, out);
-  // Unlink from the in-flight list (loop thread; no lock) and free.
+
+  // Unlink from the in-flight list FIRST (loop thread; no lock) so the node is
+  // on at most one list at a time — then either the completion FIFO, or freed.
   if (cx->prev)
     cx->prev->next = cx->next;
   else
-    cx->ac->inflight = cx->next;
+    ac->inflight = cx->next;
   if (cx->next) cx->next->prev = cx->prev;
+  cx->prev = cx->next = 0;
+
+  if (HT_ATOMIC_LOAD(&ac->use_completion_queue)) {
+    cx->resp = out;  // may be NULL only on catastrophic OOM (drain handles it)
+    cx->cnext = 0;
+    uv_mutex_lock(&ac->clock);
+    int was_empty = (ac->chead == 0);  // signal decision atomic with the push
+    if (ac->ctail)
+      ac->ctail->cnext = cx;
+    else
+      ac->chead = cx;
+    ac->ctail = cx;
+    uv_mutex_unlock(&ac->clock);
+    if (was_empty) async_completion_signal(ac);
+    return;  // drain frees cx (and transfers cx->resp ownership to the caller)
+  }
+
+  // Fallback: deliver inline (one GIL hop per completion) and free the node.
+  if (out) cx->cb(cx->user, cx->req_id, out);
   free(cx);
 }
 
@@ -723,6 +809,14 @@ holytls_async_client *holytls_async_client_new_named(const char *profile_name,
     return 0;
   }
   ac->async.data = ac;
+  if (uv_mutex_init(&ac->clock) != 0) {
+    uv_mutex_destroy(&ac->qlock);
+    client_cleanup(&ac->base.client);
+    loop_shutdown(&ac->base.loop);  // closes the async handle initialized above
+    free(ac);
+    return 0;
+  }
+  ac->cq_fd_read = ac->cq_fd_write = -1;  // calloc zeroed them; 0 is a real fd
   ac->arena = arena_alloc();
   return ac;
 }
@@ -823,6 +917,56 @@ void holytls_async_stop(holytls_async_client *ac) {
   uv_async_send(&ac->async);
 }
 
+int holytls_async_completion_fd(holytls_async_client *ac) {
+  if (!ac) return -1;
+#if !defined(_WIN32)
+  if (ac->cq_fd_read >= 0) return ac->cq_fd_read;  // idempotent
+  int fds[2];
+  if (!make_completion_pipe(fds)) return -1;
+  ac->cq_fd_read = fds[0];
+  ac->cq_fd_write = fds[1];
+  return ac->cq_fd_read;
+#else
+  return -1;
+#endif
+}
+
+void holytls_async_use_completion_queue(holytls_async_client *ac, int on) {
+  if (!ac) return;
+  HT_ATOMIC_STORE(&ac->use_completion_queue, on ? 1 : 0);
+}
+
+size_t holytls_async_drain(holytls_async_client *ac, holytls_completion *out,
+                           size_t max) {
+  if (!ac || !out || max == 0) return 0;
+  // Detach up to `max` nodes from the head under the lock; relink the remainder
+  // as the new head (the remainder stays queued for the next drain).
+  uv_mutex_lock(&ac->clock);
+  AsyncCtx *batch = ac->chead;
+  AsyncCtx *cx = batch, *prev = 0;
+  size_t n = 0;
+  while (cx && n < max) {
+    prev = cx;
+    cx = cx->cnext;
+    n++;
+  }
+  ac->chead = cx;  // remainder (or NULL)
+  if (!ac->chead) ac->ctail = 0;
+  if (prev) prev->cnext = 0;  // terminate the detached batch
+  uv_mutex_unlock(&ac->clock);
+
+  size_t i = 0;
+  for (AsyncCtx *p = batch; p;) {
+    AsyncCtx *next = p->cnext;
+    out[i].req_id = p->req_id;
+    out[i].resp = p->resp;  // ownership transfers to the caller
+    free(p);                // free the NODE here; resp lives on
+    i++;
+    p = next;
+  }
+  return i;  // == n
+}
+
 void holytls_async_client_free(holytls_async_client *ac) {
   if (!ac) return;
   // Precondition: the loop thread has returned from holytls_async_run and been
@@ -831,6 +975,7 @@ void holytls_async_client_free(holytls_async_client *ac) {
   loop_shutdown(&ac->base.loop);  // closes the async handle + any stragglers
   if (ac->arena) arena_release(ac->arena);
   uv_mutex_destroy(&ac->qlock);
+  uv_mutex_destroy(&ac->clock);
   for (AsyncSubmit *s = ac->qhead; s;) {  // defensive: any residual queue
     AsyncSubmit *next = s->next;
     async_submit_free(s);
@@ -842,6 +987,19 @@ void holytls_async_client_free(holytls_async_client *ac) {
     free(cx);
     cx = next;
   }
+  // Defensive: any completion the foreign side never drained (it normally drains
+  // to empty in its teardown). The node owns its resp here — free both.
+  for (AsyncCtx *cx = ac->chead; cx;) {
+    AsyncCtx *next = cx->cnext;
+    holytls_response_free(cx->resp);
+    free(cx);
+    cx = next;
+  }
+#if !defined(_WIN32)
+  // The self-pipe is NOT a uv handle, so loop_shutdown didn't close it.
+  if (ac->cq_fd_read >= 0) close(ac->cq_fd_read);
+  if (ac->cq_fd_write >= 0) close(ac->cq_fd_write);
+#endif
   free(ac);
 }
 
