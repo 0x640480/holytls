@@ -14,7 +14,7 @@ import os
 import pytest
 
 import holytls
-from holytls import Client
+from holytls import Client, Session
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("HOLYTLS_LIVE"),
@@ -48,3 +48,16 @@ def test_auto_first_request_is_h2():
         r = c.get(H2_URL)
         assert r.ok, r.error
         assert r.alpn == "h2"
+
+
+def test_session_set_cookie_is_sent():
+    # A cookie seeded out-of-band (no Set-Cookie ever delivered it) is attached
+    # to the next request by the jar — the PerimeterX _px3/_pxvid use case.
+    # httpbin /cookies echoes the request's Cookie header back as JSON.
+    with Client(timeout_ms=30000) as c:
+        s = Session(c, cookies=True)
+        s.set_cookie("_px3", "seedval", domain="httpbin.org")
+        r = s.get("https://httpbin.org/cookies")
+        assert r.ok, r.error
+        assert r.json().get("cookies", {}).get("_px3") == "seedval"
+        s.close()

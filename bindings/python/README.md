@@ -171,6 +171,17 @@ with holytls.Client() as client:
     s.get("https://example.com/account")   # carries the jar
 ```
 
+Seed a cookie directly into the jar for cookies obtained **out-of-band** — JS-set
+or anti-bot-solver cookies (e.g. PerimeterX `_px3`/`_pxvid`) that no `Set-Cookie`
+response will deliver:
+
+```python
+s.set_cookie("_px3", "<solver-value>", domain="example.com")
+# options: path="/", expires=<epoch> (0=session), host_only=, secure=,
+#          http_only=, same_site= (0=unset 1=Lax 2=Strict 3=None)
+s.get("https://example.com/account")   # the seeded cookie rides along
+```
+
 ### `Response`
 
 | attribute | meaning |
