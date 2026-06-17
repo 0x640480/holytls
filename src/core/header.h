@@ -36,6 +36,40 @@ void header_list_push(HeaderList *list, String8 name, String8 value, U8 flags);
 String8 *header_list_get_ci(HeaderList *list, String8 name);
 B32 header_list_has_ci(HeaderList *list, String8 name);
 
+// HdrBuf — a fixed caller-storage builder for a Header[] (no arena): point it at
+// a stack array, push the headers in wire order, then pass {v, count} as
+// RequestParams.headers. Unlike HeaderList it allocates nothing. `hdrbuf_add`
+// keeps the header AS-IS, including an EMPTY value — so you can place a
+// named-slot placeholder for cookie/content-length that holytls fills in place
+// (see the named-slot fill in client.c / session.c). `hdrbuf_add_opt` skips an
+// empty value: the convenience for an optional header you only send when present.
+// Adds past `cap` are dropped.
+typedef struct HdrBuf HdrBuf;
+struct HdrBuf {
+  Header *v;
+  U64 count;
+  U64 cap;
+};
+
+internal inline void hdrbuf_init(HdrBuf *b, Header *storage, U64 cap) {
+  b->v = storage;
+  b->count = 0;
+  b->cap = cap;
+}
+internal inline void hdrbuf_add(HdrBuf *b, String8 name, String8 value) {
+  if (b->count >= b->cap) return;
+  b->v[b->count].name = name;
+  b->v[b->count].value = value;
+  b->v[b->count].flags = 0;
+  b->count++;
+}
+internal inline void hdrbuf_add_opt(HdrBuf *b, String8 name, String8 value) {
+  if (value.size) hdrbuf_add(b, name, value);  // skip an empty optional header
+}
+internal inline void hdrbuf_lit(HdrBuf *b, const char *name, const char *value) {
+  hdrbuf_add(b, str8_cstring(name), str8_cstring(value));
+}
+
 // Split a Cookie header value ("a=1; b=2; c=3") into its crumbs ("a=1","b=2",
 // "c=3"), as views into `value`. HTTP/2 and HTTP/3 emit one header field per
 // crumb (Chrome's wire framing); HTTP/1.1 keeps the value whole. Writes up to

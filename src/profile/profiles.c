@@ -120,6 +120,22 @@ const QuicProfile *profile_quic_by_name(String8 name) {
   return 0;
 }
 
+const ProfileEntry *profile_by_chrome_major(int major) {
+  // Nearest available Chrome profile: the entry with the highest id <= `major`;
+  // if `major` is below all of them, the oldest Chrome entry. Chrome entries are
+  // those whose name starts "chrome" (the `id` is the Chrome major); non-Chrome
+  // families (firefox…) are skipped. NULL only if no Chrome family is registered.
+  const ProfileEntry *best_le = 0;  // highest id <= major
+  const ProfileEntry *oldest = 0;   // lowest id (fallback when major is too low)
+  for (U64 i = 0; i < ArrayCount(k_profile_registry); ++i) {
+    const ProfileEntry *e = &k_profile_registry[i];
+    if (!str8_starts_with(str8_cstring(e->name), str8_lit("chrome"))) continue;
+    if (!oldest || e->id < oldest->id) oldest = e;
+    if ((int)e->id <= major && (!best_le || e->id > best_le->id)) best_le = e;
+  }
+  return best_le ? best_le : oldest;
+}
+
 //- default-header accessors --------------------------------------------------
 
 String8 profile_default_header(const DefaultHeader *defaults, U8 count,

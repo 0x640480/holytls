@@ -147,6 +147,33 @@ internal void test_order_and_replace(Arena *a) {
   CHECK(has(h2, "r=2") && !has(h2, "r=1"));
 }
 
+// Out-of-band get/remove by name (cookie_jar_get / cookie_jar_remove): for
+// seeding/clearing solver cookies without going through Set-Cookie.
+internal void test_get_remove(Arena *a) {
+  CookieJar jar;
+  cookie_jar_init(&jar, a);
+  cookie_jar_put(&jar, str8_lit("_px3"), str8_lit("v1"), str8_lit("a.com"),
+                 str8_lit("/"), 0, 0, 1, 0, 0);
+  cookie_jar_put(&jar, str8_lit("_px3"), str8_lit("v2"), str8_lit("b.com"),
+                 str8_lit("/"), 0, 0, 1, 0, 0);
+  cookie_jar_put(&jar, str8_lit("sid"), str8_lit("abc"), str8_lit("a.com"),
+                 str8_lit("/"), 0, 0, 1, 0, 0);
+  CHECK(jar.count == 3);
+
+  // get: first exact-name match's value; absent -> empty.
+  CHECK(str8_match(cookie_jar_get(&jar, str8_lit("sid")), str8_lit("abc")));
+  CHECK(str8_match(cookie_jar_get(&jar, str8_lit("_px3")), str8_lit("v1")));
+  CHECK(cookie_jar_get(&jar, str8_lit("nope")).size == 0);
+
+  // remove by name drops ALL of that name (both _px3 across domains) + counts.
+  CHECK(cookie_jar_remove(&jar, str8_lit("_px3")) == 2);
+  CHECK(jar.count == 1);
+  CHECK(cookie_jar_get(&jar, str8_lit("_px3")).size == 0);
+  CHECK(str8_match(cookie_jar_get(&jar, str8_lit("sid")), str8_lit("abc")));
+  CHECK(cookie_jar_remove(&jar, str8_lit("_px3")) == 0);  // absent -> 0, no-op
+  CHECK(jar.count == 1);
+}
+
 // Public-suffix rejection: a Domain attribute naming a public suffix would
 // blanket every site under it; only the suffix host itself may set it, and
 // then it degrades to host-only (see cookie_jar_store + core/psl.h).
@@ -241,6 +268,7 @@ int main(void) {
   test_secure(a);
   test_expiry(a);
   test_order_and_replace(a);
+  test_get_remove(a);
   test_crumbs();
   arena_release(a);
   fprintf(stderr, "[cookie_test] %d checks, %d failures\n", g_checks, g_fails);

@@ -131,3 +131,22 @@ String8 url_resolve(Arena *arena, String8 base, String8 ref) {
                     STR8_Arg(b.scheme), STR8_Arg(b.authority), STR8_Arg(dir),
                     STR8_Arg(ref));
 }
+
+String8 url_encode_component(Arena *arena, String8 s) {
+  // RFC 3986 percent-encoding: pass the unreserved set (ALPHA / DIGIT / -._~)
+  // through, %XX-escape every other byte (upper-hex). Worst case 3x the input.
+  static const char hex[] = "0123456789ABCDEF";
+  U8 *out = push_array_no_zero(arena, U8, s.size * 3);
+  U64 n = 0;
+  for (U64 i = 0; i < s.size; ++i) {
+    U8 c = s.str[i];
+    if (char_is_alnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      out[n++] = c;
+    } else {
+      out[n++] = '%';
+      out[n++] = (U8)hex[c >> 4];
+      out[n++] = (U8)hex[c & 0xf];
+    }
+  }
+  return str8(out, n);
+}

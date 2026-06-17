@@ -32,4 +32,9 @@ ParsedUrl url_parse(String8 u);
 // normalization).
 String8 url_resolve(Arena *arena, String8 base, String8 ref);
 
+// Percent-encode `s` as a URL component (RFC 3986): the unreserved set
+// (ALPHA / DIGIT / '-' '_' '.' '~') passes through, every other byte becomes
+// %XX (upper-hex). For building query/path component values (redirect_uri, …).
+String8 url_encode_component(Arena *arena, String8 s);
+
 #endif  // HOLYTLS_URL_H

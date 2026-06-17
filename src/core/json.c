@@ -89,6 +89,33 @@ void json_mut_obj_str8(yyjson_mut_doc *doc, yyjson_mut_val *obj,
                           (size_t)val.size);
 }
 
+void json_mut_obj_int(yyjson_mut_doc *doc, yyjson_mut_val *obj, const char *key,
+                      S64 val) {
+  yyjson_mut_obj_add_int(doc, obj, key, (int64_t)val);
+}
+
+void json_mut_obj_bool(yyjson_mut_doc *doc, yyjson_mut_val *obj, const char *key,
+                       B32 val) {
+  yyjson_mut_obj_add_bool(doc, obj, key, val != 0);
+}
+
+void json_mut_arr_add_str8(yyjson_mut_doc *doc, yyjson_mut_val *arr,
+                           String8 val) {
+  yyjson_mut_arr_add_strn(doc, arr, (const char *)val.str, (size_t)val.size);
+}
+
+void json_mut_obj_sub(yyjson_mut_doc *doc, Arena *arena, yyjson_mut_val *obj,
+                      const char *key, String8 json) {
+  // Embed a raw JSON document as obj[key]: parse it, then deep-copy its root
+  // into `doc`. Unparseable/empty input embeds an empty object, so the key is
+  // never silently dropped.
+  yyjson_doc *sub = json_parse(arena, json);
+  yyjson_mut_val *v = sub ? yyjson_val_mut_copy(doc, yyjson_doc_get_root(sub))
+                          : yyjson_mut_obj(doc);
+  if (!v) v = yyjson_mut_obj(doc);  // copy OOM -> empty object (keep the key)
+  yyjson_mut_obj_add_val(doc, obj, key, v);
+}
+
 String8 json_mut_write(Arena *arena, yyjson_mut_doc *doc, B32 pretty) {
   yyjson_alc alc = json_arena_alc(arena);
   yyjson_write_flag flag = pretty ? YYJSON_WRITE_PRETTY : YYJSON_WRITE_NOFLAG;

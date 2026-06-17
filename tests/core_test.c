@@ -92,6 +92,20 @@ internal void test_url_resolve(Arena *a) {
                    str8_lit("https://x.com/y")));  // root base
 }
 
+//- url_encode_component (RFC 3986 percent-encoding)
+internal void test_url_encode(Arena *a) {
+  // The unreserved set (ALPHA / DIGIT / -._~) passes through unchanged.
+  CHECK(str8_match(url_encode_component(a, str8_lit("aZ0-_.~")),
+                   str8_lit("aZ0-_.~")));
+  // Reserved + space + sub-delims -> %XX (upper-hex).
+  CHECK(str8_match(url_encode_component(a, str8_lit("a b/c?d=e&f")),
+                   str8_lit("a%20b%2Fc%3Fd%3De%26f")));
+  CHECK(str8_match(url_encode_component(a, str8_lit("")), str8_lit("")));
+  // High bytes (UTF-8 "é") -> %C3%A9.
+  U8 utf8[2] = {0xC3, 0xA9};
+  CHECK(str8_match(url_encode_component(a, str8(utf8, 2)), str8_lit("%C3%A9")));
+}
+
 //- redirect method/body decision (browser-faithful)
 internal void test_redirect_method(void) {
   B32 drop;
@@ -205,6 +219,7 @@ int main(void) {
   Arena *a = arena_alloc();
   test_url();
   test_url_resolve(a);
+  test_url_encode(a);
   test_redirect_method();
   test_alt_svc();
   test_header_order(a);

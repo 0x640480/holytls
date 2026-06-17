@@ -173,7 +173,7 @@ internal Cookie *cookie_jar_push(CookieJar *jar) {
   return &jar->v[jar->count++];
 }
 
-internal void cookie_jar_remove(CookieJar *jar, U64 i) {
+internal void cookie_jar_remove_at(CookieJar *jar, U64 i) {
   if (i + 1 < jar->count)
     MemoryMove(&jar->v[i], &jar->v[i + 1],
                (jar->count - i - 1) * sizeof(Cookie));
@@ -183,10 +183,32 @@ internal void cookie_jar_remove(CookieJar *jar, U64 i) {
 void cookie_jar_evict_expired(CookieJar *jar, U64 now) {
   for (U64 i = 0; i < jar->count;) {
     if (jar->v[i].expires_epoch != 0 && jar->v[i].expires_epoch <= now)
-      cookie_jar_remove(jar, i);
+      cookie_jar_remove_at(jar, i);
     else
       ++i;
   }
+}
+
+String8 cookie_jar_get(CookieJar *jar, String8 name) {
+  for (U64 i = 0; i < jar->count; ++i)
+    if (str8_match(jar->v[i].name, name)) return jar->v[i].value;
+  return str8_zero();
+}
+
+U64 cookie_jar_remove(CookieJar *jar, String8 name) {
+  // Delete every cookie of this name (any domain/path), compacting in place.
+  // Returns how many were removed. Exact (case-sensitive) name match — cookie
+  // names are case-sensitive (RFC 6265).
+  U64 removed = 0;
+  for (U64 i = 0; i < jar->count;) {
+    if (str8_match(jar->v[i].name, name)) {
+      cookie_jar_remove_at(jar, i);
+      ++removed;
+    } else {
+      ++i;
+    }
+  }
+  return removed;
 }
 
 internal S64 cookie_jar_find(CookieJar *jar, String8 name, String8 domain,
@@ -314,7 +336,7 @@ void cookie_jar_store(CookieJar *jar, ParsedUrl req, String8 sc, U64 now) {
 
   if (expired_now) {
     S64 existing = cookie_jar_find(jar, name, domain, path);
-    if (existing >= 0) cookie_jar_remove(jar, (U64)existing);
+    if (existing >= 0) cookie_jar_remove_at(jar, (U64)existing);
     return;
   }
   cookie_jar_put(jar, name, value, domain, path, has_expiry ? expires : 0,
