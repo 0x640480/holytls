@@ -91,11 +91,24 @@ internal void session_dispatch_hop(SessionReq *req) {
     header_list_push(&hop, req->caller_headers.v[i].name,
                      req->caller_headers.v[i].value,
                      req->caller_headers.v[i].flags);
-  if (s->cookies_enabled && pu.ok &&
-      !header_list_has_ci(&req->caller_headers, str8_lit("cookie"))) {
-    String8 cookie =
-        cookie_jar_cookie_header(&s->jar, req->arena, pu, (U64)time(0));
-    if (cookie.size) header_list_push(&hop, str8_lit("cookie"), cookie, 0);
+  if (s->cookies_enabled && pu.ok) {
+    // Named-slot template: if the caller placed an EMPTY `cookie` slot, fill it
+    // in place so it keeps the caller's wire position (in override-default mode
+    // there is no profile placeholder to reposition an appended cookie). Absent
+    // slot -> append as before (the default path then repositions it to the
+    // profile's cookie slot via build_ordered_headers). A caller-supplied
+    // non-empty cookie is left untouched.
+    String8 *slot = header_list_get_ci(&hop, str8_lit("cookie"));
+    if (!slot || slot->size == 0) {
+      String8 cookie =
+          cookie_jar_cookie_header(&s->jar, req->arena, pu, (U64)time(0));
+      if (cookie.size) {
+        if (slot)
+          *slot = cookie;
+        else
+          header_list_push(&hop, str8_lit("cookie"), cookie, 0);
+      }
+    }
   }
 
   // no_redirects = single hop (no client-side redirects); we own the redirect
