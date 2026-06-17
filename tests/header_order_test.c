@@ -9,6 +9,7 @@
 #include "base/base.h"
 #include "base/string8.h"
 #include "core/client.h"
+#include "core/client_internal.h"  // build_request_headers (white-box)
 #include "core/header.h"
 #include "net/loop.h"
 #include "profile/profile.h"
@@ -103,6 +104,66 @@ internal void test_override_defaults(Arena *a) {
   build_ordered_headers(a, 0, 0, caller, ArrayCount(caller), &out);
   CHECK(order_is(
       &out, (const char *[]){"user-agent=ua", "accept=*/*", "x-custom=v"}, 3));
+}
+
+// Named-slot template: an EMPTY content-length slot in the caller array is filled
+// in place by build_request_headers (keeping its wire position) instead of being
+// dropped + re-appended at the end. Byte-exact (append-at-end) when no slot.
+internal void test_named_slot_content_length(Arena *a) {
+  const U8 *body = (const U8 *)"hello";  // 5 bytes
+
+  HeaderList out;
+  header_list_init(&out, a);
+  Header caller[] = {
+      {str8_lit("x-first"), str8_lit("1"), 0},
+      {str8_lit("content-length"), str8_zero(), 0},  // empty slot -> filled here
+      {str8_lit("x-last"), str8_lit("2"), 0},
+  };
+  build_request_headers(a, 0, 0, caller, ArrayCount(caller), body, 5,
+                        /*override=*/1, Method_POST, &out);
+  CHECK(order_is(
+      &out, (const char *[]){"x-first=1", "content-length=5", "x-last=2"}, 3));
+
+  // No slot -> content-length appended at the END (today's behavior, unchanged).
+  HeaderList out2;
+  header_list_init(&out2, a);
+  Header caller2[] = {
+      {str8_lit("x-first"), str8_lit("1"), 0},
+      {str8_lit("x-last"), str8_lit("2"), 0},
+  };
+  build_request_headers(a, 0, 0, caller2, ArrayCount(caller2), body, 5,
+                        /*override=*/1, Method_POST, &out2);
+  CHECK(order_is(
+      &out2, (const char *[]){"x-first=1", "x-last=2", "content-length=5"}, 3));
+}
+
+// The session cookie-slot mechanism: a caller header whose empty value is FILLED
+// before build_ordered_headers lands at its original position; an empty slot left
+// UNFILLED is dropped (no empty "cookie:" leaks to the wire).
+internal void test_named_slot_cookie_position(Arena *a) {
+  HeaderList hop;
+  header_list_init(&hop, a);
+  push(&hop, "a", "1");
+  header_list_push(&hop, str8_lit("cookie"), str8_zero(), 0);  // empty slot
+  push(&hop, "b", "2");
+  String8 *slot = header_list_get_ci(&hop, str8_lit("cookie"));
+  CHECK(slot && slot->size == 0);
+  *slot = str8_lit("sid=xyz");  // what session_dispatch_hop does with the jar
+  HeaderList out;
+  header_list_init(&out, a);
+  build_ordered_headers(a, 0, 0, hop.v, hop.count, &out);  // override mode
+  CHECK(order_is(&out, (const char *[]){"a=1", "cookie=sid=xyz", "b=2"}, 3));
+
+  // Unfilled empty slot -> dropped.
+  HeaderList hop2;
+  header_list_init(&hop2, a);
+  push(&hop2, "a", "1");
+  header_list_push(&hop2, str8_lit("cookie"), str8_zero(), 0);
+  push(&hop2, "b", "2");
+  HeaderList out2;
+  header_list_init(&out2, a);
+  build_ordered_headers(a, 0, 0, hop2.v, hop2.count, &out2);
+  CHECK(order_is(&out2, (const char *[]){"a=1", "b=2"}, 2));
 }
 
 internal void test_client_api(void) {
@@ -201,6 +262,8 @@ int main(void) {
   Arena *a = arena_alloc();
   test_reorder(a);
   test_override_defaults(a);
+  test_named_slot_content_length(a);
+  test_named_slot_cookie_position(a);
   test_fetch_order(a);
   test_client_api();
   arena_release(a);

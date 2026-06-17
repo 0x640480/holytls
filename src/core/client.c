@@ -211,13 +211,38 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
 // Build the ordered request headers (+ default accept-encoding /
 // content-length) for a request into `out` (initialised on `arena`). Returns
 // the arena-dup'd body view.
-internal String8 build_request_headers(Arena *arena,
-                                       const DefaultHeader *defaults,
-                                       U64 default_count, const Header *caller,
-                                       U64 caller_count, const U8 *body,
-                                       U64 body_len, B32 override_defaults,
-                                       Method method, HeaderList *out) {
+// Non-internal (declared in client_internal.h) so the white-box header test can
+// assert the assembled wire order, incl. the named-slot fill below.
+String8 build_request_headers(Arena *arena, const DefaultHeader *defaults,
+                              U64 default_count, const Header *caller,
+                              U64 caller_count, const U8 *body, U64 body_len,
+                              B32 override_defaults, Method method,
+                              HeaderList *out) {
   header_list_init(out, arena);
+  // Named-slot template: if the caller placed an EMPTY content-length slot, fill
+  // it in place (keeping its wire position) instead of letting
+  // build_ordered_headers drop it and re-appending content-length at the end
+  // below. Triggers ONLY when such a slot exists (the browser-default header
+  // sets never have one), so every other path stays byte-exact. The caller array
+  // is const, so fill a one-shot arena copy.
+  for (U64 i = 0; i < caller_count; ++i) {
+    if (caller[i].value.size == 0 &&
+        str8_match_ci(caller[i].name, str8_lit("content-length"))) {
+      String8 cl = str8_zero();
+      if (body_len)
+        cl = str8_from_u64(arena, body_len, 10, 0);
+      else if (method == Method_POST || method == Method_PUT ||
+               method == Method_PATCH)
+        cl = str8_lit("0");
+      if (cl.size) {
+        Header *copy = push_array_no_zero(arena, Header, caller_count);
+        MemoryCopy(copy, caller, caller_count * sizeof(Header));
+        copy[i].value = cl;
+        caller = copy;  // local rebind; we own the copy (caller stays const)
+      }
+      break;  // first content-length slot only
+    }
+  }
   // Override-default-headers mode: drop the profile's browser headers entirely
   // — build_ordered_headers with zero defaults emits only the caller's headers,
   // in their array order — and skip the Accept-Encoding default. Content-Length
