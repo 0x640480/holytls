@@ -498,7 +498,12 @@ struct ResumeCacheEntry {
   U64 last_used_ms;      // uv_now stamp; LRU eviction when the cache is full
 };
 
-#define CLIENT_HEADER_ORDER_MAX 32  // header-order override capacity
+#define CLIENT_HEADER_ORDER_MAX 64  // header-order override capacity (Chrome
+                                    // sends ~15; 64 leaves ample headroom). The
+                                    // setter rejects more; the per-request CSV
+                                    // path clamps. For an EXACT N-header order,
+                                    // prefer override_default_headers + the
+                                    // array (the named-slot template).
 #define CLIENT_PROXY_POOL_MAX 64    // proxy-rotation pool capacity
 
 struct Client {
