@@ -252,6 +252,7 @@ internal void build_params(Arena *a, const holytls_request *req,
     out->body = str8((U8 *)req->body, req->body_len);
   out->fetch_mode = map_fetch(req->fetch_mode);
   out->no_redirects = req->no_redirects ? 1 : 0;
+  out->http_version = map_http_version(req->http_version);  // 0 (Auto) inherits
   if (req->proxy) out->proxy = str8_cstring(req->proxy);
   if (req->header_order) out->header_order = str8_cstring(req->header_order);
   if (req->header_count && req->headers) {
@@ -530,6 +531,7 @@ struct AsyncSubmit {
   char *header_order;
   holytls_method method;
   holytls_fetch_mode fetch_mode;
+  holytls_http_version http_version;
   int no_redirects;
   uint64_t req_id;
   holytls_async_complete_fn cb;
@@ -601,6 +603,7 @@ internal AsyncSubmit *async_submit_copy(const holytls_request *req,
   if (!s) return 0;
   s->method = req->method;
   s->fetch_mode = req->fetch_mode;
+  s->http_version = req->http_version;
   s->no_redirects = req->no_redirects ? 1 : 0;
   s->req_id = req_id;
   s->cb = cb;
@@ -651,6 +654,7 @@ internal void build_params_from_submit(Arena *a, const AsyncSubmit *s,
   req.body = s->body;
   req.body_len = s->body_len;
   req.fetch_mode = s->fetch_mode;
+  req.http_version = s->http_version;
   req.no_redirects = s->no_redirects;
   req.proxy = s->proxy;
   req.header_order = s->header_order;

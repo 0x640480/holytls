@@ -206,7 +206,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                                     void *user, U64 deadline_ns,
                                     const ProxyConfig *proxy,
                                     BodyChunkFn on_chunk, void *chunk_user,
-                                    String8 header_order);
+                                    String8 header_order, HttpVersion req_version);
 
 // Build the ordered request headers (+ default accept-encoding /
 // content-length) for a request into `out` (initialised on `arena`). Returns
@@ -420,6 +420,8 @@ struct H2Request {
   U64 t_start_ns;  // request start (uv_hrtime) for Response.timing.total_ms
   String8 method, scheme, authority, path, origin, body, url, host;
   U16 port;
+  HttpVersion version;  // effective wire version for THIS request (H1 selects
+                        // the http/1.1-only ALPN; H2/Auto the full profile)
   HeaderList req_headers;
   HeaderList resp_headers;  // filtered view when the body is decoded
   B32 responded;
@@ -715,8 +717,10 @@ internal void h2req_on_fully_closed(void *user) {
 internal void h2req_connect(H2Request *req, B32 allow_early) {
   Client *c = req->client;
   // Forced HTTP/1.1 uses the http/1.1-only ALPN profile so the server picks h1.
+  // Keyed on THIS request's effective version (per-request override), not the
+  // client default — so a single H1 hop on an H2 client gets the h1 ClientHello.
   const TlsProfile *tls =
-      c->http_version == HttpVersion_H1 ? &c->h1_tls : &c->profile->tls;
+      req->version == HttpVersion_H1 ? &c->h1_tls : &c->profile->tls;
   conn_init(&req->conn, c->loop, c->ctx.ctx, tls);
   conn_on_fully_closed(&req->conn, h2req_on_fully_closed, req);
   conn_on_closed(&req->conn, h2req_on_closed, req);
@@ -752,11 +756,12 @@ internal void h2req_start(Client *c, Method m, String8 url,
                           const U8 *body, U64 body_len, ResponseFn cb,
                           void *user, U64 deadline_ns, const ProxyConfig *proxy,
                           BodyChunkFn on_chunk, void *chunk_user,
-                          String8 header_order) {
+                          String8 header_order, HttpVersion version) {
   Arena *arena = arena_acquire();
   H2Request *req = push_array(arena, H2Request, 1);
   req->arena = arena;
   req->client = c;
+  req->version = version;  // H1 -> http/1.1-only ALPN (see h2req_connect)
   req->cb = cb;
   req->user = user;
   req->proxy = proxy ? *proxy : c->proxy;  // resolved proxy (None = direct)
@@ -1084,6 +1089,14 @@ void client_init(Client *c, EventLoop *loop, const Profile *h2,
     c->h3_ctx = build_ctx(&h3->tls, verify);
   }
   c->http_version = mode;
+  // The http/1.1-only TLS profile: Chrome's TLS knobs, but advertise only
+  // http/1.1 and drop ALPS (an h2-only extension). Built ALWAYS (not just in H1
+  // mode) so a PER-REQUEST H1 override works on an H2/Auto client. It's a value
+  // copy over the shared SSL_CTX — only the per-connection ALPN/ALPS differ.
+  c->h1_tls = h2->tls;
+  c->h1_tls.alpn_wire = k_alpn_http11;
+  c->h1_tls.alpn_wire_len = (U16)sizeof k_alpn_http11;
+  c->h1_tls.alps_count = 0;
   c->proxy_verify = 1;  // verify HTTPS-proxy certs by default (per-request)
   dns_cache_init(&c->dns_cache, DNS_CACHE_DEFAULT_TTL_MS);
 }
@@ -1164,7 +1177,8 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                                     void *user, U64 deadline_ns,
                                     const ProxyConfig *proxy,
                                     BodyChunkFn on_chunk, void *chunk_user,
-                                    String8 header_order) {
+                                    String8 header_order,
+                                    HttpVersion req_version) {
   if (!client_ok(c)) {
     Response r;
     MemoryZeroStruct(&r);
@@ -1174,7 +1188,8 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
     client_cb_exit(c);
     return;
   }
-  HttpVersion hv = c->http_version;
+  // Per-request override wins; the zero value (Auto) inherits the client mode.
+  HttpVersion hv = req_version ? req_version : c->http_version;
   // The proxy in effect for this request: the per-request override / pool pick
   // (`proxy`) if given, else the client's single proxy. Rotation/override
   // forces the per-request transport path (pooling would defeat the rotation).
@@ -1231,7 +1246,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
                     body_len, cb, user, deadline_ns, header_order);
     else
       h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-                  deadline_ns, proxy, on_chunk, chunk_user, header_order);
+                  deadline_ns, proxy, on_chunk, chunk_user, header_order, hv);
     return;
   }
 
@@ -1264,7 +1279,7 @@ internal void client_dispatch_inner(Client *c, Method m, String8 url,
     return;
   }
   h2req_start(c, m, url, headers, header_count, body, body_len, cb, user,
-              deadline_ns, proxy, on_chunk, chunk_user, header_order);
+              deadline_ns, proxy, on_chunk, chunk_user, header_order, hv);
 }
 
 //- real ECH: per-origin ECHConfigList cache + DoH prefetch gate -------------
@@ -1328,6 +1343,7 @@ struct EchPrefetch {
   BodyChunkFn on_chunk;  // streaming sink (carried across the DoH)
   void *chunk_user;
   String8 header_order;  // per-request wire order CSV, carried across the DoH
+  HttpVersion req_version;  // per-request version override, carried across DoH
 };
 
 internal void client_ech_doh_cb(void *user, const Response *r) {
@@ -1342,7 +1358,7 @@ internal void client_ech_doh_cb(void *user, const Response *r) {
                         pf->headers.count, pf->body.str, pf->body.size, pf->cb,
                         pf->user, pf->deadline_ns,
                         pf->has_proxy ? &pf->proxy : 0, pf->on_chunk,
-                        pf->chunk_user, pf->header_order);
+                        pf->chunk_user, pf->header_order, pf->req_version);
   arena_release(pf->arena);
 }
 
@@ -1353,7 +1369,7 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
                                   void *user, ParsedUrl pu, U64 deadline_ns,
                                   const ProxyConfig *proxy,
                                   BodyChunkFn on_chunk, void *chunk_user,
-                                  String8 header_order) {
+                                  String8 header_order, HttpVersion req_version) {
   Arena *a = arena_alloc();
   EchPrefetch *pf = push_struct(a, EchPrefetch);
   pf->arena = a;
@@ -1376,6 +1392,7 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
       body_len ? push_str8_copy(a, str8((U8 *)body, body_len)) : str8_zero();
   pf->header_order =
       header_order.size ? push_str8_copy(a, header_order) : str8_zero();
+  pf->req_version = req_version;
   pf->cb = cb;
   pf->user = user;
   String8 doh = push_str8f(a, "https://dns.google/resolve?name=%.*s&type=HTTPS",
@@ -1384,7 +1401,7 @@ internal void client_ech_prefetch(Client *c, Method m, String8 url,
   // independent of the original request's rotation/override choice, is never
   // streamed (0,0), and carries no custom header order (str8_zero).
   client_dispatch_inner(c, Method_GET, doh, 0, 0, 0, 0, client_ech_doh_cb, pf,
-                        deadline_ns, 0, 0, 0, str8_zero());
+                        deadline_ns, 0, 0, 0, str8_zero(), HttpVersion_Auto);
 }
 
 // The dispatch gate: when ECH is on and the target's config isn't cached yet,
@@ -1397,7 +1414,8 @@ internal void client_dispatch(Client *c, Method m, String8 url,
                               const U8 *body, U64 body_len, ResponseFn cb,
                               void *user, U64 deadline_ns,
                               const ProxyConfig *proxy, BodyChunkFn on_chunk,
-                              void *chunk_user, String8 header_order) {
+                              void *chunk_user, String8 header_order,
+                              HttpVersion req_version) {
   if (c->ech_enabled) {
     ParsedUrl pu = url_parse(url);
     if (pu.ok && pu.https) {
@@ -1409,14 +1427,14 @@ internal void client_dispatch(Client *c, Method m, String8 url,
       if (prefetch) {
         client_ech_prefetch(c, m, url, headers, header_count, body, body_len,
                             cb, user, pu, deadline_ns, proxy, on_chunk,
-                            chunk_user, header_order);
+                            chunk_user, header_order, req_version);
         return;
       }
     }
   }
   client_dispatch_inner(c, m, url, headers, header_count, body, body_len, cb,
                         user, deadline_ns, proxy, on_chunk, chunk_user,
-                        header_order);
+                        header_order, req_version);
 }
 
 // The absolute deadline (uv_hrtime ns) for a new operation from the client's
@@ -1518,6 +1536,7 @@ struct RedirectState {
   ProxyConfig proxy;   // resolved proxy, sticky across the whole chain
   B32 has_proxy;       // 1 => use proxy; 0 => the client's single proxy
   String8 header_order;  // per-request wire order CSV (own arena), every hop
+  HttpVersion req_version;  // per-request version override, sticky across hops
 };
 
 internal void client_redirect_cb(void *user, const Response *r) {
@@ -1533,7 +1552,8 @@ internal void client_redirect_cb(void *user, const Response *r) {
     client_dispatch(
         st->client, st->method, st->cur_url, st->headers.v, st->headers.count,
         st->body.str, st->body.size, client_redirect_cb, st, st->deadline_ns,
-        st->has_proxy ? &st->proxy : 0, /*on_chunk=*/0, 0, st->header_order);
+        st->has_proxy ? &st->proxy : 0, /*on_chunk=*/0, 0, st->header_order,
+        st->req_version);
     return;
   }
   // Final response (or no Location / budget exhausted / error): deliver + free.
@@ -1622,7 +1642,7 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
   if (p->no_redirects || c->max_redirects == 0 || p->on_chunk) {
     client_dispatch(c, p->method, p->url, headers, header_count, p->body.str,
                     p->body.size, cb, user, deadline, px, p->on_chunk,
-                    p->chunk_user, p->header_order);
+                    p->chunk_user, p->header_order, p->http_version);
     if (fetch_arena) arena_release(fetch_arena);
     return;
   }
@@ -1650,10 +1670,11 @@ void client_request(Client *c, const RequestParams *p, ResponseFn cb,
   st->header_order = p->header_order.size
                          ? push_str8_copy(arena, p->header_order)
                          : str8_zero();
+  st->req_version = p->http_version;  // sticky across the redirect chain
   client_dispatch(c, p->method, st->cur_url, st->headers.v, st->headers.count,
                   st->body.str, st->body.size, client_redirect_cb, st,
-                  st->deadline_ns, px, /*on_chunk=*/0, 0,
-                  st->header_order);  // redirects never stream
+                  st->deadline_ns, px, /*on_chunk=*/0, 0, st->header_order,
+                  st->req_version);  // redirects never stream
   if (fetch_arena) arena_release(fetch_arena);
 }
 
@@ -1884,16 +1905,7 @@ void client_set_dns_cache_ttl_ms(Client *c, U64 ms) {
 }
 
 void client_set_http_version(Client *c, HttpVersion v) {
-  c->http_version = v;
-  if (v == HttpVersion_H1) {
-    // Chrome's TLS knobs, but advertise only http/1.1 and drop ALPS (an h2-only
-    // extension). The SSL_CTX (ciphers/extensions) is unchanged; only the
-    // per-connection ALPN/ALPS that configure_ssl applies differ.
-    c->h1_tls = c->profile->tls;
-    c->h1_tls.alpn_wire = k_alpn_http11;
-    c->h1_tls.alpn_wire_len = (U16)sizeof k_alpn_http11;
-    c->h1_tls.alps_count = 0;
-  }
+  c->http_version = v;  // c->h1_tls is built once in client_init (always)
 }
 
 B32 client_set_header_order(Client *c, const String8 *names, U64 count) {

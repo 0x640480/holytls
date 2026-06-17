@@ -136,6 +136,16 @@ struct RequestParams {
                      // client-level order. When set it REPLACES the
                      // client-level order for this request and every
                      // redirect hop. Applies on pooled and non-pooled paths.
+  HttpVersion http_version;  // per-request wire-protocol override. The zero
+                             // value (HttpVersion_Auto) INHERITS the client's
+                             // mode (so a zeroed RequestParams is unchanged);
+                             // HttpVersion_H1/_H2/_H3 force that protocol for
+                             // this request + its whole redirect chain, without
+                             // touching the client default for other requests.
+                             // Forcing _H1 reuses the http/1.1-only ALPN
+                             // (byte-identical to client-level H1); forcing _H3
+                             // requires the client to have been built with QUIC
+                             // (Auto/_H3 at construction), else the request errs.
 };
 
 // Request/response middleware (set once on the Client; see client_set_pre_hook

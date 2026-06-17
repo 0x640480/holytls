@@ -499,7 +499,8 @@ internal void pool_conn_fallback_legacy(PoolConn *pc) {
     h2req_start(pc->client, r->method_enum, r->url, r->caller_headers,
                 r->caller_header_count, r->caller_body.str, r->caller_body.size,
                 r->cb, r->user, r->deadline_ns, /*proxy=*/0, /*on_chunk=*/0, 0,
-                r->header_order);  // pool: single proxy, no stream
+                r->header_order,
+                HttpVersion_H2);  // it was an H2 attempt; offer h2+http/1.1
     pool_req_done(r);  // disarm the pooled timer; h2req_start armed its own
     r = next;
   }

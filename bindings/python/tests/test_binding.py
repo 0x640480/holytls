@@ -152,3 +152,16 @@ def test_header_order_kwarg_is_accepted():
         assert c is not None
     with Client(header_order=["user-agent", "accept"]) as c:
         assert c is not None
+
+
+def test_http_version_kwarg_is_accepted():
+    # The per-request http_version= surfaces on every request entry point, and a
+    # forced-H1 request plumbs through end to end (offline: a dead port resolves
+    # ok=0 without crashing — live negotiation is in test_live.py).
+    for fn in (Client.request, Session.request):
+        assert "http_version" in inspect.signature(fn).parameters
+    if AsyncClient is not None:
+        assert "http_version" in inspect.signature(AsyncClient.request).parameters
+    with Client(http_version="h2", timeout_ms=2000) as c:
+        r = c.get("https://127.0.0.1:1/", http_version="h1")  # forced, refused
+        assert not r.ok and r.error

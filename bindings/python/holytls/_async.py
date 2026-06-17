@@ -15,6 +15,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 from holytls._client import (
     _apply_config,
+    _coerce_http_version,
     _encode_body,
     _fill_request,
     _normalize_headers,
@@ -310,6 +311,7 @@ class AsyncClient:
         fetch_mode: FetchMode = FetchMode.DEFAULT,
         allow_redirects: bool = True,
         header_order: Optional[Union[str, Sequence[str]]] = None,
+        http_version: Optional[Union[HttpVersion, str, int]] = None,
     ) -> Response:
         self._check()
         loop = asyncio.get_running_loop()
@@ -331,6 +333,7 @@ class AsyncClient:
             keep=keep,
             proxy=proxy,
             header_order=header_order,
+            http_version=_coerce_http_version(http_version),
         )
         fut = loop.create_future()
         req_id = next(self._next_id)

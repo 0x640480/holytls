@@ -46,11 +46,45 @@ internal Ctx fetch(Client *c, EventLoop *loop, const char *url) {
   loop_run(loop);
   return cx;
 }
+// Fetch with a PER-REQUEST http_version override (the client default is untouched).
+internal Ctx fetch_ver(Client *c, EventLoop *loop, const char *url,
+                       HttpVersion v) {
+  Ctx cx;
+  MemoryZeroStruct(&cx);
+  RequestParams p = {0};
+  p.method = Method_GET;
+  p.url = str8_cstring(url);
+  p.http_version = v;
+  client_request(c, &p, on_resp, &cx);
+  loop_run(loop);
+  return cx;
+}
 
 int main(void) {
+  // Offline (always runs, incl. CI): a PER-REQUEST H1 override needs c->h1_tls
+  // built at client_init even on an H2 client. Assert the http/1.1-only ALPN
+  // profile is present (encodes "\x08http/1.1"), ALPS dropped, and that it
+  // differs from the H2 profile (which offers h2+http/1.1, len 12).
+  {
+    EventLoop loop;
+    loop_init(&loop);
+    defer { loop_shutdown(&loop); };
+    Client c;
+    client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+                /*verify=*/0);
+    defer { client_cleanup(&c); };
+    CHECK(c.h1_tls.alpn_wire_len == 9 && c.h1_tls.alpn_wire &&
+          c.h1_tls.alpn_wire[0] == 8 &&
+          memcmp(c.h1_tls.alpn_wire + 1, "http/1.1", 8) == 0);
+    CHECK(c.h1_tls.alps_count == 0);
+    CHECK(c.profile->tls.alpn_wire_len == 12);  // H2 offers h2 + http/1.1
+  }
+
   if (!getenv("HOLYTLS_LIVE")) {
-    printf("[http_version_live_test] SKIP (set HOLYTLS_LIVE=1 to run)\n");
-    return 0;
+    printf("[http_version_live_test] offline OK; live SKIP (HOLYTLS_LIVE=1)\n");
+    fprintf(stderr, "[http_version_live_test] %d checks, %d failures\n",
+            g_checks, g_fails);
+    return g_fails ? 1 : 0;
   }
   const char *url = "https://www.cloudflare.com/";
 
@@ -119,6 +153,24 @@ int main(void) {
             r.alpn);
     CHECK(r.ok && r.status == 200);
     CHECK(strcmp(r.alpn, "h2") == 0);  // Chrome-faithful: no cold H3
+  }
+
+  //- PER-REQUEST override: H1 for one request on an H2-default client ---------
+  {
+    EventLoop loop;
+    loop_init(&loop);
+    defer { loop_shutdown(&loop); };
+    Client c;
+    client_init(&c, &loop, profile_chrome148(), NULL, HttpVersion_H2,
+                /*verify=*/1);  // client default stays H2
+    defer { client_cleanup(&c); };
+    Ctx h1 = fetch_ver(&c, &loop, url, HttpVersion_H1);  // force H1 this request
+    Ctx h2 = fetch(&c, &loop, url);  // inherits the H2 default -> h2
+    fprintf(stderr, "  per-req: forced-h1 alpn=%s  default alpn=%s\n", h1.alpn,
+            h2.alpn);
+    CHECK(h1.ok && h1.status == 200 && strcmp(h1.alpn, "http/1.1") == 0);
+    CHECK(h2.ok && h2.status == 200 &&
+          strcmp(h2.alpn, "h2") == 0);  // override didn't disturb the client
   }
 
   fprintf(stderr, "[http_version_live_test] %d checks, %d failures\n", g_checks,
