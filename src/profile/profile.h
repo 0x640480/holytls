@@ -196,6 +196,11 @@ struct ProfileEntry {
 const ProfileEntry *profile_registry(U64 *count);       // entry[0] = default
 const Profile *profile_by_name(String8 name);           // 0 if unknown
 const QuicProfile *profile_quic_by_name(String8 name);  // 0 if unknown
+// Nearest available Chrome profile for a Chrome major version (e.g. from a UA):
+// the entry with the highest id <= `major`, else the oldest Chrome entry. Returns
+// a ProfileEntry (use ->h2()/->h3()/->name). NULL only if no Chrome family is
+// registered. Non-Chrome families are skipped.
+const ProfileEntry *profile_by_chrome_major(int major);
 
 //- default-header accessors -------------------------------------------------
 // First-class access to a profile's static request-header values (the bytes the

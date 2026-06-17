@@ -258,12 +258,32 @@ internal void test_fetch_order(Arena *a) {
       15));
 }
 
+// HdrBuf: a fixed-storage Header[] builder. `hdrbuf_add` keeps an empty value
+// (a named-slot placeholder); `hdrbuf_add_opt` skips it; adds past cap drop.
+internal void test_hdr_buf(void) {
+  Header st[3];
+  HdrBuf b;
+  hdrbuf_init(&b, st, ArrayCount(st));
+  hdrbuf_lit(&b, "a", "1");
+  hdrbuf_add(&b, str8_lit("cookie"), str8_zero());      // empty value KEPT
+  hdrbuf_add_opt(&b, str8_lit("x-skip"), str8_zero());  // empty -> skipped
+  hdrbuf_lit(&b, "b", "2");
+  hdrbuf_lit(&b, "c", "3");  // past cap (3) -> dropped
+  CHECK(b.count == 3);
+  CHECK(str8_match(b.v[0].name, str8_lit("a")) &&
+        str8_match(b.v[0].value, str8_lit("1")));
+  CHECK(str8_match(b.v[1].name, str8_lit("cookie")) && b.v[1].value.size == 0);
+  CHECK(str8_match(b.v[2].name, str8_lit("b")) &&
+        str8_match(b.v[2].value, str8_lit("2")));
+}
+
 int main(void) {
   Arena *a = arena_alloc();
   test_reorder(a);
   test_override_defaults(a);
   test_named_slot_content_length(a);
   test_named_slot_cookie_position(a);
+  test_hdr_buf();
   test_fetch_order(a);
   test_client_api();
   arena_release(a);

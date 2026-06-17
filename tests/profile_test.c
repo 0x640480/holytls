@@ -119,6 +119,17 @@ int main(void) {
   CHECK(profile_by_name(str8_lit("safari")) == 0);  // unknown -> 0
   CHECK(profile_quic_by_name(str8_lit("nope")) == 0);
 
+  // profile_by_chrome_major: nearest available Chrome (highest id <= major; else
+  // the oldest Chrome), skipping non-Chrome families, never NULL.
+  CHECK(profile_by_chrome_major(149)->h2() == profile_chrome149());
+  CHECK(profile_by_chrome_major(148)->h2() == profile_chrome148());
+  CHECK(profile_by_chrome_major(152)->h2() == profile_chrome149());  // highest<=
+  CHECK(profile_by_chrome_major(140)->h2() == profile_chrome148());  // below->oldest
+  CHECK(profile_by_chrome_major(151)->h2() ==
+        profile_chrome149());  // skips firefox151 (id 151, not a Chrome entry)
+  CHECK(profile_by_chrome_major(149)->h3() ==
+        profile_chrome149_h3());  // the entry carries h3 too
+
   fprintf(stderr, "[profile_test] %d checks, %d failures\n", g_checks, g_fails);
   return g_fails ? 1 : 0;
 }

@@ -57,4 +57,23 @@ String8 json_mut_write(Arena *arena, yyjson_mut_doc *doc, B32 pretty);
 void json_mut_obj_str8(yyjson_mut_doc *doc, yyjson_mut_val *obj,
                        const char *key, String8 val);
 
+// obj[key] = an integer / boolean (counterparts to json_mut_obj_str8). yyjson's
+// own yyjson_mut_* API is exposed (via <yyjson.h>) for any other element type.
+void json_mut_obj_int(yyjson_mut_doc *doc, yyjson_mut_val *obj, const char *key,
+                      S64 val);
+void json_mut_obj_bool(yyjson_mut_doc *doc, yyjson_mut_val *obj, const char *key,
+                       B32 val);
+
+// Append a String8 element to a mutable array (bytes referenced, not copied —
+// same lifetime rule as json_mut_obj_str8).
+void json_mut_arr_add_str8(yyjson_mut_doc *doc, yyjson_mut_val *arr,
+                           String8 val);
+
+// Embed a raw JSON document as obj[key]: parse `json` (into `arena`) and
+// deep-copy it into `doc`. Lets you splice a pre-built JSON fragment without
+// re-modelling it field by field. Unparseable/empty input embeds {} (the key is
+// never dropped).
+void json_mut_obj_sub(yyjson_mut_doc *doc, Arena *arena, yyjson_mut_val *obj,
+                      const char *key, String8 json);
+
 #endif  // HOLYTLS_JSON_H

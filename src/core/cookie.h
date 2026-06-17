@@ -58,6 +58,15 @@ String8 cookie_jar_cookie_header(CookieJar *jar, Arena *out, ParsedUrl request,
 // Drop expired cookies (expires_epoch != 0 && <= now). Called by store/header.
 void cookie_jar_evict_expired(CookieJar *jar, U64 now_epoch);
 
+// Read a cookie's value by name (first exact, case-sensitive match), or
+// str8_zero() if absent. A view into the jar arena (valid while the jar lives).
+String8 cookie_jar_get(CookieJar *jar, String8 name);
+
+// Remove every cookie of `name` (across all domains/paths), compacting the jar
+// in place. Returns the number removed. For clearing out-of-band cookies (e.g. a
+// solver's PerimeterX _px3/_pxvid). Exact, case-sensitive name match.
+U64 cookie_jar_remove(CookieJar *jar, String8 name);
+
 // (exposed for cookie_test) Parse an HTTP-date (RFC 6265 §5.1.1 forms) into
 // epoch seconds; 0 on failure. TZ-independent (no mktime/timegm).
 U64 http_date_parse(String8 s);

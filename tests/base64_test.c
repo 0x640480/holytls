@@ -75,11 +75,36 @@ internal void test_reject(Arena *a) {
   CHECK(base64_decode(a, str8_lit("====")).size == 0);  // all padding
 }
 
+internal void test_base64url(Arena *a) {
+  // URL-safe alphabet (-_), no '=' padding (RFC 4648 §5).
+  CHECK(str8_match(base64url_encode(a, str8_lit("")), str8_lit("")));
+  CHECK(str8_match(base64url_encode(a, str8_lit("foo")), str8_lit("Zm9v")));
+  CHECK(str8_match(base64url_encode(a, str8_lit("foob")),
+                   str8_lit("Zm9vYg")));  // standard "Zm9vYg==" minus padding
+  // The +/ -> -_ mapping: bytes whose standard encoding is "+/AA".
+  U8 plusslash[3] = {0xFB, 0xF0, 0x00};
+  CHECK(str8_match(base64url_encode(a, str8(plusslash, 3)), str8_lit("-_AA")));
+  U8 ff[3] = {0xFF, 0xFF, 0xFF};
+  CHECK(str8_match(base64url_encode(a, str8(ff, 3)), str8_lit("____")));
+
+  // Round-trip every length/padding case; the output never holds '=', '+', '/'.
+  for (U64 len = 0; len <= 200; ++len) {
+    U8 *raw = push_array_no_zero(a, U8, len ? len : 1);
+    for (U64 i = 0; i < len; ++i) raw[i] = (U8)((i * 53 + 7) & 0xff);
+    String8 in = str8(raw, len);
+    String8 enc = base64url_encode(a, in);
+    for (U64 i = 0; i < enc.size; ++i)
+      CHECK(enc.str[i] != '=' && enc.str[i] != '+' && enc.str[i] != '/');
+    CHECK(str8_match(base64url_decode(a, enc), in));
+  }
+}
+
 int main(void) {
   Arena *a = arena_alloc();
   test_rfc4648(a);
   test_round_trip(a);
   test_reject(a);
+  test_base64url(a);
   arena_release(a);
   fprintf(stderr, "[base64_test] %d checks, %d failures\n", g_checks, g_fails);
   return g_fails ? 1 : 0;

@@ -19,4 +19,10 @@ String8 base64_encode(Arena *arena, String8 raw);
 // yields {0,0}. {0,0} for empty input too.
 String8 base64_decode(Arena *arena, String8 b64);
 
+// URL-safe base64 (RFC 4648 §5): the '-'/'_' alphabet, no '=' padding. For PKCE
+// verifiers/challenges, correlation IDs, etc. Encode never pads; decode accepts
+// the unpadded form (re-padding internally). {0,0} on empty/invalid input.
+String8 base64url_encode(Arena *arena, String8 raw);
+String8 base64url_decode(Arena *arena, String8 b64url);
+
 #endif  // HOLYTLS_BASE64_H

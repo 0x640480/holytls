@@ -70,3 +70,33 @@ String8 base64_decode(Arena *arena, String8 in) {
   }
   return str8(out, o);
 }
+
+String8 base64url_encode(Arena *arena, String8 raw) {
+  // Standard base64, then URL-safe alphabet + no padding (RFC 4648 §5): '+'->'-',
+  // '/'->'_', drop trailing '='. Mutates the just-allocated encode buffer.
+  String8 s = base64_encode(arena, raw);
+  U64 n = s.size;
+  while (n > 0 && s.str[n - 1] == '=') --n;
+  for (U64 i = 0; i < n; ++i) {
+    if (s.str[i] == '+')
+      s.str[i] = '-';
+    else if (s.str[i] == '/')
+      s.str[i] = '_';
+  }
+  return str8(s.str, n);
+}
+
+String8 base64url_decode(Arena *arena, String8 in) {
+  // URL-safe -> standard alphabet, re-pad to a multiple of 4, then strict decode.
+  if (in.size == 0) return str8_zero();
+  U64 pad = (4 - (in.size % 4)) % 4;
+  if (pad == 3) return str8_zero();  // a length%4==1 tail is not valid base64
+  U64 m = in.size + pad;
+  U8 *buf = push_array_no_zero(arena, U8, m);
+  for (U64 i = 0; i < in.size; ++i) {
+    U8 c = in.str[i];
+    buf[i] = (c == '-') ? '+' : (c == '_') ? '/' : c;
+  }
+  for (U64 i = 0; i < pad; ++i) buf[in.size + i] = '=';
+  return base64_decode(arena, str8(buf, m));
+}

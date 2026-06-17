@@ -84,12 +84,51 @@ internal void test_serialize(Arena *a) {
   CHECK(yyjson_get_int(yyjson_obj_get(json_root(re), "n")) == 5);
 }
 
+internal void test_mut_build(Arena *a) {
+  // Build via the helpers: str8 + int + bool + a str8 array + an embedded sub-doc.
+  yyjson_mut_doc *doc = json_mut(a);
+  yyjson_mut_val *root = yyjson_mut_obj(doc);
+  yyjson_mut_doc_set_root(doc, root);
+  json_mut_obj_str8(doc, root, "s", str8_lit("x"));
+  json_mut_obj_int(doc, root, "i", 7);
+  json_mut_obj_bool(doc, root, "b", 1);
+  yyjson_mut_val *arr = yyjson_mut_arr(doc);
+  yyjson_mut_obj_add_val(doc, root, "arr", arr);
+  json_mut_arr_add_str8(doc, arr, str8_lit("a"));
+  json_mut_arr_add_str8(doc, arr, str8_lit("b"));
+  json_mut_obj_sub(doc, a, root, "sub", str8_lit("{\"k\":1}"));
+
+  String8 out = json_mut_write(a, doc, /*pretty=*/0);
+  CHECK(str8_match(
+      out,
+      str8_lit(
+          "{\"s\":\"x\",\"i\":7,\"b\":true,\"arr\":[\"a\",\"b\"],"
+          "\"sub\":{\"k\":1}}")));
+
+  // Reparse + check types + the embedded sub-doc round-tripped.
+  yyjson_doc *re = json_parse(a, out);
+  CHECK(re != 0);
+  yyjson_val *rr = json_root(re);
+  CHECK(json_obj_int(rr, "i", 0) == 7);
+  CHECK(json_obj_bool(rr, "b") == 1);
+  CHECK(str8_match(json_ptr_str(re, "/arr/0"), str8_lit("a")));
+  CHECK(yyjson_get_int(yyjson_obj_get(yyjson_obj_get(rr, "sub"), "k")) == 1);
+
+  // Unparseable sub embeds {} (the key is never dropped).
+  yyjson_mut_doc *d2 = json_mut(a);
+  yyjson_mut_val *r2 = yyjson_mut_obj(d2);
+  yyjson_mut_doc_set_root(d2, r2);
+  json_mut_obj_sub(d2, a, r2, "bad", str8_lit("{not json"));
+  CHECK(str8_match(json_mut_write(a, d2, 0), str8_lit("{\"bad\":{}}")));
+}
+
 int main(void) {
   Arena *a = arena_alloc();
   test_parse(a);
   test_malformed(a);
   test_get_str();
   test_serialize(a);
+  test_mut_build(a);
   arena_release(a);
   fprintf(stderr, "[json_test] %d checks, %d failures\n", g_checks, g_fails);
   return g_fails ? 1 : 0;
