@@ -479,6 +479,43 @@ int holytls_ws_transport(holytls_ws *ws);
 const char *holytls_ws_error(holytls_ws *ws);
 
 // ---------------------------------------------------------------------------
+// Raw TLS stream — a plain encrypted byte pipe over the client's TLS stack
+// (ciphers/curves/extensions), with NO ALPN, for non-HTTP protocols (IMAP,
+// SMTP, ...). One holytls_tls_stream is a single long-lived connection driven
+// blocking-style; drive it from one thread, not concurrently with that client's
+// other calls.
+// ---------------------------------------------------------------------------
+
+typedef struct holytls_tls_stream holytls_tls_stream;
+
+// Open a TLS connection to host:port over the client's TLS profile (no ALPN).
+// `timeout_ms` bounds the connect (0 = the client's configured timeout, then no
+// limit). Returns NULL only on a NULL client/host or alloc failure; on a connect
+// FAILURE it returns a handle whose holytls_tls_stream_error() is set (free it
+// normally).
+holytls_tls_stream *holytls_tls_stream_connect(holytls_client *c,
+                                               const char *host, uint16_t port,
+                                               uint64_t timeout_ms);
+
+// Write `len` plaintext bytes (encrypted + queued; flushed on the next read).
+// Returns 1, or 0 if the stream is closed/failed.
+int holytls_tls_stream_write(holytls_tls_stream *s, const uint8_t *data,
+                             size_t len);
+
+// Read up to `cap` decrypted bytes into `buf`. Returns the byte count (>0); 0 on
+// a clean close (peer EOF / TLS close_notify); -1 on error; -2 if `timeout_ms`
+// elapsed with no data (the stream stays usable; 0 = block indefinitely).
+int holytls_tls_stream_read(holytls_tls_stream *s, uint8_t *buf, size_t cap,
+                            uint64_t timeout_ms);
+
+// The failure reason, or NULL when the stream is healthy.
+const char *holytls_tls_stream_error(holytls_tls_stream *s);
+
+// Close the connection and free the handle (drives teardown to completion). The
+// handle is invalid afterward.
+void holytls_tls_stream_free(holytls_tls_stream *s);
+
+// ---------------------------------------------------------------------------
 // Misc.
 // ---------------------------------------------------------------------------
 
