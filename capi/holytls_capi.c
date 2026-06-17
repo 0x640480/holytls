@@ -537,6 +537,9 @@ struct AsyncSubmit {
   uint64_t req_id;
   holytls_async_complete_fn cb;
   void *user;
+  holytls_session *session;  // borrowed; non-NULL => dispatch via session_request
+                             // (its cookie jar + redirect loop). calloc zeroes
+                             // it, so the plain-client submit paths stay NULL.
 };
 
 typedef struct AsyncCtx AsyncCtx;
@@ -774,8 +777,15 @@ internal void on_async(uv_async_t *h) {
         Temp t = temp_begin(ac->arena);  // rewinds the Header rows per dispatch
         RequestParams p;
         build_params_from_submit(ac->arena, s, &p);
-        client_request(&ac->base.client, &p, on_async_response, cx);
-        temp_end(t);  // client_request copied url/headers/body synchronously
+        // A session submit runs the cookie jar + redirect loop on this client's
+        // transport; otherwise a plain client request. Both copy url/headers/body
+        // synchronously, so the temp arena can be rewound right after.
+        if (s->session)
+          session_request(&s->session->session, &ac->base.client, &p,
+                          on_async_response, cx);
+        else
+          client_request(&ac->base.client, &p, on_async_response, cx);
+        temp_end(t);
       }
     }
     async_submit_free(s);
@@ -899,6 +909,33 @@ fail:
     s = next;
   }
   return 0;
+}
+
+int holytls_async_session_submit(holytls_async_client *ac, holytls_session *hs,
+                                 const holytls_request *req, uint64_t req_id,
+                                 holytls_async_complete_fn cb, void *user) {
+  if (!ac || !hs || !req || !req->url || !cb) return 0;
+  // Same path as holytls_async_submit, but the dispatch routes through
+  // session_request (cookie jar + redirect loop) on this client's transport.
+  // `hs` is BORROWED: it must outlive the in-flight request (the caller, e.g. a
+  // blocking binding, guarantees this — it is parked until completion).
+  AsyncSubmit *s = async_submit_copy(req, req_id, cb, user);  // off-loop copy
+  if (!s) return 0;
+  s->session = hs;
+  uv_mutex_lock(&ac->qlock);
+  if (ac->stopping) {
+    uv_mutex_unlock(&ac->qlock);
+    async_submit_free(s);
+    return 0;
+  }
+  if (ac->qtail)
+    ac->qtail->next = s;
+  else
+    ac->qhead = s;
+  ac->qtail = s;
+  uv_mutex_unlock(&ac->qlock);
+  uv_async_send(&ac->async);  // the one thread-safe libuv call
+  return 1;
 }
 
 void holytls_async_run(holytls_async_client *ac) {

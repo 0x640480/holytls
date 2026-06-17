@@ -84,6 +84,23 @@ def test_concurrent_sessions_on_shared_client_offline():
             assert all(ex.map(worker, range(6)))
 
 
+def test_concurrent_session_requests_offline():
+    # Sessions share the Client's background loop (holytls_async_session_submit),
+    # each with its own cookie jar. Many threads, each its own Session, all
+    # issuing requests to a refused port — exercises the session-submit bridge +
+    # per-session jars interleaved on the one shared loop. A race would crash/hang.
+    with Client(timeout_ms=4000) as c:
+        def work(_):
+            with Session(c) as s:
+                for _ in range(3):
+                    r = s.get(REFUSED)
+                    assert r is not None and r.ok is False
+            return True
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            assert all(ex.map(work, range(8)))
+
+
 def test_runtime_mutators_allowed_before_first_request():
     # Config mutators apply while the background loop hasn't started (the normal
     # configure-then-use pattern). A parseable proxy/address returns True.

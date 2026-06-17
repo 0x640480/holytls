@@ -113,15 +113,17 @@ Share one `Client` across threads: each blocking call runs on the background
 loop, so a `ThreadPoolExecutor` over a single `Client` does real concurrent I/O,
 and cookies / connection pool / caches stay shared. `get_many` / `request_many`
 are the same concurrency in one call (in-order results); set `timeout_ms` so one
-stuck request can't hang a batch. `Session` / `websocket` / `connect_tls` each run
-on their own private transport (same fingerprint) — drive any one of them from a
-single thread.
+stuck request can't hang a batch. A `Session` is lightweight (just a cookie jar)
+and rides the same shared loop — make one per task/thread; drive each serially.
+`websocket` / `connect_tls` run on their own private transport (same
+fingerprint) — drive one from a single thread.
 
 ### `Session` — cookies + redirects
 
 A browser-like identity (cookie jar + per-hop redirect loop) over a Client; the
-fingerprint stays the Client's. Run one Session serially; make many for many
-identities.
+fingerprint stays the Client's. Sessions are lightweight and share the Client's
+loop — make many for many identities, including one per task/thread on a shared
+Client. Drive any one Session serially.
 
 ```python
 with holytls.Client() as client:

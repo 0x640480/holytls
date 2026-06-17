@@ -416,6 +416,16 @@ void holytls_session_free(holytls_session *s);
 holytls_response *holytls_session_perform(holytls_session *s, holytls_client *c,
                                           const holytls_request *req);
 
+// Non-blocking session request on an async client's background loop: like
+// holytls_async_submit, but the dispatch runs `s`'s cookie jar + redirect loop
+// on `ac`'s transport. Lets one async client serve many lightweight Sessions
+// (each its own jar) on the one loop, instead of a transport per Session.
+// Thread-safe (same queue + uv_async). `s` is BORROWED — it must outlive the
+// in-flight request (the caller keeps it alive until the completion fires).
+int holytls_async_session_submit(holytls_async_client *ac, holytls_session *s,
+                                 const holytls_request *req, uint64_t req_id,
+                                 holytls_async_complete_fn cb, void *user);
+
 // Seed a cookie directly into the session jar (cookies obtained out-of-band,
 // e.g. JS-set or solver-generated). Mirrors cookie_jar_put: strings are copied
 // into the jar arena, so the caller's buffers need not outlive the call.
