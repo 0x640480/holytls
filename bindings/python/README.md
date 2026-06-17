@@ -31,12 +31,10 @@ asyncio.run(main())
 
 ## How it works
 
-holytls is an **async, single-threaded** client built on a libuv event loop —
-there is no blocking `client.do()`. The C ABI shim (`capi/holytls_capi.c`) bridges
-that to a synchronous Python call: it submits a request, drives the loop until the
-response lands, copies it out of holytls's "valid only during the callback" views
-into memory Python owns, and returns it. A batch call submits *many* requests onto
-the *same* loop and runs it once — the event-loop concurrency below.
+Calls are blocking: a background libuv loop runs holytls's async I/O and the C ABI
+shim returns a copied-out `Response`. A batch call (`get_many` / `request_many`)
+drives many requests on that one loop in a single call — real network concurrency,
+no threads.
 
 ## Install
 
@@ -50,18 +48,12 @@ cmake -B build-capi -G Ninja -DHOLYTLS_BUILD_CAPI=ON \
     -DHOLYTLS_BUILD_TESTS=OFF -DHOLYTLS_BUILD_EXAMPLES=OFF
 cmake --build build-capi --target holytls_capi
 
-# 2. Install the Python binding (auto-discovers ./build-capi).
+# 2. Install the Python binding (auto-discovers ./build-capi or ./build).
 pip install ./bindings/python
 ```
 
-If your build dir isn't `./build-capi` or `./build`, point the builder at it:
-
-```sh
-HOLYTLS_CAPI_LIBDIR=/path/to/build pip install ./bindings/python
-```
-
-The compiled extension records the library directory as an rpath, so no
-`LD_LIBRARY_PATH` is needed at runtime.
+Point the builder at a custom build dir with `HOLYTLS_CAPI_LIBDIR=/path/to/build`;
+it's recorded as an rpath, so no `LD_LIBRARY_PATH` at runtime.
 
 ## API
 
@@ -177,8 +169,8 @@ response will deliver:
 
 ```python
 s.set_cookie("_px3", "<solver-value>", domain="example.com")
-# options: path="/", expires=<epoch> (0=session), host_only=, secure=,
-#          http_only=, same_site= (0=unset 1=Lax 2=Strict 3=None)
+# defaults: path="/", expires=0 (session), host_only=False, secure=True,
+#           http_only=False, same_site=0  (0=unset 1=Lax 2=Strict 3=None)
 s.get("https://example.com/account")   # the seeded cookie rides along
 ```
 
@@ -200,18 +192,16 @@ s.get("https://example.com/account")   # the seeded cookie rides along
 
 ## Threading & the GIL
 
-cffi calls hold the GIL, so a *single* request blocks the calling thread. For
-concurrency, prefer **`get_many`/`request_many`** — many requests share one loop
-in one C call, giving real network parallelism without threads (no Python runs
-while they're in flight). For independent identities or CPU isolation, give each
-**thread or process its own `Client`** (each is fully self-contained).
+A single request holds the GIL, so it blocks the calling thread. For concurrency
+prefer **`get_many` / `request_many`** (many requests, one loop, one C call — real
+network parallelism, no threads); for separate identities give each thread or
+process its own `Client`.
 
 ## Examples
 
-See [`examples/`](examples/): `quickstart.py`, `concurrent.py`, `post_json.py`,
-`session_cookies.py`, `fingerprint.py`.
+See [`examples/`](examples/) (quickstart, concurrent, post_json, session_cookies,
+fingerprint, streaming, websocket):
 
 ```sh
 python bindings/python/examples/quickstart.py
-python bindings/python/examples/concurrent.py
 ```

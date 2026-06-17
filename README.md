@@ -26,35 +26,21 @@ a small data file + a registry row.
 
 ## What sets it apart
 
-Most TLS-impersonation clients stop at the TLS handshake. holytls matches the
-fingerprint across all three transports, and performs the behaviors a real
-browser does:
+Most TLS-impersonation clients stop at the TLS ClientHello. holytls matches the
+browser's fingerprint across **all three transports** and performs the behaviors
+a real browser does:
 
-- **Byte-exact across TLS + HTTP/2 + HTTP/3** — not just JA3/JA4. The H2 Akamai
-  fingerprint and the H3/QUIC fingerprints match the target browser exactly too.
+- **Byte-exact across TLS + HTTP/2 + HTTP/3** — JA4 *and* the H2 Akamai shape
+  *and* the H3/QUIC fingerprint, not just JA3/JA4.
 - **Multiple browsers, registry-driven** — Chrome 148/149 and Firefox 151 ship
-  today, each byte-exact across all four fingerprints; pick one by name. A new
-  browser/version is a self-contained profile file + one registry row.
-- **WebSocket over the fingerprinted connection** — RFC 6455 with the H1 Upgrade
-  or H2 Extended CONNECT path, permessage-deflate, and the browser's WS
-  ClientHello — so the TLS fingerprint holds for WS too.
-- **HTTP/3 / QUIC**, with Chrome's transport behavior: H2 first, then upgrade to
-  HTTP/3 once an origin advertises `alt-svc: h3` — Chrome never cold-starts H3,
-  and neither do we.
-- **Real ECH (Encrypted Client Hello)** — fetches the origin's `ECHConfigList` from
-  its DNS HTTPS record over DoH and encrypts the inner ClientHello (real SNI
-  hidden), falling back to ECH-GREASE exactly as Chrome does.
-- **TLS 1.3 resumption + 0-RTT early data** — on both TCP/H2 and QUIC/H3, so repeat
-  visits look like a real browser's (the resumed-handshake fingerprint, not a fresh
-  one).
-- **Concurrency on one event loop** — many in-flight requests on a single thread,
-  no per-request thread or pool.
-- **Verifiable on the wire** — route through a MITM proxy (e.g. powhttp/mitmproxy)
-  with `client_add_ca_file`, keep verification on, and inspect exactly what you
-  send; the fingerprint is unchanged by the proxy.
-- **Generated, not hardcoded, Chrome details** — e.g. the `sec-ch-ua` GREASE brand
-  list is produced by Chrome's deterministic per-version algorithm, so a new
-  Chrome version is a one-line bump.
+  today, each byte-exact across all four fingerprints; a new browser/version is a
+  self-contained profile file + one registry row.
+- **Chrome's HTTP/3 behavior** — H2 first, then upgrade to HTTP/3 once an origin
+  advertises `alt-svc: h3` (never a cold H3 start).
+- **Real ECH** — fetches the origin's `ECHConfigList` over DoH and encrypts the
+  inner ClientHello (real SNI hidden), falling back to ECH-GREASE like Chrome.
+- **TLS 1.3 resumption + 0-RTT early data** — on both TCP/H2 and QUIC/H3, so
+  repeat visits carry the resumed-handshake fingerprint, not a fresh one.
 
 ## Quick start
 
@@ -122,36 +108,10 @@ client_request(&c, &req, handle_response, 0);
 
 ## Full-configuration example
 
-A client with the browser-faithful behaviors enabled — dual transport (H2→H3
-upgrade), cert verification, real ECH, resumption + 0-RTT, a cookie jar, redirect
-following, and Chrome's navigation header set (`user-agent`, `sec-ch-ua`,
-`sec-fetch-*`, `accept`, …). See [`examples/stealth.c`](examples/stealth.c):
-
-```c
-EventLoop loop; loop_init(&loop);
-
-// Chrome 149 over BOTH H2 and HTTP/3 (HttpVersion_Auto = H2, upgrade to H3 on
-// alt-svc); verify the server cert (Chrome does).
-Client client;
-client_init(&client, &loop, profile_chrome149(), profile_chrome149_h3(),
-            HttpVersion_Auto, 1);
-
-// Behaviors a real Chrome exhibits (OFF by default so the default path is a
-// byte-exact FRESH handshake; turned on here for full real-browsing fidelity).
-client_set_ech_enabled(&client, 1);          // real ECH (encrypted SNI; GREASE if none)
-client_set_resumption_enabled(&client, 1);   // TLS 1.3 ticket resumption
-client_set_early_data_enabled(&client, 1);   // 0-RTT early data on reconnects
-client_set_timeout_ms(&client, 30000);       // whole-operation deadline
-
-// A Session adds the cookie jar + browser-faithful redirect following.
-SessionConfig cfg; session_config_default(&cfg);   // cookies on, 10 redirects
-Session session; session_init(&session, &cfg);
-
-session_get(&session, &client, str8_lit("https://www.google.com/"), handle_response, 0);
-loop_run(&loop);
-```
-
-Run it and watch Chrome's real transport behavior unfold across requests:
+[`examples/stealth.c`](examples/stealth.c) enables the browser-faithful behaviors
+— dual transport (H2→H3 upgrade), cert verification, real ECH, resumption + 0-RTT,
+and a `Session` (cookie jar + redirect following) — then repeats a request so you
+can watch Chrome's transport behavior unfold:
 
 ```
 request 1: HTTP 200  alpn=h2   resumed=0  early_data=0   # H2, fresh handshake
@@ -215,21 +175,13 @@ Chrome 149 fingerprints above.
 
 ### Cross-compiling for Windows (MinGW-w64)
 
-A fully static Windows x86_64 build cross-compiles from Linux. Install the
-toolchain (`apt-get install mingw-w64 ninja-build`), then point CMake at the
-bundled toolchain file:
+A fully static Windows x86_64 `.exe` cross-compiles from Linux via the bundled
+toolchain file (codecs built from source, libstdc++/winpthread linked statically):
 
 ```sh
-cmake -B build-mingw -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-mingw64.cmake \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DHOLYTLS_BUILD_TESTS=OFF -DHOLYTLS_BUILD_EXAMPLES=ON
-ninja -C build-mingw          # -> build-mingw/*.exe + libholytls.a
+cmake -B build-mingw -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-mingw64.cmake
+ninja -C build-mingw
 ```
-
-zlib/brotli/zstd are built from source for the target (`HOLYTLS_FETCH_CODECS`, on
-by default for Windows), and libstdc++/winpthread are linked statically — so the
-`.exe`s depend only on core Windows DLLs (no MinGW/codec runtime to ship).
 
 ## Examples
 
