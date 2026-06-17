@@ -84,6 +84,17 @@ int main(void) {
 }
 ```
 
+Prefer not to write a callback? The `*_sync` variants run the loop for you and
+return a `Response` owned by an arena — valid until you release it:
+
+```c
+Arena *arena = arena_alloc();
+Response *r = client_get_sync(&c, str8_lit("https://tls.peet.ws/api/all"), arena);
+if (r->ok) printf("HTTP %d  (%llu bytes)\n", r->status,
+                  (unsigned long long)r->body_len);
+arena_release(arena);  // frees the Response and its body in one shot
+```
+
 Beyond a GET: `client_post` is a one-line convenience, and `client_request`
 takes a designated-initializer `RequestParams` for full control — method,
 headers, and body, plus optional `.fetch_mode` (coherent Sec-Fetch-*),
