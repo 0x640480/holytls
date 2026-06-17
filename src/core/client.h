@@ -217,6 +217,24 @@ void client_get(Client *c, String8 url, ResponseFn cb, void *user);
 void client_post(Client *c, String8 url, String8 body, ResponseFn cb,
                  void *user);
 
+// Blocking variants: run the loop until the request completes and return a
+// Response whose body/headers/error/final_url/alpn are copied into `arena` (so
+// they outlive the callback). For a linear flow these replace the
+// ResponseFn + loop_run + copy-out boilerplate. The returned Response (never
+// NULL) lives in `arena` — released when the caller releases the arena; there is
+// no per-response free. Same wire behavior as client_request (no fingerprint
+// change). Call from the TOP LEVEL: they drive their own loop_run, so they must
+// NOT be called from inside a ResponseFn (which would nest loop_run).
+Response *client_request_sync(Client *c, const RequestParams *p, Arena *arena);
+Response *client_get_sync(Client *c, String8 url, Arena *arena);
+Response *client_post_sync(Client *c, String8 url, String8 body, Arena *arena);
+// Issue all `n` requests onto the one loop and drive them to completion with a
+// single loop_run (the event-loop concurrency, like a join_all). Returns an
+// arena array of `n` Response* (in request order; a request with an empty url
+// yields an ok=0 error Response in its slot). All live in `arena`.
+Response **client_request_all(Client *c, const RequestParams *reqs, U64 n,
+                              Arena *arena);
+
 ////////////////////////////////
 //~ Configuration
 

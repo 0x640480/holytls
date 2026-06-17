@@ -1644,6 +1644,115 @@ void client_post(Client *c, String8 url, String8 body, ResponseFn cb,
       user);
 }
 
+////////////////////////////////
+//~ Blocking (sync) request helpers
+//
+// Run the loop until the request(s) complete and return an ARENA-OWNED Response
+// — body/headers/error/final_url/alpn copied into the caller's `arena`, so a
+// caller with a linear flow never writes a ResponseFn + loop_run + copy-out.
+// Thin convenience over client_request: identical wire behavior, no fingerprint
+// change. Mirrors the blocking C-API (capi/holytls_capi.c) but copies into an
+// arena, not malloc. Call from the TOP LEVEL — these run their own loop_run, so
+// they must NOT be called from inside a ResponseFn (that would nest loop_run).
+
+// Deep-copy a "valid only during the callback" Response into `arena` so it
+// outlives the loop tick (the per-request transport arena is recycled right
+// after the callback returns). Mirrors the CAPI response_copy, arena-based.
+internal Response *response_copy_arena(Arena *arena, const Response *r) {
+  Response *out = push_struct(arena, Response);
+  out->ok = r->ok;
+  out->status = r->status;
+  out->resumed = r->resumed;
+  out->early_data = r->early_data;
+  out->timing = r->timing;
+  out->alpn = push_str8_copy(arena, r->alpn);
+  out->final_url = push_str8_copy(arena, r->final_url);
+  if (r->error) out->error = push_str8_cstr(arena, str8_cstring(r->error));
+  if (r->body_len) {
+    U8 *b = push_array_no_zero(arena, U8, r->body_len);
+    MemoryCopy(b, r->body, r->body_len);
+    out->body = b;
+    out->body_len = r->body_len;
+  }
+  if (r->header_count && r->headers) {
+    Header *hs = push_array(arena, Header, r->header_count);
+    for (U64 i = 0; i < r->header_count; ++i) {
+      hs[i].name = push_str8_copy(arena, r->headers[i].name);
+      hs[i].value = push_str8_copy(arena, r->headers[i].value);
+      hs[i].flags = r->headers[i].flags;
+    }
+    out->headers = hs;
+    out->header_count = r->header_count;
+  }
+  return out;
+}
+
+// A synthetic ok=0 Response in `arena` for the (defensive) case where the
+// callback never delivered one.
+internal Response *response_error_arena(Arena *arena, const char *msg) {
+  Response *r = push_struct(arena, Response);  // zeroed -> ok=0
+  r->error = push_str8_cstr(arena, str8_cstring(msg));
+  return r;
+}
+
+typedef struct SyncCtx SyncCtx;
+struct SyncCtx {
+  EventLoop *loop;
+  Arena *arena;
+  Response **slot;  // where to stash this request's arena-owned copy
+  int *pending;     // shared; the loop stops when it reaches 0
+};
+
+internal void sync_on_response(void *user, const Response *resp) {
+  SyncCtx *cx = (SyncCtx *)user;
+  *cx->slot = response_copy_arena(cx->arena, resp);
+  if (--(*cx->pending) == 0) loop_stop(cx->loop);  // last one home -> wake up
+}
+
+Response *client_request_sync(Client *c, const RequestParams *p, Arena *arena) {
+  Response *out = 0;
+  int pending = 1;
+  SyncCtx cx = {c->loop, arena, &out, &pending};
+  client_request(c, p, sync_on_response, &cx);
+  loop_run(c->loop);  // always (uv_run clears the stop flag on exit)
+  return out ? out : response_error_arena(arena, "no response");
+}
+
+Response *client_get_sync(Client *c, String8 url, Arena *arena) {
+  return client_request_sync(
+      c, &(RequestParams){.method = Method_GET, .url = url}, arena);
+}
+
+Response *client_post_sync(Client *c, String8 url, String8 body, Arena *arena) {
+  return client_request_sync(
+      c, &(RequestParams){.method = Method_POST, .url = url, .body = body},
+      arena);
+}
+
+Response **client_request_all(Client *c, const RequestParams *reqs, U64 n,
+                              Arena *arena) {
+  Response **out = push_array(arena, Response *, n);  // zeroed
+  if (n == 0) return out;
+  // Count submittable (non-empty url) first, so `pending` starts at the full
+  // total and a synchronous early delivery can't stop the loop mid-submit.
+  int pending = 0;
+  for (U64 i = 0; i < n; ++i)
+    if (reqs[i].url.size) pending++;
+  SyncCtx *ctxs = push_array(arena, SyncCtx, n);
+  for (U64 i = 0; i < n; ++i) {
+    if (!reqs[i].url.size) {
+      out[i] = response_error_arena(arena, "invalid request (no url)");
+      continue;
+    }
+    ctxs[i] = (SyncCtx){c->loop, arena, &out[i], &pending};
+    client_request(c, &reqs[i], sync_on_response, &ctxs[i]);
+  }
+  loop_run(c->loop);  // drive all in-flight requests to completion
+  for (U64 i = 0; i < n; ++i)
+    if (!out[i]) out[i] = response_error_arena(arena, "no response");
+  return out;
+}
+
 void client_set_max_redirects(Client *c, U64 max) { c->max_redirects = max; }
 
 void client_set_timeout_ms(Client *c, U64 ms) { c->timeout_ms = ms; }

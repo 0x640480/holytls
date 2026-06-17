@@ -68,4 +68,11 @@ void session_request(Session *s, Client *client, const RequestParams *p,
 void session_get(Session *s, Client *client, String8 url, ResponseFn cb,
                  void *user);
 
+// Blocking variant of session_request (cookies + redirect loop): runs the loop
+// and returns a Response copied into `arena` (valid until the arena is
+// released). Like client_request_sync, call from the top level (not inside a
+// ResponseFn). See client.h for the ownership contract.
+Response *session_request_sync(Session *s, Client *client,
+                               const RequestParams *p, Arena *arena);
+
 #endif  // HOLYTLS_SESSION_H

@@ -221,3 +221,17 @@ void session_get(Session *s, Client *client, String8 url, ResponseFn cb,
   session_request(s, client, &(RequestParams){.method = Method_GET, .url = url},
                   cb, user);
 }
+
+// Blocking variant. Reuses client.c's SyncCtx + sync_on_response +
+// response_*_arena helpers (visible here in the unity build: core/client.c is
+// #included before core/session.c). Mirrors client_request_sync over the
+// session's redirect/cookie loop.
+Response *session_request_sync(Session *s, Client *client,
+                               const RequestParams *p, Arena *arena) {
+  Response *out = 0;
+  int pending = 1;
+  SyncCtx cx = {client->loop, arena, &out, &pending};
+  session_request(s, client, p, sync_on_response, &cx);
+  loop_run(client->loop);
+  return out ? out : response_error_arena(arena, "no response");
+}
