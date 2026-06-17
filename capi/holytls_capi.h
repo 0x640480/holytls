@@ -117,6 +117,13 @@ typedef struct holytls_request {
                              // client-level order for this request and every
                              // redirect hop; applies on pooled and non-pooled
                              // paths. See holytls_client_set_header_order.
+  holytls_http_version http_version;  // per-request wire-protocol override. The
+                                      // zero value (HOLYTLS_HTTP_AUTO) INHERITS
+                                      // the client's mode (so a zeroed request
+                                      // is unchanged); HTTP_1/_2/_3 force that
+                                      // protocol for this request + its redirect
+                                      // chain. Forcing HTTP_3 needs a QUIC-built
+                                      // client (see holytls_client_set_http_version).
 } holytls_request;
 
 // A fully-buffered, caller-owned response. Every pointer here is a heap copy

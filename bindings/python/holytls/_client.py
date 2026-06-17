@@ -212,8 +212,15 @@ def _encode_body(
     raise TypeError("data= must be str, bytes, or None (use json=/form=/files=)")
 
 
+def _coerce_http_version(v) -> int:
+    """A per-request ``http_version`` kwarg -> the flat-ABI int. ``None`` -> 0
+    (HttpVersion.AUTO), which INHERITS the client's mode; a HttpVersion /
+    "h1"/"h2"/"h3"/"auto" / int forces that protocol for the one request."""
+    return 0 if v is None else int(HttpVersion.coerce(v))
+
+
 def _fill_request(c_req, *, method, url, headers, body, fetch_mode, no_redirects,
-                  keep, proxy=None, header_order=None):
+                  keep, proxy=None, header_order=None, http_version=0):
     """Populate a `holytls_request *` cdata; append every owned buffer to `keep`
     so it outlives the C call."""
     c_req.method = int(method)
@@ -258,6 +265,7 @@ def _fill_request(c_req, *, method, url, headers, body, fetch_mode, no_redirects
         c_req.header_order = ob
     else:
         c_req.header_order = ffi.NULL
+    c_req.http_version = int(http_version)  # 0 (Auto) inherits the client mode
 
 
 def _build_response(c_resp, *, content=None, body_provider=None, body_len=0) -> Response:
@@ -561,6 +569,7 @@ class Client:
         fetch_mode: FetchMode = FetchMode.DEFAULT,
         allow_redirects: bool = True,
         header_order: Optional[Union[str, Sequence[str]]] = None,
+        http_version: Optional[Union[HttpVersion, str, int]] = None,
     ) -> Response:
         self._check()
         hdrs = _normalize_headers(headers)
@@ -579,6 +588,7 @@ class Client:
             keep=keep,
             proxy=proxy,
             header_order=header_order,
+            http_version=_coerce_http_version(http_version),
         )
         if on_chunk is not None:
             # Stream the (decoded) body to on_chunk as it arrives; the returned
@@ -773,6 +783,7 @@ class Session:
         proxy: Optional[str] = None,
         fetch_mode: FetchMode = FetchMode.DEFAULT,
         header_order: Optional[Union[str, Sequence[str]]] = None,
+        http_version: Optional[Union[HttpVersion, str, int]] = None,
     ) -> Response:
         if self._closed:
             raise HolyTLSError("session is closed")
@@ -793,6 +804,7 @@ class Session:
             keep=keep,
             proxy=proxy,
             header_order=header_order,
+            http_version=_coerce_http_version(http_version),
         )
         c_resp = lib.holytls_session_perform(self._s, self._client._c, c_req)
         if c_resp == ffi.NULL:

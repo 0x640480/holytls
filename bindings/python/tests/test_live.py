@@ -50,6 +50,18 @@ def test_auto_first_request_is_h2():
         assert r.alpn == "h2"
 
 
+def test_per_request_http_version():
+    # The client default is H2; a per-request http_version="h1" negotiates
+    # http/1.1 for that one request, and a subsequent default request is still
+    # h2 — the override doesn't disturb the client.
+    with Client(http_version="h2", timeout_ms=30000) as c:
+        r1 = c.get("https://www.cloudflare.com/", http_version="h1")
+        assert r1.ok, r1.error
+        assert r1.alpn == "http/1.1"
+        r2 = c.get("https://www.cloudflare.com/")  # inherits the H2 default
+        assert r2.ok and r2.alpn == "h2"
+
+
 def test_session_set_cookie_is_sent():
     # A cookie seeded out-of-band (no Set-Cookie ever delivered it) is attached
     # to the next request by the jar — the PerimeterX _px3/_pxvid use case.
