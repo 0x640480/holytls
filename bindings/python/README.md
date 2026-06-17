@@ -49,7 +49,10 @@ pip install ./bindings/python
 
 ### `Client`
 
-The transport. Owns a libuv loop; **not thread-safe** (one Client per thread).
+The transport. **Safe to share across threads** — `get`/`post`/.../`get_many`
+run on a background libuv loop, so one `Client` serves a whole thread pool.
+Configure it (proxy, cert, pinning, ...) before the first request: the loop
+starts on first use, after which runtime mutators raise.
 
 ```python
 client = holytls.Client(
@@ -70,7 +73,7 @@ client = holytls.Client(
     ca_file=None,         # trust an extra PEM CA (e.g. a MITM debug proxy)
     key_log_file=None,    # NSS keylog for Wireshark
 )
-# also: client.add_proxy(url), client.set_local_address(ip) at runtime
+# also: client.add_proxy(url), client.set_local_address(ip) — before first use
 ```
 
 Request methods return a `Response` and never raise on an HTTP status (call
@@ -106,10 +109,13 @@ client = holytls.Client(proxy_pool=["http://p1:8080", "socks5://p2:1080"])  # ro
 client = holytls.Client(local_address="203.0.113.7")  # bind egress source IP
 ```
 
-A single request holds the GIL, so it blocks the calling thread. For concurrency
-prefer `get_many` / `request_many` (one loop, one C call, no threads), and always
-set `timeout_ms` so one stuck request can't hang the batch. For separate identities
-give each thread or process its own `Client`.
+Share one `Client` across threads: each blocking call runs on the background
+loop, so a `ThreadPoolExecutor` over a single `Client` does real concurrent I/O,
+and cookies / connection pool / caches stay shared. `get_many` / `request_many`
+are the same concurrency in one call (in-order results); set `timeout_ms` so one
+stuck request can't hang a batch. `Session` / `websocket` / `connect_tls` each run
+on their own private transport (same fingerprint) — drive any one of them from a
+single thread.
 
 ### `Session` — cookies + redirects
 
