@@ -47,6 +47,7 @@
 #include "base/string8.h"
 #include "core/client.h"
 #include "core/session.h"
+#include "core/tls_stream.h"
 #include "net/loop.h"
 #include "profile/profile.h"
 #include "ws/ws.h"
@@ -1134,6 +1135,47 @@ int holytls_ws_transport(holytls_ws *ws) {
 }
 const char *holytls_ws_error(holytls_ws *ws) {
   return ws ? ws_conn_error(ws->conn) : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Raw TLS stream (thin wrapper over TlsStream; the stream owns the loop driving,
+// like holytls_ws_*).
+// ---------------------------------------------------------------------------
+
+struct holytls_tls_stream {
+  TlsStream *s;  // bound to the client's loop + TLS profile
+};
+
+holytls_tls_stream *holytls_tls_stream_connect(holytls_client *hc,
+                                               const char *host, uint16_t port,
+                                               uint64_t timeout_ms) {
+  if (!hc || !host) return 0;
+  holytls_tls_stream *ts = (holytls_tls_stream *)calloc(1, sizeof *ts);
+  if (!ts) return 0;
+  ts->s = tls_stream_connect(&hc->client, str8_cstring(host), port, timeout_ms);
+  return ts;  // a connect failure is reported via holytls_tls_stream_error()
+}
+
+int holytls_tls_stream_write(holytls_tls_stream *ts, const uint8_t *data,
+                             size_t len) {
+  if (!ts || (!data && len)) return 0;
+  return tls_stream_write(ts->s, data, len) ? 1 : 0;
+}
+
+int holytls_tls_stream_read(holytls_tls_stream *ts, uint8_t *buf, size_t cap,
+                            uint64_t timeout_ms) {
+  if (!ts || !buf) return -1;
+  return tls_stream_read(ts->s, buf, cap, timeout_ms);
+}
+
+const char *holytls_tls_stream_error(holytls_tls_stream *ts) {
+  return ts ? tls_stream_error(ts->s) : 0;
+}
+
+void holytls_tls_stream_free(holytls_tls_stream *ts) {
+  if (!ts) return;
+  tls_stream_free(ts->s);
+  free(ts);
 }
 
 // ---------------------------------------------------------------------------

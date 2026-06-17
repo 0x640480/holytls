@@ -16,7 +16,9 @@ import inspect
 import pytest
 
 import holytls
-from holytls import Client, HolyTLSError, HttpVersion, Method, Profile, Session
+from holytls import (
+    Client, HolyTLSError, HttpVersion, Method, Profile, Session, TlsStream,
+)
 
 try:
     from holytls import AsyncClient
@@ -152,6 +154,15 @@ def test_header_order_kwarg_is_accepted():
         assert c is not None
     with Client(header_order=["user-agent", "accept"]) as c:
         assert c is not None
+
+
+def test_tls_stream_exported_and_dead_port():
+    # TlsStream is exported; connect_tls to a refused port raises (connect
+    # failed) without crashing. The live raw read/write path is in test_live.py.
+    assert holytls.TlsStream is TlsStream
+    with Client(timeout_ms=2000) as c:
+        with pytest.raises(HolyTLSError):
+            c.connect_tls("127.0.0.1", 1, timeout=2.0)
 
 
 def test_http_version_kwarg_is_accepted():

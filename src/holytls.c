@@ -37,5 +37,6 @@
 #include "tls/keylog.c"
 #include "tls/ssl_conn.c"
 #include "tls/ssl_ctx.c"
+#include "core/tls_stream.c"  // after client.c/connection.c: raw TLS byte stream
 #include "ws/ws.c"        // after client.c/connection.c/url.c: WsConn (H1 path)
 #include "ws/ws_frame.c"  // RFC 6455 frame codec (transport-agnostic)

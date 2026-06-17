@@ -648,6 +648,16 @@ class Client:
         self._check()
         return WebSocket(self, url, headers)
 
+    def connect_tls(self, host: str, port: int, *,
+                    timeout: Optional[float] = None) -> "TlsStream":
+        """Open a raw TLS byte stream to ``host:port`` over this client's TLS
+        fingerprint (ciphers/curves/extensions, NO ALPN) — for non-HTTP
+        protocols like IMAP/SMTP. Returns a connected :class:`TlsStream`; raises
+        :class:`HolyTLSError` if the connect fails. ``timeout`` (seconds, or None)
+        bounds the connect."""
+        self._check()
+        return TlsStream(self, host, port, timeout=timeout)
+
     # -- concurrent batch (one loop, many in-flight requests) ----------------
 
     def request_many(self, requests: Sequence[dict]) -> List[Response]:
@@ -972,6 +982,95 @@ class WebSocket:
             raise WebSocketError("websocket is closed")
 
     def __enter__(self) -> "WebSocket":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class TlsStream:
+    """A raw TLS byte stream over a Client's fingerprinted TLS connection, for
+    non-HTTP protocols (IMAP, SMTP, ...). It uses the client's TLS stack
+    (ciphers/curves/extensions) with NO ALPN — a plain encrypted byte pipe.
+
+    Blocking + single-threaded, like the rest of the binding: ``read`` runs the
+    client's loop until data arrives. Open it with :meth:`Client.connect_tls`;
+    drive one stream from one thread and not concurrently with that client's
+    other calls.
+
+        with client.connect_tls("imap.gmail.com", 993) as s:
+            print(s.read())              # b"* OK Gimap ready ..."
+            s.write(b"a LOGOUT\\r\\n")
+    """
+
+    def __init__(self, client: "Client", host: str, port: int, *,
+                 timeout: Optional[float] = None):
+        client._check()
+        self._client = client
+        self._closed = False
+        timeout_ms = int(timeout * 1000) if timeout and timeout > 0 else 0
+        self._s = lib.holytls_tls_stream_connect(
+            client._c, host.encode("utf-8"), int(port) & 0xFFFF, timeout_ms
+        )
+        if self._s == ffi.NULL:
+            raise HolyTLSError("failed to create native tls stream (out of memory)")
+        err = lib.holytls_tls_stream_error(self._s)
+        if err != ffi.NULL:
+            msg = ffi.string(err).decode("utf-8", "replace")
+            lib.holytls_tls_stream_free(self._s)
+            self._s = ffi.NULL
+            raise HolyTLSError(f"tls connect failed: {msg}")
+
+    def write(self, data: Union[bytes, bytearray, memoryview]) -> int:
+        """Write all of ``data`` (encrypted + queued; flushed on the next read).
+        Returns the number of bytes written; raises :class:`HolyTLSError` if the
+        stream is closed/failed."""
+        self._check()
+        buf = bytes(data)
+        if not lib.holytls_tls_stream_write(self._s, buf, len(buf)):
+            raise HolyTLSError("tls stream write failed (connection closed?)")
+        return len(buf)
+
+    def read(self, n: int = 65536, timeout: Optional[float] = None) -> bytes:
+        """Read up to ``n`` decrypted bytes. Returns the bytes, or ``b""`` on a
+        clean close (peer EOF / TLS close_notify). Raises :class:`HolyTLSError`
+        on a transport error and ``TimeoutError`` if ``timeout`` (seconds)
+        elapses with no data (the stream stays usable). ``timeout=None`` blocks
+        indefinitely."""
+        self._check()
+        if n <= 0:
+            return b""
+        buf = ffi.new("uint8_t[]", n)
+        timeout_ms = int(timeout * 1000) if timeout and timeout > 0 else 0
+        rc = lib.holytls_tls_stream_read(self._s, buf, n, timeout_ms)
+        if rc == -2:
+            raise TimeoutError(f"tls stream read timed out after {timeout}s")
+        if rc < 0:
+            err = lib.holytls_tls_stream_error(self._s)
+            detail = (ffi.string(err).decode("utf-8", "replace")
+                      if err != ffi.NULL else "error")
+            raise HolyTLSError(f"tls stream read failed: {detail}")
+        if rc == 0:
+            return b""  # clean close (EOF)
+        return bytes(ffi.buffer(buf, rc))
+
+    def close(self) -> None:
+        if not self._closed and self._s != ffi.NULL:
+            lib.holytls_tls_stream_free(self._s)
+            self._closed = True
+            self._s = ffi.NULL
+
+    def _check(self) -> None:
+        if self._closed or self._s == ffi.NULL:
+            raise HolyTLSError("tls stream is closed")
+
+    def __enter__(self) -> "TlsStream":
         return self
 
     def __exit__(self, *exc) -> None:

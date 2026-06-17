@@ -42,6 +42,7 @@ from holytls._models import (
 from holytls._client import (
     Client,
     Session,
+    TlsStream,
     WebSocket,
     available_profiles,
     version,
@@ -53,6 +54,7 @@ __all__ = [
     "AsyncClient",
     "Session",
     "WebSocket",
+    "TlsStream",
     "Response",
     "Headers",
     "Timing",

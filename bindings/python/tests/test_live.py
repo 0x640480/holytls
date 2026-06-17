@@ -50,6 +50,24 @@ def test_auto_first_request_is_h2():
         assert r.alpn == "h2"
 
 
+def test_tls_stream_raw_http():
+    # A raw TLS byte stream (no ALPN): a manual HTTP/1.0 request over it gets an
+    # HTTP reply back — proving raw write/read over the client's fingerprinted TLS.
+    with Client(timeout_ms=30000) as c:
+        with c.connect_tls("www.cloudflare.com", 443, timeout=30.0) as s:
+            s.write(b"GET / HTTP/1.0\r\nHost: www.cloudflare.com\r\n"
+                    b"Connection: close\r\n\r\n")
+            data = s.read(4096, timeout=30.0)
+            assert data.startswith(b"HTTP/"), data[:32]
+
+
+def test_tls_stream_imap_greeting():
+    # The real use case: read an IMAP server's greeting over the raw TLS stream.
+    with Client(timeout_ms=30000) as c:
+        with c.connect_tls("imap.gmail.com", 993, timeout=30.0) as s:
+            assert s.read(512, timeout=30.0).startswith(b"* OK")
+
+
 def test_per_request_http_version():
     # The client default is H2; a per-request http_version="h1" negotiates
     # http/1.1 for that one request, and a subsequent default request is still
