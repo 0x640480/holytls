@@ -185,11 +185,22 @@ internal void test_client_api(void) {
         str8_match(got[1], str8_lit("user-agent")) &&
         str8_match(got[2], str8_lit("accept")));
 
-  // Over the cap -> rejected, state unchanged.
+  // A large order (>32, <= the 64 cap) now sets successfully — the raised cap
+  // covers realistic header sets without the named-slot template.
+  String8 many[40];
+  char names40[40][8];
+  for (U64 i = 0; i < 40; ++i) {
+    int k = snprintf(names40[i], sizeof names40[i], "h%llu", (unsigned long long)i);
+    many[i] = str8((U8 *)names40[i], (U64)k);
+  }
+  CHECK(client_set_header_order(&c, many, 40));
+  CHECK(client_get_header_order(&c, got, ArrayCount(got)) == 40);
+
+  // Over the cap -> rejected, state unchanged (40 names from above).
   String8 too_many[CLIENT_HEADER_ORDER_MAX + 1];
   for (U64 i = 0; i < ArrayCount(too_many); ++i) too_many[i] = str8_lit("x");
   CHECK(client_set_header_order(&c, too_many, ArrayCount(too_many)) == 0);
-  CHECK(client_get_header_order(&c, got, ArrayCount(got)) == 3);
+  CHECK(client_get_header_order(&c, got, ArrayCount(got)) == 40);
 
   // Reset (count 0) -> back to the profile order.
   CHECK(client_set_header_order(&c, 0, 0));

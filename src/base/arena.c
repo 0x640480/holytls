@@ -186,10 +186,38 @@ Temp temp_begin(Arena *arena) {
 
 void temp_end(Temp temp) { arena_pop_to(temp.arena, temp.pos); }
 
+//- per-thread auto-free of the thread-local arena pools (POSIX)
+// A process-wide pthread_key whose destructor calls arena_thread_cleanup. Each
+// thread ARMS it (sets a non-NULL sentinel) the first time it touches a pool, so
+// a worker thread that forgets the manual arena_thread_cleanup doesn't leak its
+// scratch/recycle pools — the destructor runs at thread exit (and for the main
+// thread at process exit). The manual arena_thread_cleanup stays valid +
+// idempotent, and is REQUIRED on Windows (no destructor here).
+#if !defined(_WIN32)
+#include <pthread.h>
+global pthread_once_t g_arena_tls_once = PTHREAD_ONCE_INIT;
+global pthread_key_t g_arena_tls_key;
+internal void arena_tls_dtor(void *v) {
+  (void)v;
+  arena_thread_cleanup();  // declared in arena.h; idempotent
+}
+internal void arena_tls_key_init(void) {
+  pthread_key_create(&g_arena_tls_key, arena_tls_dtor);
+}
+internal void arena_tls_arm(void) {
+  pthread_once(&g_arena_tls_once, arena_tls_key_init);
+  if (!pthread_getspecific(g_arena_tls_key))  // set the sentinel once per thread
+    pthread_setspecific(g_arena_tls_key, (void *)1);
+}
+#else
+internal void arena_tls_arm(void) {}  // Windows: call arena_thread_cleanup manually
+#endif
+
 //- thread-local scratch pool
 global thread_local Arena *g_scratch[2];
 
 Temp scratch_begin(Arena **conflicts, U64 conflict_count) {
+  arena_tls_arm();  // auto-free these pools when the thread exits (POSIX)
   if (!g_scratch[0]) {
     g_scratch[0] = arena_alloc();
     g_scratch[1] = arena_alloc();
@@ -217,6 +245,7 @@ global thread_local Arena *g_recycle_head;
 global thread_local U32 g_recycle_count;
 
 Arena *arena_acquire(void) {
+  arena_tls_arm();  // auto-free these pools when the thread exits (POSIX)
   Arena *a = g_recycle_head;
   if (a) {
     g_recycle_head = a->recycle_next;
@@ -229,6 +258,7 @@ Arena *arena_acquire(void) {
 
 void arena_recycle(Arena *arena) {
   if (!arena) return;
+  arena_tls_arm();  // auto-free these pools when the thread exits (POSIX)
   // arena_clear keeps ALL blocks, so pooling an arena that grew past its first
   // block would retain that bloat forever — release those instead. Also cap
   // depth.
