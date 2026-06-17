@@ -284,5 +284,5 @@ def test_live_lazy_content_correct():
                 assert isinstance(body, bytes) and len(body) > 0
                 assert r.content is body          # cached after first access
                 assert r.text == body.decode("utf-8", "replace")
-                assert r.json()["tls"]            # decoded JSON body is usable
+                assert r.json()["ja4"]            # decoded JSON body is usable
     asyncio.run(run())

@@ -645,6 +645,8 @@ class Client:
         with self._start_lock:
             if self._started:
                 return
+            if self._closed:
+                return  # don't start a thread on a freed client; _run* raises next
             self._thread = threading.Thread(
                 target=lib.holytls_async_run, args=(self._ac,),
                 name="holytls-loop", daemon=True,
@@ -693,6 +695,29 @@ class Client:
         for p in pendings:
             p.event.wait()
         return [p.resp for p in pendings]
+
+    def _run_session(self, session_handle, c_req):
+        """Submit one Session request on the background loop — the session's
+        cookie jar + redirect loop run on THIS Client's shared transport — and
+        block until it lands; return the owned ``holytls_response *`` (NULL on
+        failure). The caller keeps the request buffers AND the session alive
+        across this call. Lets many lightweight Sessions share one loop."""
+        self._ensure_started()
+        pending = _Pending()
+        with self._inflight_lock:
+            if self._closed:
+                raise HolyTLSError("client is closed")
+            rid = next(self._next_id)
+            self._inflight[rid] = pending
+        ok = lib.holytls_async_session_submit(
+            self._ac, session_handle, c_req, rid, self._cb, ffi.NULL
+        )
+        if not ok:
+            with self._inflight_lock:
+                self._inflight.pop(rid, None)
+            raise HolyTLSError("client is closed")
+        pending.event.wait()
+        return pending.resp
 
     def _new_sync_subclient(self):
         """Mint a private single-threaded ``holytls_client`` with this Client's
@@ -977,13 +1002,14 @@ class Client:
 class Session:
     """A cookie jar + per-hop redirect identity layered on a Client.
 
-    The fingerprint/config is the passed-in Client's; the Session attaches
-    matching cookies per request, absorbs Set-Cookie, and follows redirects with
-    the jar applied at each hop. One Session is one browser-like identity — drive
-    it serially (its jar is not locked). For many independent identities, create
-    many Sessions on a shared Client, including one per thread: each Session owns
-    a private single-threaded transport (same fingerprint), so Sessions on
-    different threads don't interfere.
+    The fingerprint/config/transport is the passed-in Client's: the Session runs
+    on that Client's thread-safe background loop (sharing its connection pool +
+    caches), attaching its own cookies per request, absorbing Set-Cookie, and
+    following redirects with the jar applied at each hop. A Session is
+    lightweight — just a cookie jar — so create as many as you like, including
+    one per task/thread on a shared Client. One Session is one identity: drive it
+    serially (its jar is not locked); concurrent Sessions on the shared Client
+    are fine (each has its own jar).
     """
 
     def __init__(
@@ -994,13 +1020,8 @@ class Session:
         follow_redirects: bool = True,
         max_redirects: int = 10,
     ):
+        client._check()
         self._client = client
-        # A Session drives its redirect loop on the CALLING thread, so it runs on
-        # its OWN single-threaded transport minted from `client` (same
-        # fingerprint/config) rather than the client's shared background loop —
-        # this keeps the shared Client thread-safe and lets each thread own a
-        # Session. (Per-Session transport: keep Session count modest; see the docs.)
-        self._sub = client._new_sync_subclient()
         # follow_redirects=False (or max_redirects=0) yields single-hop requests;
         # the two are decoupled, so an explicit 0 budget is honored (not 10).
         self._s = lib.holytls_session_new(
@@ -1009,8 +1030,6 @@ class Session:
             int(max_redirects),
         )
         if self._s == ffi.NULL:
-            lib.holytls_client_free(self._sub)
-            self._sub = ffi.NULL
             raise HolyTLSError("failed to create native session")
         self._closed = False
 
@@ -1031,6 +1050,7 @@ class Session:
     ) -> Response:
         if self._closed:
             raise HolyTLSError("session is closed")
+        self._client._check()
         hdrs = _normalize_headers(headers)
         body, hdrs = _encode_body(data, json, form, files, hdrs)
         keep: list = []
@@ -1049,9 +1069,10 @@ class Session:
             header_order=header_order,
             http_version=_coerce_http_version(http_version),
         )
-        c_resp = lib.holytls_session_perform(self._s, self._sub, c_req)
-        if c_resp == ffi.NULL:
-            raise HolyTLSError("native allocation failure")
+        # Run on the Client's background loop (shared transport, own cookie jar).
+        c_resp = self._client._run_session(self._s, c_req)
+        if c_resp is None or c_resp == ffi.NULL:
+            raise HolyTLSError("request did not complete (out of memory?)")
         return _response_from_c(c_resp)
 
     def get(self, url: str, **kwargs) -> Response:
@@ -1097,9 +1118,6 @@ class Session:
         if self._s != ffi.NULL:
             lib.holytls_session_free(self._s)
             self._s = ffi.NULL
-        if getattr(self, "_sub", ffi.NULL) != ffi.NULL:
-            lib.holytls_client_free(self._sub)  # the private per-Session transport
-            self._sub = ffi.NULL
 
     def __enter__(self) -> "Session":
         return self
