@@ -12,8 +12,10 @@ Marshalling rules that keep this memory-safe across the FFI boundary:
 from __future__ import annotations
 
 import binascii
+import itertools
 import json as _json
 import os
+import threading
 from typing import List, Optional, Sequence, Tuple, Union
 from urllib.parse import urlencode
 
@@ -412,13 +414,34 @@ def _apply_config(
         lib.holytls_client_set_key_log_file(c, key_log_file.encode("utf-8"))
 
 
-class Client:
-    """A Chrome-fingerprinted HTTP client.
+class _Pending:
+    """A single in-flight blocking request's slot. The waiting (caller) thread
+    blocks on ``event``; the libuv loop thread fills ``resp`` (an owned
+    ``holytls_response *``, or ``ffi.NULL`` on completion failure) and sets the
+    event. ``event`` provides the happens-before so ``resp`` is visible to the
+    waiter — we do not rely on bare GIL visibility."""
 
-    Each Client owns its own libuv loop and transport and is NOT thread-safe —
-    drive one Client from one thread at a time. For concurrency, either issue a
-    batch (``get_many``/``request_many``: many requests on one loop, the native
-    event-loop concurrency) or give each thread its own Client.
+    __slots__ = ("event", "resp")
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.resp = None
+
+
+class Client:
+    """A Chrome-fingerprinted HTTP client — safe to share across threads.
+
+    ``request`` / ``get`` / ``post`` / ... / ``get_many`` / ``request_many`` run
+    on a background libuv loop, so you can call them from any number of threads
+    on one shared Client (a ThreadPoolExecutor over a single Client just works);
+    the one loop multiplexes all the in-flight I/O. Configure the client (proxy,
+    cert, header order, pinning, ...) BEFORE the first request — the background
+    loop starts on first use, and runtime mutators raise once it is live.
+
+    The stateful / loop-driving features — :class:`Session`, :meth:`websocket`,
+    :meth:`connect_tls`, and streaming requests (``on_chunk=``) — each run on
+    their own private single-threaded transport, so they are also safe to use
+    from different threads; drive any one of them serially.
 
     Use as a context manager (``with holytls.Client() as c: ...``) or call
     ``close()`` when done to release the native loop + connections.
@@ -458,66 +481,123 @@ class Client:
             if http_version is not None
             else HttpVersion.HTTP_2
         )
-        self._c = lib.holytls_client_new_named(
+        # Direct requests run on the background-loop async engine (the same one
+        # AsyncClient uses) so the Client is safe to share across threads: the
+        # loop thread is the only thread that ever touches client state, and
+        # submission (holytls_async_submit_many) is internally locked.
+        self._ac = lib.holytls_async_client_new_named(
             name.encode("utf-8"), int(mode), 1 if verify else 0
         )
-        if self._c == ffi.NULL:
+        if self._ac == ffi.NULL:
             avail = available_profiles()
             if name and name not in avail:
                 raise HolyTLSError(f"unknown profile {profile!r}; available: {avail}")
             raise HolyTLSError("failed to create native client (out of memory)")
         self._closed = False
+        # The inner sync client (a stable field inside the async client) is the
+        # handle every config setter targets. Applied BEFORE the loop thread
+        # starts — config touches client state and is not thread-safe.
+        self._base = lib.holytls_async_client_base(self._ac)
+        try:
+            _apply_config(
+                self._base,
+                timeout_ms=timeout_ms,
+                max_redirects=max_redirects,
+                ech=ech,
+                resumption=resumption,
+                early_data=early_data,
+                max_conns_per_origin=max_conns_per_origin,
+                dns_cache_ttl_ms=dns_cache_ttl_ms,
+                override_default_headers=override_default_headers,
+                header_order=header_order,
+                proxy=proxy,
+                proxy_pool=proxy_pool,
+                verify_proxy=verify_proxy,
+                local_address=local_address,
+                cert=cert,
+                cert_password=cert_password,
+                ca_file=ca_file,
+                key_log_file=key_log_file,
+            )
+        except BaseException:
+            lib.holytls_async_client_free(self._ac)  # no thread started yet
+            self._ac = ffi.NULL
+            raise
 
-        # http_version is applied at construction (holytls_client_new_named sets
-        # it after picking the transport). The rest of the knobs are shared with
-        # AsyncClient via _apply_config.
-        _apply_config(
-            self._c,
-            timeout_ms=timeout_ms,
-            max_redirects=max_redirects,
-            ech=ech,
-            resumption=resumption,
-            early_data=early_data,
+        # Stashed so the loop-driving features (Session / WebSocket / connect_tls
+        # / streaming) can mint a matching single-threaded sub-client on demand
+        # (they drive a libuv loop on the CALLING thread and so can't use the
+        # shared background loop). See _new_sync_subclient.
+        self._sub_name = name
+        self._sub_mode = int(mode)
+        self._sub_verify = bool(verify)
+        self._sub_apply = dict(
+            timeout_ms=timeout_ms, max_redirects=max_redirects, ech=ech,
+            resumption=resumption, early_data=early_data,
             max_conns_per_origin=max_conns_per_origin,
             dns_cache_ttl_ms=dns_cache_ttl_ms,
             override_default_headers=override_default_headers,
-            header_order=header_order,
-            proxy=proxy,
-            proxy_pool=proxy_pool,
-            verify_proxy=verify_proxy,
-            local_address=local_address,
-            cert=cert,
-            cert_password=cert_password,
-            ca_file=ca_file,
-            key_log_file=key_log_file,
+            header_order=header_order, proxy=proxy, proxy_pool=proxy_pool,
+            verify_proxy=verify_proxy, local_address=local_address, cert=cert,
+            cert_password=cert_password, ca_file=ca_file, key_log_file=key_log_file,
         )
 
-    # -- configuration (also settable after construction) --------------------
+        # Blocking-request bridge: a req_id -> _Pending map the completion
+        # callback fills on the loop thread + the caller thread waits on.
+        self._inflight: dict = {}
+        self._inflight_lock = threading.Lock()
+        self._next_id = itertools.count(1)
+        self._cb = ffi.callback(
+            "void(void *, uint64_t, holytls_response *)", self._on_complete
+        )
+        # The loop thread is started lazily on the first request: config setters
+        # (below) stay safe until then. _start_lock serializes start vs. config so
+        # they never race.
+        self._started = False
+        self._start_lock = threading.Lock()
+        self._thread = None
+
+    # -- configuration (settable until the first request) --------------------
+
+    def _config_check(self) -> None:
+        """A runtime config mutator is only safe before the background loop
+        starts (it touches client state the loop thread would otherwise read
+        concurrently). Allowed up to the first request; afterwards, raise and
+        point at the equivalent constructor kwarg."""
+        self._check()
+        if self._started:
+            raise HolyTLSError(
+                "configure the Client before its first request — the background "
+                "loop is running and runtime mutation is not thread-safe. Pass "
+                "proxy=/proxy_pool=/local_address=/cert=/header_order=/ca_file= to "
+                "Client(...), or use a fresh Client."
+            )
 
     def set_proxy(self, proxy_url: str, *, verify_proxy: bool = True) -> bool:
-        self._check()
+        self._config_check()
         return bool(
             lib.holytls_client_set_proxy(
-                self._c, proxy_url.encode("utf-8"), 1 if verify_proxy else 0
+                self._base, proxy_url.encode("utf-8"), 1 if verify_proxy else 0
             )
         )
 
     def add_proxy(self, proxy_url: str, *, verify_proxy: bool = True) -> bool:
         """Add a proxy to the rotation pool. Non-pooled requests round-robin the
         pool (a per-request ``proxy=`` overrides it). Returns False on a bad URL
-        or a full pool."""
-        self._check()
+        or a full pool. Call before the first request (see ``proxy_pool=``)."""
+        self._config_check()
         return bool(
             lib.holytls_client_add_proxy(
-                self._c, proxy_url.encode("utf-8"), 1 if verify_proxy else 0
+                self._base, proxy_url.encode("utf-8"), 1 if verify_proxy else 0
             )
         )
 
     def set_local_address(self, ip: str) -> bool:
         """Bind outgoing connections to source IP ``ip`` (IPv4/IPv6 literal) for
-        egress-address selection; "" clears it. Returns False on a bad literal."""
-        self._check()
-        return bool(lib.holytls_client_set_local_address(self._c, ip.encode("utf-8")))
+        egress-address selection; "" clears it. Returns False on a bad literal.
+        Call before the first request (see ``local_address=``)."""
+        self._config_check()
+        return bool(lib.holytls_client_set_local_address(self._base, ip.encode("utf-8")))
 
     def set_client_cert(self, cert: str, key: Optional[str] = None, *,
                         password: Optional[str] = None) -> bool:
@@ -525,32 +605,113 @@ class Client:
         chain path; ``key`` its private key path (defaults to ``cert`` for a
         combined PEM); ``password`` decrypts an encrypted key. Fingerprint-
         neutral. Raises :class:`HolyTLSError` if the files can't be loaded or the
-        key doesn't match the cert. (Also settable via ``Client(cert=...)``,
-        requests-style: a path or a ``(cert, key)`` tuple, + ``cert_password=``.)"""
-        self._check()
+        key doesn't match the cert. Call before the first request (also settable
+        via ``Client(cert=...)``: a path or a ``(cert, key)`` tuple, + ``cert_password=``)."""
+        self._config_check()
         key_path = key if key is not None else cert
         pw = password.encode("utf-8") if password else ffi.NULL
         if not lib.holytls_client_set_client_cert(
-            self._c, str(cert).encode("utf-8"), str(key_path).encode("utf-8"), pw
+            self._base, str(cert).encode("utf-8"), str(key_path).encode("utf-8"), pw
         ):
             raise HolyTLSError(f"could not load client certificate: {cert!r}")
         return True
 
     def set_header_order(self, order: Union[str, Sequence[str]]) -> bool:
-        self._check()
+        self._config_check()
         csv = order if isinstance(order, str) else ", ".join(order)
-        return bool(lib.holytls_client_set_header_order(self._c, csv.encode("utf-8")))
+        return bool(lib.holytls_client_set_header_order(self._base, csv.encode("utf-8")))
 
     def pin_certificate(self, hostname: str, spki_sha256_b64: str, *, include_subdomains: bool = False) -> bool:
-        self._check()
+        """Pin a leaf SPKI SHA-256 (base64) for ``hostname``. Call before the
+        first request."""
+        self._config_check()
         return bool(
             lib.holytls_client_pin_certificate(
-                self._c,
+                self._base,
                 hostname.encode("utf-8"),
                 spki_sha256_b64.encode("utf-8"),
                 1 if include_subdomains else 0,
             )
         )
+
+    # -- background-loop engine (thread-safe request bridge) -----------------
+
+    def _ensure_started(self) -> None:
+        """Start the background libuv loop thread on first use. Serialized with
+        config mutation via _start_lock so a concurrent first request and a
+        config call never race (the mutator sees _started and raises)."""
+        if self._started:
+            return
+        with self._start_lock:
+            if self._started:
+                return
+            self._thread = threading.Thread(
+                target=lib.holytls_async_run, args=(self._ac,),
+                name="holytls-loop", daemon=True,
+            )
+            self._thread.start()
+            self._started = True
+
+    def _on_complete(self, user, req_id, c_resp):
+        """Runs on the libuv LOOP THREAD when a request completes. Hand the owned
+        response to the waiting caller and wake it; if nobody waits (closed /
+        gone), free it. Minimal work here — the caller thread does the body copy.
+        Never raises (cffi would swallow it)."""
+        rid = int(req_id)
+        with self._inflight_lock:
+            pending = self._inflight.pop(rid, None)
+        if pending is None:
+            if c_resp != ffi.NULL:
+                lib.holytls_response_free(c_resp)
+            return
+        pending.resp = c_resp  # owned ptr, or ffi.NULL on completion-copy OOM
+        pending.event.set()
+
+    def _run(self, c_reqs, n: int) -> list:
+        """Submit n already-filled requests on the background loop and block until
+        all land; return their owned ``holytls_response *`` (NULL on failure) in
+        order. The caller must keep the request buffers alive across this call
+        (submit deep-copies synchronously)."""
+        self._ensure_started()
+        pendings = [_Pending() for _ in range(n)]
+        ids = ffi.new("uint64_t[]", n)
+        rids = []
+        with self._inflight_lock:
+            if self._closed:
+                raise HolyTLSError("client is closed")
+            for i in range(n):
+                rid = next(self._next_id)
+                ids[i] = rid
+                rids.append(rid)
+                self._inflight[rid] = pendings[i]
+        ok = lib.holytls_async_submit_many(self._ac, c_reqs, n, ids, self._cb, ffi.NULL)
+        if not ok:
+            with self._inflight_lock:
+                for rid in rids:
+                    self._inflight.pop(rid, None)
+            raise HolyTLSError("client is closed")
+        for p in pendings:
+            p.event.wait()
+        return [p.resp for p in pendings]
+
+    def _new_sync_subclient(self):
+        """Mint a private single-threaded ``holytls_client`` with this Client's
+        config, for a loop-driving feature (Session / WebSocket / connect_tls /
+        streaming) that must drive a libuv loop on the calling thread and so
+        cannot use the shared background loop. Caller owns it (free with
+        ``holytls_client_free``)."""
+        self._check()
+        c = lib.holytls_client_new_named(
+            self._sub_name.encode("utf-8"), self._sub_mode, 1 if self._sub_verify else 0
+        )
+        if c == ffi.NULL:
+            raise HolyTLSError("failed to create native client (out of memory)")
+        try:
+            _apply_config(c, **self._sub_apply)
+        except BaseException:
+            lib.holytls_client_free(c)
+            raise
+        return c
 
     # -- single requests -----------------------------------------------------
 
@@ -572,6 +733,13 @@ class Client:
         http_version: Optional[Union[HttpVersion, str, int]] = None,
     ) -> Response:
         self._check()
+        if on_chunk is not None:
+            return self._request_stream(
+                method, url, headers=headers, data=data, json=json, form=form,
+                files=files, proxy=proxy, fetch_mode=fetch_mode,
+                allow_redirects=allow_redirects, header_order=header_order,
+                http_version=http_version, on_chunk=on_chunk,
+            )
         hdrs = _normalize_headers(headers)
         body, hdrs = _encode_body(data, json, form, files, hdrs)
         keep: list = []
@@ -590,33 +758,63 @@ class Client:
             header_order=header_order,
             http_version=_coerce_http_version(http_version),
         )
-        if on_chunk is not None:
-            # Stream the (decoded) body to on_chunk as it arrives; the returned
-            # Response has empty content. cffi does NOT propagate an exception
-            # raised in a callback through the C call (it would print + continue),
-            # so capture it in the bridge and re-raise after the call returns.
+        reqs = ffi.new("holytls_request[1]")
+        reqs[0] = c_req[0]  # struct-copy; pointer fields still reference `keep`
+        c_resp = self._run(reqs, 1)[0]  # blocks on the background loop
+        if c_resp is None or c_resp == ffi.NULL:
+            raise HolyTLSError("request did not complete (out of memory?)")
+        return _response_from_c(c_resp)  # eager copy + free, on this thread
+
+    def _request_stream(self, method, url, *, headers, data, json, form, files,
+                        proxy, fetch_mode, allow_redirects, header_order,
+                        http_version, on_chunk) -> Response:
+        # Streaming drives the loop on THIS thread, so it runs on a private
+        # single-threaded sub-client (safe to call from any thread — each call
+        # gets its own transport). Forces a single hop + the non-pooled path.
+        sub = self._new_sync_subclient()
+        try:
+            hdrs = _normalize_headers(headers)
+            body, hdrs = _encode_body(data, json, form, files, hdrs)
+            keep: list = []
+            c_req = ffi.new("holytls_request *")
+            keep.append(c_req)
+            _fill_request(
+                c_req,
+                method=Method.coerce(method),
+                url=url,
+                headers=hdrs,
+                body=body,
+                fetch_mode=fetch_mode,
+                no_redirects=not allow_redirects,
+                keep=keep,
+                proxy=proxy,
+                header_order=header_order,
+                http_version=_coerce_http_version(http_version),
+            )
+            # cffi does NOT propagate an exception raised in a callback through the
+            # C call (it prints + continues), so capture it and re-raise after.
             err: list = []
 
-            def _bridge(user, data, n):
+            def _bridge(user, data_, n):
                 if err:  # already failed — stop calling the user's callback
                     return
                 try:
-                    on_chunk(bytes(ffi.buffer(data, n)))
+                    on_chunk(bytes(ffi.buffer(data_, n)))
                 except BaseException as e:  # noqa: BLE001 - re-raised below
                     err.append(e)
 
             cb = ffi.callback("void(void *, const uint8_t *, uint64_t)", _bridge)
             keep.append(cb)  # keep the callback cdata alive across the blocking call
-            c_resp = lib.holytls_perform_stream(self._c, c_req, cb, ffi.NULL)
+            c_resp = lib.holytls_perform_stream(sub, c_req, cb, ffi.NULL)
             if err:
                 if c_resp != ffi.NULL:
                     lib.holytls_response_free(c_resp)
                 raise err[0]
-        else:
-            c_resp = lib.holytls_perform(self._c, c_req)
-        if c_resp == ffi.NULL:
-            raise HolyTLSError("native allocation failure")
-        return _response_from_c(c_resp)
+            if c_resp == ffi.NULL:
+                raise HolyTLSError("native allocation failure")
+            return _response_from_c(c_resp)
+        finally:
+            lib.holytls_client_free(sub)
 
     def get(self, url: str, **kwargs) -> Response:
         return self.request(Method.GET, url, **kwargs)
@@ -698,26 +896,24 @@ class Client:
                 proxy=item.get("proxy"),
                 header_order=item.get("header_order"),
             )
-        out = ffi.new("holytls_response *[]", n)
-        written = lib.holytls_perform_many(self._c, c_reqs, n, out)
-        if written != n:
-            # A catastrophic setup failure (0): free whatever came back.
-            for i in range(int(written)):
-                if out[i] != ffi.NULL:
-                    lib.holytls_response_free(out[i])
-            raise HolyTLSError("native batch submission failed")
-        # Each out[i] is an independently-owned native response. _response_from_c
-        # frees the slot it processes (in its finally); if marshalling raises
-        # mid-loop (e.g. MemoryError copying a huge body, or KeyboardInterrupt),
-        # free the slots we never reached so their native objects don't leak.
+        c_resps = self._run(c_reqs, n)  # submit all, block until every one lands
+        # Each c_resps[i] is an independently-owned native response (NULL only on
+        # a per-request completion-copy OOM). _response_from_c frees the slot it
+        # processes (in its finally); if marshalling raises mid-loop (e.g.
+        # MemoryError copying a huge body, or KeyboardInterrupt), free the slots
+        # we never reached so their native objects don't leak.
         results: List[Response] = []
         try:
             for i in range(n):
-                results.append(_response_from_c(out[i]))
+                cr = c_resps[i]
+                if cr is None or cr == ffi.NULL:
+                    raise HolyTLSError("request did not complete (out of memory?)")
+                results.append(_response_from_c(cr))
         except BaseException:
             for j in range(len(results) + 1, n):  # +1: the raising slot freed itself
-                if out[j] != ffi.NULL:
-                    lib.holytls_response_free(out[j])
+                cr = c_resps[j]
+                if cr is not None and cr != ffi.NULL:
+                    lib.holytls_response_free(cr)
             raise
         return results
 
@@ -728,13 +924,30 @@ class Client:
     # -- lifecycle -----------------------------------------------------------
 
     def close(self) -> None:
-        if not self._closed and self._c != ffi.NULL:
-            lib.holytls_client_free(self._c)
-            self._closed = True
-            self._c = ffi.NULL
+        if self._closed:
+            return
+        self._closed = True  # observed by _run registration + the start guard
+        if self._started:
+            lib.holytls_async_stop(self._ac)  # reject new submits, wake loop to stop
+            self._thread.join()  # after this, no completion callback can fire
+            # Wake any waiter whose request was in-flight at stop and never
+            # completed (the loop stopped before its callback fired) so it does
+            # not hang. Responses already delivered into a pending are owned by
+            # that pending's waiter (it frees them via _response_from_c).
+            with self._inflight_lock:
+                stranded = list(self._inflight.values())
+                self._inflight.clear()
+            for p in stranded:
+                if p.resp is None:
+                    p.resp = ffi.NULL  # the waiter raises "did not complete"
+                p.event.set()
+        if self._ac != ffi.NULL:
+            lib.holytls_async_client_free(self._ac)  # thread joined -> safe
+            self._ac = ffi.NULL
+        self._cb = None  # release the cffi callback (no more completions can fire)
 
     def _check(self) -> None:
-        if self._closed or self._c == ffi.NULL:
+        if self._closed or self._ac == ffi.NULL:
             raise HolyTLSError("client is closed")
 
     def __enter__(self) -> "Client":
@@ -744,8 +957,19 @@ class Client:
         self.close()
 
     def __del__(self):
+        # Best-effort: we can't safely join the loop thread here (interpreter
+        # shutdown). Stop it so it doesn't spin; the daemon thread + native client
+        # are reclaimed at process exit. Use `with` / close() for deterministic
+        # cleanup.
+        if getattr(self, "_closed", True):
+            return
         try:
-            self.close()
+            if getattr(self, "_started", False) and getattr(self, "_ac", ffi.NULL) != ffi.NULL:
+                lib.holytls_async_stop(self._ac)
+            elif getattr(self, "_ac", ffi.NULL) != ffi.NULL:
+                lib.holytls_async_client_free(self._ac)  # never started -> safe to free
+                self._ac = ffi.NULL
+                self._closed = True
         except Exception:
             pass
 
@@ -753,11 +977,13 @@ class Client:
 class Session:
     """A cookie jar + per-hop redirect identity layered on a Client.
 
-    The transport (and its fingerprint) is the passed-in Client; the Session
-    attaches matching cookies per request, absorbs Set-Cookie, and follows
-    redirects with the jar applied at each hop. One Session is one browser-like
-    identity — drive it serially (its jar is not locked). For many independent
-    identities, create many Sessions on a shared Client.
+    The fingerprint/config is the passed-in Client's; the Session attaches
+    matching cookies per request, absorbs Set-Cookie, and follows redirects with
+    the jar applied at each hop. One Session is one browser-like identity — drive
+    it serially (its jar is not locked). For many independent identities, create
+    many Sessions on a shared Client, including one per thread: each Session owns
+    a private single-threaded transport (same fingerprint), so Sessions on
+    different threads don't interfere.
     """
 
     def __init__(
@@ -769,6 +995,12 @@ class Session:
         max_redirects: int = 10,
     ):
         self._client = client
+        # A Session drives its redirect loop on the CALLING thread, so it runs on
+        # its OWN single-threaded transport minted from `client` (same
+        # fingerprint/config) rather than the client's shared background loop —
+        # this keeps the shared Client thread-safe and lets each thread own a
+        # Session. (Per-Session transport: keep Session count modest; see the docs.)
+        self._sub = client._new_sync_subclient()
         # follow_redirects=False (or max_redirects=0) yields single-hop requests;
         # the two are decoupled, so an explicit 0 budget is honored (not 10).
         self._s = lib.holytls_session_new(
@@ -777,6 +1009,8 @@ class Session:
             int(max_redirects),
         )
         if self._s == ffi.NULL:
+            lib.holytls_client_free(self._sub)
+            self._sub = ffi.NULL
             raise HolyTLSError("failed to create native session")
         self._closed = False
 
@@ -797,7 +1031,6 @@ class Session:
     ) -> Response:
         if self._closed:
             raise HolyTLSError("session is closed")
-        self._client._check()
         hdrs = _normalize_headers(headers)
         body, hdrs = _encode_body(data, json, form, files, hdrs)
         keep: list = []
@@ -816,7 +1049,7 @@ class Session:
             header_order=header_order,
             http_version=_coerce_http_version(http_version),
         )
-        c_resp = lib.holytls_session_perform(self._s, self._client._c, c_req)
+        c_resp = lib.holytls_session_perform(self._s, self._sub, c_req)
         if c_resp == ffi.NULL:
             raise HolyTLSError("native allocation failure")
         return _response_from_c(c_resp)
@@ -858,10 +1091,15 @@ class Session:
         )
 
     def close(self) -> None:
-        if not self._closed and self._s != ffi.NULL:
+        if self._closed:
+            return
+        self._closed = True
+        if self._s != ffi.NULL:
             lib.holytls_session_free(self._s)
-            self._closed = True
             self._s = ffi.NULL
+        if getattr(self, "_sub", ffi.NULL) != ffi.NULL:
+            lib.holytls_client_free(self._sub)  # the private per-Session transport
+            self._sub = ffi.NULL
 
     def __enter__(self) -> "Session":
         return self
@@ -879,11 +1117,12 @@ class Session:
 class WebSocket:
     """A RFC 6455 WebSocket over a Client's fingerprinted TLS connection.
 
-    Blocking + single-threaded, like the rest of the binding: ``recv`` runs the
-    client's loop until the next message. Over an h2 server it uses RFC 8441
-    Extended CONNECT; otherwise the HTTP/1.1 Upgrade (see ``transport``). Open it
-    with :meth:`Client.websocket`; drive one socket from one thread and not
-    concurrently with that client's other calls.
+    Blocking + single-threaded: ``recv`` runs its own loop until the next
+    message. Over an h2 server it uses RFC 8441 Extended CONNECT; otherwise the
+    HTTP/1.1 Upgrade (see ``transport``). Open it with :meth:`Client.websocket`;
+    drive one socket from one thread. It runs on a private transport (same
+    fingerprint as the client), so it doesn't interfere with the client's
+    requests or with sockets on other threads.
 
         with client.websocket("wss://echo.websocket.org") as ws:
             ws.send("hello")
@@ -894,6 +1133,10 @@ class WebSocket:
         client._check()
         self._client = client
         self._closed = False
+        # recv drives a loop on the CALLING thread, so the socket runs on its own
+        # single-threaded transport minted from `client` (same fingerprint) — this
+        # keeps the shared Client thread-safe and lets each thread own a socket.
+        self._sub = client._new_sync_subclient()
         keep: list = []
         hdrs = _normalize_headers(headers)
         c_hdrs = ffi.NULL
@@ -909,15 +1152,19 @@ class WebSocket:
                 arr[i].value = vb
             c_hdrs = arr
         self._ws = lib.holytls_ws_connect(
-            client._c, url.encode("utf-8"), c_hdrs, len(hdrs)
+            self._sub, url.encode("utf-8"), c_hdrs, len(hdrs)
         )
         if self._ws == ffi.NULL:
+            lib.holytls_client_free(self._sub)
+            self._sub = ffi.NULL
             raise WebSocketError("failed to create native websocket (out of memory)")
         err = lib.holytls_ws_error(self._ws)
         if err != ffi.NULL:
             msg = ffi.string(err).decode("utf-8", "replace")
             lib.holytls_ws_free(self._ws)
             self._ws = ffi.NULL
+            lib.holytls_client_free(self._sub)
+            self._sub = ffi.NULL
             raise WebSocketError(f"websocket connect failed: {msg}")
 
     @property
@@ -970,12 +1217,17 @@ class WebSocket:
         return payload.decode("utf-8", "replace") if msg.is_text else payload
 
     def close(self, code: int = 1000, reason: str = "") -> None:
-        if not self._closed and self._ws != ffi.NULL:
+        if self._closed:
+            return
+        self._closed = True
+        if self._ws != ffi.NULL:
             r = reason.encode("utf-8") if reason else ffi.NULL
             lib.holytls_ws_close(self._ws, int(code) & 0xFFFF, r)
             lib.holytls_ws_free(self._ws)
-            self._closed = True
             self._ws = ffi.NULL
+        if getattr(self, "_sub", ffi.NULL) != ffi.NULL:
+            lib.holytls_client_free(self._sub)  # the private per-socket transport
+            self._sub = ffi.NULL
 
     def _check(self) -> None:
         if self._closed or self._ws == ffi.NULL:
@@ -999,10 +1251,10 @@ class TlsStream:
     non-HTTP protocols (IMAP, SMTP, ...). It uses the client's TLS stack
     (ciphers/curves/extensions) with NO ALPN — a plain encrypted byte pipe.
 
-    Blocking + single-threaded, like the rest of the binding: ``read`` runs the
-    client's loop until data arrives. Open it with :meth:`Client.connect_tls`;
-    drive one stream from one thread and not concurrently with that client's
-    other calls.
+    Blocking + single-threaded: ``read`` runs its own loop until data arrives.
+    Open it with :meth:`Client.connect_tls`; drive one stream from one thread. It
+    runs on a private transport (same fingerprint as the client), so it doesn't
+    interfere with the client's requests or with streams on other threads.
 
         with client.connect_tls("imap.gmail.com", 993) as s:
             print(s.read())              # b"* OK Gimap ready ..."
@@ -1014,17 +1266,25 @@ class TlsStream:
         client._check()
         self._client = client
         self._closed = False
+        # read drives a loop on the CALLING thread, so the stream runs on its own
+        # single-threaded transport minted from `client` (same fingerprint) — this
+        # keeps the shared Client thread-safe and lets each thread own a stream.
+        self._sub = client._new_sync_subclient()
         timeout_ms = int(timeout * 1000) if timeout and timeout > 0 else 0
         self._s = lib.holytls_tls_stream_connect(
-            client._c, host.encode("utf-8"), int(port) & 0xFFFF, timeout_ms
+            self._sub, host.encode("utf-8"), int(port) & 0xFFFF, timeout_ms
         )
         if self._s == ffi.NULL:
+            lib.holytls_client_free(self._sub)
+            self._sub = ffi.NULL
             raise HolyTLSError("failed to create native tls stream (out of memory)")
         err = lib.holytls_tls_stream_error(self._s)
         if err != ffi.NULL:
             msg = ffi.string(err).decode("utf-8", "replace")
             lib.holytls_tls_stream_free(self._s)
             self._s = ffi.NULL
+            lib.holytls_client_free(self._sub)
+            self._sub = ffi.NULL
             raise HolyTLSError(f"tls connect failed: {msg}")
 
     def write(self, data: Union[bytes, bytearray, memoryview]) -> int:
@@ -1061,10 +1321,15 @@ class TlsStream:
         return bytes(ffi.buffer(buf, rc))
 
     def close(self) -> None:
-        if not self._closed and self._s != ffi.NULL:
+        if self._closed:
+            return
+        self._closed = True
+        if self._s != ffi.NULL:
             lib.holytls_tls_stream_free(self._s)
-            self._closed = True
             self._s = ffi.NULL
+        if getattr(self, "_sub", ffi.NULL) != ffi.NULL:
+            lib.holytls_client_free(self._sub)  # the private per-stream transport
+            self._sub = ffi.NULL
 
     def _check(self) -> None:
         if self._closed or self._s == ffi.NULL:
