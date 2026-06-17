@@ -817,6 +817,24 @@ class Session:
     def patch(self, url: str, **kwargs) -> Response:
         return self.request(Method.PATCH, url, **kwargs)
 
+    def set_cookie(self, name, value, *, domain, path="/", expires=0,
+                   host_only=False, secure=True, http_only=False, same_site=0):
+        """Seed a cookie directly into this session's jar (e.g. solver/JS cookies
+        such as PerimeterX _px3/_pxvid/_pxhd) — for cookies obtained out-of-band
+        that no Set-Cookie response will deliver. ``domain`` has no leading dot;
+        ``expires=0`` is a session cookie; ``same_site``: 0=unset 1=Lax 2=Strict
+        3=None. Re-seeding the same name+domain+path replaces the prior value.
+        Requires the jar enabled (``Session(..., cookies=True)``, the default)."""
+        if self._closed:
+            raise HolyTLSError("session is closed")
+        lib.holytls_session_set_cookie(
+            self._s,
+            name.encode("utf-8"), value.encode("utf-8"),
+            domain.encode("utf-8"), path.encode("utf-8"),
+            int(expires), 1 if host_only else 0, 1 if secure else 0,
+            1 if http_only else 0, int(same_site),
+        )
+
     def close(self) -> None:
         if not self._closed and self._s != ffi.NULL:
             lib.holytls_session_free(self._s)

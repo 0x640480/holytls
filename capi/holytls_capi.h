@@ -409,6 +409,19 @@ void holytls_session_free(holytls_session *s);
 holytls_response *holytls_session_perform(holytls_session *s, holytls_client *c,
                                           const holytls_request *req);
 
+// Seed a cookie directly into the session jar (cookies obtained out-of-band,
+// e.g. JS-set or solver-generated). Mirrors cookie_jar_put: strings are copied
+// into the jar arena, so the caller's buffers need not outlive the call.
+// expires_epoch = 0 => session cookie. same_site: 0=unset 1=Lax 2=Strict 3=None.
+// domain has no leading dot; pass host_only=1 for an exact-host cookie. Re-seeding
+// the same name+domain+path replaces the prior value. No-op on a NULL handle/name/
+// value. The jar must be enabled (holytls_session_new(cookies_enabled=1)).
+void holytls_session_set_cookie(holytls_session *s, const char *name,
+                                const char *value, const char *domain,
+                                const char *path, uint64_t expires_epoch,
+                                int host_only, int secure, int http_only,
+                                int same_site);
+
 // ---------------------------------------------------------------------------
 // WebSocket (RFC 6455 over the client's fingerprinted TLS). Blocking, like the
 // rest of this ABI: each call drives the client's loop until its event. A

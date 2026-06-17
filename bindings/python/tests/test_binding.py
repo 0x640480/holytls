@@ -116,6 +116,31 @@ def test_session_redirect_controls_construct():
             s.close()
 
 
+def test_session_set_cookie_seeds_jar():
+    # Seed an out-of-band cookie (e.g. a solver's PerimeterX _px3) into the jar:
+    # works on an open session, exercises every option, and is rejected after
+    # close. Offline smoke only — there is no jar-read API, so test_live.py proves
+    # the seeded cookie is actually attached to the next request.
+    with Client() as c:
+        s = Session(c, cookies=True)
+        s.set_cookie("_px3", "seedval", domain="example.com")
+        s.set_cookie("_pxvid", "v", domain="example.com", path="/api",
+                     expires=2000000000, host_only=True, secure=True,
+                     http_only=True, same_site=1)
+        s.set_cookie("_px3", "replaced", domain="example.com")  # re-seed replaces
+        s.close()
+        with pytest.raises(HolyTLSError):
+            s.set_cookie("late", "x", domain="example.com")  # closed -> raises
+
+
+def test_session_set_cookie_requires_domain():
+    # `domain` is keyword-only and required — a cookie needs a domain to match.
+    with Client() as c:
+        with Session(c) as s:
+            with pytest.raises(TypeError):
+                s.set_cookie("n", "v")  # missing required domain=
+
+
 def test_header_order_kwarg_is_accepted():
     # The per-request header_order= surfaces on every request entry point, and
     # the client-level form constructs (string or sequence).

@@ -1044,6 +1044,20 @@ holytls_response *holytls_session_perform(holytls_session *hs,
   return resp ? resp : make_error_response("no response");
 }
 
+void holytls_session_set_cookie(holytls_session *hs, const char *name,
+                                const char *value, const char *domain,
+                                const char *path, uint64_t expires_epoch,
+                                int host_only, int secure, int http_only,
+                                int same_site) {
+  if (!hs || !name || !value) return;  // void: match the no-op-on-bad-arg style
+  // cookie_jar_put copies every String8 into the jar arena, so the transient
+  // str8_cstring views of the caller's C strings are safe to pass.
+  cookie_jar_put(&hs->session.jar, str8_cstring(name), str8_cstring(value),
+                 str8_cstring(domain ? domain : ""),
+                 str8_cstring(path ? path : "/"), expires_epoch, (B32)host_only,
+                 (B32)secure, (B32)http_only, (U8)same_site);
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket. A thin wrapper over WsConn, which is itself blocking (it drives
 // the client's loop until each event) — so unlike holytls_perform there is no
