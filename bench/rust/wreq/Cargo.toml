@@ -1,0 +1,11 @@
+[package]
+name = "bench_wreq"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+http = "1.4.2"
+libc = "0.2.186"
+tokio = { version = "1.52.3", features = ["full"] }
+wreq = "5.3.0"
+wreq-util = "2.2.6"

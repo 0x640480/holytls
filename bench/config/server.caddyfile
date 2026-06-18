@@ -1,0 +1,21 @@
+# Local benchmark origin: H1.1 + H2 + H3 on https://127.0.0.1:8443, serving the
+# deterministic payload files. Cert/key/root come from the environment (set by
+# start_origin.sh). Keep-alive is on; clients control cold-vs-reuse themselves.
+{
+	admin off
+	auto_https off
+	persist_config off
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+https://localhost:{$CADDY_PORT:18443} {
+	bind 127.0.0.1 ::1
+	tls {$CADDY_CERT} {$CADDY_KEY}
+	header Cache-Control "no-store"
+	@health path /health
+	respond @health "ok" 200
+	root * {$CADDY_ROOT}
+	file_server
+}
