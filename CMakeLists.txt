@@ -440,6 +440,16 @@ holytls_test_defer(tls_stream_live_test)
 holytls_test(json_test)
 endif()  # HOLYTLS_BUILD_TESTS
 
+# Cross-client benchmark harness (bench/c). Opt-in; links the holytls lib like a
+# test. Pair with -DHOLYTLS_ARENA_STATS=ON to populate the alloc counters it
+# reports. Built/run via bench/ (see bench/README.md), not part of the test suite.
+option(HOLYTLS_BUILD_BENCH "Build the cross-client benchmark C harness" OFF)
+if(HOLYTLS_BUILD_BENCH)
+  add_executable(bench_holytls bench/c/bench_holytls.c)
+  target_link_libraries(bench_holytls PRIVATE holytls)
+  target_compile_options(bench_holytls PRIVATE ${HOLYTLS_WARN})
+endif()
+
 if(HOLYTLS_BUILD_EXAMPLES)
 # Each example is a single self-contained .c under examples/:
 #   quickstart  — minimal async GET + response accessors
