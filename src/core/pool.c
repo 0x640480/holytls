@@ -436,6 +436,18 @@ internal void pool_submit(PoolConn *pc, PoolReq *r) {
     pool_waiting_push(pc, r);
     return;
   }
+  // H3 has no transport-level stream queue: pool_h3_submit opens a bidi stream
+  // and counts it as inflight immediately. nghttp2 (H2) queues streams beyond
+  // its concurrency window for us, but for H3 holytls IS the bounding layer —
+  // so an over-capacity submit (pool_acquire PATH 4, "at the conn cap") must
+  // park, not open a stream. Submitting unbounded H3 streams leaks inflight past
+  // the streams[] tracking array (untracked streams never finish), wedging the
+  // connection until the idle timeout. pool_flush_waiting drains the queue
+  // capacity-bounded once a stream frees.
+  if (pc->proto == PoolProto_H3 && !pool_conn_has_capacity(pc)) {
+    pool_waiting_push(pc, r);
+    return;
+  }
   if (pc->proto == PoolProto_H2)
     pool_h2_submit(pc, r);
   else if (pc->proto == PoolProto_H1)
