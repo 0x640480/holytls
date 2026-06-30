@@ -1,5 +1,7 @@
 # holytls
 
+**DISCLAIMER: THIS WAS ENTIRELY VIBE CODED**
+
 **A C TLS-impersonation HTTP client that reproduces a real browser's fingerprint
 across TLS, HTTP/2, and HTTP/3.**
 
